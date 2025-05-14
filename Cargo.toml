@@ -1,0 +1,30 @@
+[package]
+name = "mesh-graph"
+version = "0.1.0"
+edition = "2024"
+authors = ["Marc-Stefan Cassola"]
+categories = ["graphics", "algorithms", "mathematics"]
+description = "Fast halfedge triangle mesh graph in pure Rust "
+exclude = ["examples/", "tests/"]
+keywords = ["3D", "halfedge-graph", "real-time", "mesh", "topology"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Synphonyte/mesh-graph"
+
+[dependencies]
+anyhow = "1"
+bevy = { version = "0.16.0", optional = true }
+cfg-if = { version = "1.0.0", optional = true }
+derive_more = { version = "2", features = ["deref", "deref_mut"] }
+glam = "0.29"
+hashbrown = "0.15.2"
+itertools = "0.13"
+lazy_static = { version = "1.5.0", optional = true }
+parry3d = { version = "0.20.0", path = "../parry/crates/parry3d" }
+rerun = { version = "0.22.1", optional = true }
+slotmap = "1.0.7"
+
+[features]
+default = []
+rerun = ["dep:rerun", "dep:lazy_static", "dep:cfg-if"]
+bevy = ["dep:bevy"]
