@@ -5,17 +5,17 @@ use super::{FaceId, HalfedgeId, VertexId};
 /// A directional edge that points from one vertex to another and is (optionally) part of a face.
 /// If it's not part of a face, it's called a boundary halfedge.
 ///
-/// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/all.svg)
+/// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/all.svg" alt="Connectivity" style="max-width: 28em" />
 #[derive(Debug, Clone, Copy)]
 pub struct Halfedge {
     /// The vertex that this halfedge points to.
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/end_vertex.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/end_vertex.svg" alt="Connectivity" style="max-width: 28em" />
     pub end_vertex: VertexId,
 
-    /// The face associated to this halfedge. `None` if this is a boundary halfedge.
+    /// The face associated to this halfedge. `None` if `self` is a boundary halfedge.
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/face.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/face.svg" alt="Connectivity" style="max-width: 28em" />
     pub face: Option<FaceId>,
 
     /// This is the halfedge opposite.
@@ -23,19 +23,19 @@ pub struct Halfedge {
     /// After the mesh graph is constructed, this field is always `Some(...)`, meaning
     /// that every halfedge has a twin.
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/twin.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/twin.svg" alt="Connectivity" style="max-width: 28em" />
     pub twin: Option<HalfedgeId>,
 
-    /// The next halfedge in the face. `None` if this is a boundary halfedge.
+    /// The next halfedge in the face. `None` if `self` is a boundary halfedge.
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/next.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/next.svg" alt="Connectivity" style="max-width: 28em" />
     pub next: Option<HalfedgeId>,
 }
 
 impl Halfedge {
     /// Start vertex from which this halfedge points away
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/start_vertex.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/start_vertex.svg" alt="Connectivity" style="max-width: 28em" />
     pub fn start_vertex(&self, mesh_graph: &MeshGraph) -> VertexId {
         mesh_graph.halfedges[self.twin()].end_vertex
     }
@@ -43,15 +43,15 @@ impl Halfedge {
     /// Same as the field `twin` but expects there to be a `Some` which is the case if
     /// the mesh graph is constructed correctly.
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/twin.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/twin.svg" alt="Connectivity" style="max-width: 28em" />
     #[inline]
     pub fn twin(&self) -> HalfedgeId {
         self.twin.expect("Twin should be connected by now")
     }
 
-    /// Previous halfedge that shares the same face
+    /// Previous halfedge that shares the same face. `None` if `self` is a boundary halfedge.
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/prev.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/prev.svg" alt="Connectivity" style="max-width: 28em" />
     pub fn prev(&self, mesh_graph: &MeshGraph) -> Option<HalfedgeId> {
         // TODO : this only works for triangle meshes
         self.next
@@ -60,7 +60,7 @@ impl Halfedge {
 
     /// In counter-clockwise order next halfedge that has the same start vertex
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/ccw_rotated_neighbour.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/ccw_rotated_neighbour.svg" alt="Connectivity" style="max-width: 28em" />
     pub fn ccw_rotated_neighbour(&self, mesh_graph: &MeshGraph) -> Option<HalfedgeId> {
         self.prev(mesh_graph)
             .map(|prev| mesh_graph.halfedges[prev].twin())
@@ -68,7 +68,7 @@ impl Halfedge {
 
     /// In clockwise order next halfedge that has the same start vertex
     ///
-    /// ![Connectivity](https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/cw_rotated_neighbour.svg)
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/cw_rotated_neighbour.svg" alt="Connectivity" style="max-width: 28em" />
     pub fn cw_rotated_neighbour(&self, mesh_graph: &MeshGraph) -> Option<HalfedgeId> {
         mesh_graph.halfedges[self.twin()].next
     }
