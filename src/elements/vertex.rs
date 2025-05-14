@@ -4,24 +4,30 @@ use super::{FaceId, HalfedgeId, VertexId};
 
 /// A vertex is an corner point of a face.
 ///
-/// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/all.svg" alt="Connectivity" style="max-width: 40em" />
+/// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/all.svg" alt="Connectivity" style="max-width: 50em" />
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Vertex {
     /// One of the halfedges with this vertex as start point.
     /// If possible this is a boundary halfedge, i.e. it has no associated face.
     ///
     /// After the mesh graph is constructed correctly, this is always `Some`.
+    ///
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/outgoing_halfedge.svg" alt="Connectivity" style="max-width: 50em" />
     pub outgoing_halfedge: Option<HalfedgeId>,
 }
 
 impl Vertex {
     /// One of the incoming halfedges of this vertex.
+    ///
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/incoming_halfedge.svg" alt="Connectivity" style="max-width: 50em" />
     pub fn incoming_halfedge(&self, mesh_graph: &MeshGraph) -> HalfedgeId {
         mesh_graph.halfedges[self.outgoing_halfedge()].twin()
     }
 
     #[inline]
     /// One of the outgoing halfedges of this vertex.
+    ///
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/outgoing_halfedge.svg" alt="Connectivity" style="max-width: 50em" />
     pub fn outgoing_halfedge(&self) -> HalfedgeId {
         self.outgoing_halfedge
             .expect("Outgoing halfedge should be connected")
@@ -29,6 +35,8 @@ impl Vertex {
 
     // TODO : create iterator instead of returning a Vec
     /// Returns all halfedges that point away from this vertex.
+    ///
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/outgoing_halfedges.svg" alt="Connectivity" style="max-width: 50em" />
     pub fn outgoing_halfedges(&self, mesh_graph: &MeshGraph) -> Vec<HalfedgeId> {
         let mut edges = Vec::new();
 
@@ -49,6 +57,8 @@ impl Vertex {
     }
 
     /// Returns all halfedges that point towards this vertex
+    ///
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/incoming_halfedges.svg" alt="Connectivity" style="max-width: 50em" />
     pub fn incoming_halfedges(&self, mesh_graph: &MeshGraph) -> Vec<HalfedgeId> {
         self.outgoing_halfedges(mesh_graph)
             .into_iter()
@@ -58,6 +68,8 @@ impl Vertex {
 
     // TODO : create iterator instead of returning a Vec
     /// Returns all faces incident to this vertex.
+    ///
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/faces.svg" alt="Connectivity" style="max-width: 50em" />
     pub fn faces(&self, mesh_graph: &MeshGraph) -> Vec<FaceId> {
         self.outgoing_halfedges(mesh_graph)
             .into_iter()
@@ -67,6 +79,8 @@ impl Vertex {
 
     // TODO : create iterator instead of returning a Vec
     /// Returns all neighbouring (connected through an edge) vertices of this vertex.
+    ///
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/neighbours.svg" alt="Connectivity" style="max-width: 50em" />
     pub fn neighbours(&self, mesh_graph: &MeshGraph) -> Vec<VertexId> {
         self.outgoing_halfedges(mesh_graph)
             .into_iter()
@@ -87,6 +101,8 @@ impl Vertex {
 
     /// Returns the halfedges that are opposite to this vertex for every incident face to this vertex.
     /// They are ordered counterclockwise.
+    ///
+    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/one_ring.svg" alt="Connectivity" style="max-width: 50em" />
     pub fn one_ring(&self, mesh_graph: &MeshGraph) -> Vec<HalfedgeId> {
         self.incoming_halfedges(mesh_graph)
             .into_iter()
