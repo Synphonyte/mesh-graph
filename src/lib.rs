@@ -37,6 +37,14 @@
 //! a heavy duty example.
 //!
 //! ## Connectivity
+//!
+//! ### Halfedge
+//!
+//! <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/all.svg" alt="Connectivity" style="max-width: 28em" />
+//!
+//! ### Vertex
+//!
+//! <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/all.svg" alt="Connectivity" style="max-width: 50em" />
 
 mod elements;
 pub mod integrations;
