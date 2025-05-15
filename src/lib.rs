@@ -22,7 +22,7 @@
 //! let mesh_graph = MeshGraph::from(IcoSphere { radius: 10.0, subdivisions: 2 });
 //!
 //! // Get some vertex ID and its vertex node
-//! let (vertex_id, vertex) = mesh_graph.vertices.first().unwrap();
+//! let (vertex_id, vertex) = mesh_graph.vertices.iter().next().unwrap();
 //!
 //! // Iterate over all outgoing halfedges of the vertex
 //! for halfedge_id in vertex.outgoing_halfedges(&mesh_graph) {
@@ -283,8 +283,8 @@ impl MeshGraph {
 #[cfg(feature = "rerun")]
 impl MeshGraph {
     pub fn log_vert_rerun(&self, name: &str, vert: VertexId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let pos = self.positions[vert];
 
@@ -296,8 +296,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let he = self.halfedges[halfedge];
 
@@ -313,8 +313,8 @@ impl MeshGraph {
     }
 
     pub fn log_hes_rerun(&self, name: &str, halfedges: &[HalfedgeId]) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let mut origins = Vec::with_capacity(halfedges.len());
         let mut vectors = Vec::with_capacity(halfedges.len());
@@ -337,8 +337,8 @@ impl MeshGraph {
     }
 
     pub fn log_face_rerun(&self, name: &str, face: FaceId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let mut origins = Vec::with_capacity(3);
         let mut vectors = Vec::with_capacity(3);
@@ -381,8 +381,8 @@ impl MeshGraph {
     }
 
     pub fn log_rerun(&self) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
         RR.log(
