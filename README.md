@@ -31,7 +31,7 @@ use mesh_graph::{MeshGraph, primitives::IcoSphere};
 let mesh_graph = MeshGraph::from(IcoSphere { radius: 10.0, subdivisions: 2 });
 
 // Get some vertex ID and its vertex node
-let (vertex_id, vertex) = mesh_graph.vertices.first().unwrap();
+let (vertex_id, vertex) = mesh_graph.vertices.iter().next().unwrap();
 
 // Iterate over all outgoing halfedges of the vertex
 for halfedge_id in vertex.outgoing_halfedges(&mesh_graph) {
