@@ -1,4 +1,4 @@
-use glam::{vec3, Vec3};
+use glam::{Vec3, vec3};
 use itertools::Itertools;
 
 use crate::MeshGraph;

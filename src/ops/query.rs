@@ -3,12 +3,12 @@ use parry3d::{
     math::{Isometry, Point, Vector},
     partitioning::Qbvh,
     query::{
+        PointProjection, PointQuery, PointQueryWithLocation, Ray, RayCast, RayIntersection,
         details::{
             NormalConstraints, RayCompositeShapeToiAndNormalBestFirstVisitor,
             RayCompositeShapeToiBestFirstVisitor,
         },
         point::PointCompositeShapeProjWithLocationBestFirstVisitor,
-        PointProjection, PointQuery, PointQueryWithLocation, Ray, RayCast, RayIntersection,
     },
     shape::{FeatureId, Shape, Triangle, TypedSimdCompositeShape},
 };
