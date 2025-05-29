@@ -162,18 +162,46 @@ impl MeshGraph {
 
         while !halfedges_to_subdivide.is_empty() {
             let mut max_len = 0.0;
-            let mut max_he = HalfedgeId::default();
+            let mut max_he_id = HalfedgeId::default();
+
+            #[cfg(feature = "rerun")]
+            self.log_hes_rerun(
+                "subdivide/selection",
+                &halfedges_to_subdivide
+                    .iter()
+                    .map(|(he, _)| *he)
+                    .collect::<Vec<_>>(),
+            );
 
             for (&he, &len) in &halfedges_to_subdivide {
                 if len > max_len {
                     max_len = len;
-                    max_he = he;
+                    max_he_id = he;
                 }
             }
 
-            halfedges_to_subdivide.remove(&max_he);
+            halfedges_to_subdivide.remove(&max_he_id);
 
-            let new_edges = self.subdivide_edge(max_he);
+            let mut affected_faces = Selection::default();
+
+            let max_he = self.halfedges[max_he_id];
+            if let Some(face_id) = max_he.face {
+                selection.insert(face_id);
+                affected_faces.insert(face_id);
+
+                #[cfg(feature = "rerun")]
+                self.log_face_rerun("subdivide/selected_new", face_id);
+            }
+
+            if let Some(twin_face_id) = self.halfedges[max_he.twin()].face {
+                selection.insert(twin_face_id);
+                affected_faces.insert(twin_face_id);
+
+                #[cfg(feature = "rerun")]
+                self.log_face_rerun("subdivide/selected_new", twin_face_id);
+            }
+
+            let new_edges = self.subdivide_edge(max_he_id);
 
             #[cfg(feature = "rerun")]
             {
@@ -189,29 +217,38 @@ impl MeshGraph {
                 self.log_rerun();
             }
 
-            for new_edge in new_edges {
-                selection.insert(new_edge);
-                if let Some(new_twin) = self.halfedges[new_edge].twin {
-                    selection.insert(new_twin);
+            for new_he_id in new_edges {
+                let new_he = self.halfedges[new_he_id];
+
+                if let Some(face_id) = new_he.face {
+                    selection.insert(face_id);
+                    affected_faces.insert(face_id);
+                    #[cfg(feature = "rerun")]
+                    self.log_face_rerun("subdivide/selected_new", face_id);
                 }
 
-                let len_sqr = self.halfedges[new_edge].length_squared(self);
-                if len_sqr > max_length_squared {
+                if let Some(face_id) = self.halfedges[new_he.twin()].face {
+                    selection.insert(face_id);
+                    affected_faces.insert(face_id);
                     #[cfg(feature = "rerun")]
-                    {
-                        self.log_he_rerun("/subdivide/new_edge", new_edge);
-                    }
-                    halfedges_to_subdivide.insert(new_edge, len_sqr);
+                    self.log_face_rerun("subdivide/selected_new", face_id);
                 }
             }
 
-            let len_sqr = self.halfedges[max_he].length_squared(self);
-            if len_sqr > max_length_squared {
-                #[cfg(feature = "rerun")]
-                {
-                    self.log_he_rerun("/subdivide/prev_edge", max_he);
+            for he_id in affected_faces.resolve_to_halfedges(self) {
+                let he = self.halfedges[he_id];
+
+                if halfedges_to_subdivide.contains_key(&he.twin()) {
+                    continue;
                 }
-                halfedges_to_subdivide.insert(max_he, len_sqr);
+
+                let len_sqr = he.length_squared(self);
+
+                if len_sqr > max_length_squared {
+                    #[cfg(feature = "rerun")]
+                    self.log_he_rerun("/subdivide/new_edge", he_id);
+                    halfedges_to_subdivide.insert(he_id, len_sqr);
+                }
             }
         }
     }

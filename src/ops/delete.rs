@@ -18,16 +18,22 @@ impl MeshGraph {
         let mut deleted_halfedges = HashSet::with_capacity(4);
 
         for he_id in halfedges {
-            let mut halfedge = self.halfedges[he_id];
-            let twin_id = halfedge.twin();
+            let twin_id = self.halfedges[he_id].twin();
 
             if self.halfedges[twin_id].is_boundary() {
                 deleted_halfedges.insert(he_id);
                 deleted_halfedges.insert(twin_id);
             } else {
-                halfedge.face = None;
+                self.halfedges[he_id].face = None;
+                self.halfedges[he_id].next = None;
             }
         }
+
+        #[cfg(feature = "rerun")]
+        self.log_hes_rerun(
+            "deleted_by_face_deletion",
+            &deleted_halfedges.iter().copied().collect::<Vec<_>>(),
+        );
 
         let mut deleted_vertices = Vec::with_capacity(3);
 
@@ -51,10 +57,22 @@ impl MeshGraph {
             }
         }
 
+        // Update connections from vertices to deleted halfedges
+        for &he_id in &deleted_halfedges {
+            let start_v_id = self.halfedges[he_id].start_vertex(self);
+            if let Some(v) = self.vertices.get(start_v_id) {
+                self.vertices[start_v_id].outgoing_halfedge = v
+                    .outgoing_halfedges(self)
+                    .into_iter()
+                    .find(|id| !deleted_halfedges.contains(id));
+            }
+        }
+
         for &he_id in &deleted_halfedges {
             self.halfedges.remove(he_id);
         }
 
+        self.qbvh.remove(self.faces[face_id]);
         self.faces.remove(face_id);
 
         (deleted_vertices, Vec::from_iter(deleted_halfedges))

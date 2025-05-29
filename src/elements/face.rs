@@ -5,6 +5,7 @@ use crate::MeshGraph;
 use super::{FaceId, HalfedgeId, VertexId};
 
 #[derive(Default, Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Face {
     /// One of the halfedges of the face.
     /// Serves as a starting point for traversing the face's edges and vertices

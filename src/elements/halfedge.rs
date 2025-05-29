@@ -7,6 +7,7 @@ use super::{FaceId, HalfedgeId, VertexId};
 ///
 /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/all.svg" alt="Connectivity" style="max-width: 28em" />
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Halfedge {
     /// The vertex that this halfedge points to.
     ///
@@ -79,6 +80,12 @@ impl Halfedge {
         let end = mesh_graph.positions[self.end_vertex];
 
         start.distance_squared(end)
+    }
+
+    /// Length of the halfedge.
+    #[inline(always)]
+    pub fn length(&self, mesh_graph: &MeshGraph) -> f32 {
+        self.length_squared(mesh_graph).sqrt()
     }
 
     /// Returns `true` if there is no face adjacent to this halfedge.

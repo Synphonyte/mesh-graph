@@ -78,12 +78,16 @@ lazy_static::lazy_static! {
 /// Please see the [crate documentation](crate) for more information.
 #[derive(Clone)]
 #[cfg_attr(feature = "bevy", derive(bevy::prelude::Component))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MeshGraph {
     /// Acceleration structure for fast spatial queries. Uses parry3d's Qbvh to implement some of parry3d's spatial queries.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub qbvh: Qbvh<Face>,
     /// Used in conjunction with the QBVH to accelerate spatial queries.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub qbvh_workspace: QbvhUpdateWorkspace,
     /// Used to map indices stored in the QBVH to face IDs.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub index_to_face_id: Vec<FaceId>,
 
     /// Maps vertex IDs to their corresponding graph node
@@ -100,6 +104,49 @@ pub struct MeshGraph {
 }
 
 impl MeshGraph {
+    /// Create a triangle mesh graph from vertex positions.
+    /// Every three positions represent a triangle.
+    ///
+    /// Vertices with the same position are merged into a single vertex.
+    pub fn triangles(vertex_positions: &[Vec3]) -> Self {
+        assert!(
+            vertex_positions.len() % 3 == 0,
+            "Number of vertex positions should be a multiple of 3"
+        );
+
+        // Create a map to track unique vertices
+        let mut unique_positions: Vec<Vec3> = Vec::with_capacity(vertex_positions.len() / 3);
+        let mut face_indices = Vec::with_capacity(vertex_positions.len());
+
+        for vertex_pos in vertex_positions {
+            // Check if we've seen this position before using a fuzzy float comparison
+            let mut idx = None;
+            for (j, pos) in unique_positions.iter().enumerate() {
+                const EPSILON: f32 = 1e-5;
+
+                if pos.distance_squared(*vertex_pos) < EPSILON {
+                    idx = Some(j);
+                    break;
+                }
+            }
+
+            // Use the existing index or add a new vertex
+            let vertex_idx = if let Some(idx) = idx {
+                idx
+            } else {
+                let new_idx = unique_positions.len();
+                unique_positions.push(*vertex_pos);
+                new_idx
+            };
+
+            // Add to face indices
+            face_indices.push(vertex_idx);
+        }
+
+        // Use indexed_triangles to create the mesh
+        Self::indexed_triangles(&unique_positions, &face_indices)
+    }
+
     /// Create a triangle mesh graph from vertex positions and face indices.
     /// Every chunk of three indices represents a triangle.
     pub fn indexed_triangles(vertex_positions: &[Vec3], face_indices: &[usize]) -> Self {
@@ -282,9 +329,55 @@ impl MeshGraph {
 
 #[cfg(feature = "rerun")]
 impl MeshGraph {
-    pub fn log_vert_rerun(&self, name: &str, vert: VertexId) {
-        use crate::RR;
+    pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
         use crate::utils::*;
+        use crate::RR;
+
+        RR.log(
+            format!("meshgraph/selection/{name}/points"),
+            &rerun::Points3D::new(
+                selection
+                    .vertices
+                    .iter()
+                    .map(|v| vec3_array(self.positions[*v]))
+                    .collect_vec(),
+            ),
+        )
+        .unwrap();
+
+        self.log_hes_rerun_with_name(
+            format!("meshgraph/selection/{name}/halfedges"),
+            &selection.halfedges.iter().copied().collect::<Vec<_>>(),
+        );
+
+        let face_centers = selection
+            .faces
+            .iter()
+            .map(|face_id| {
+                let face = self.faces[*face_id];
+
+                let center = face
+                    .vertices(self)
+                    .into_iter()
+                    .map(|v_id| self.positions[v_id])
+                    .reduce(|acc, p| acc + p)
+                    .unwrap()
+                    / 3.0;
+
+                vec3_array(center)
+            })
+            .collect_vec();
+
+        RR.log(
+            format!("meshgraph/selection/{name}/faces"),
+            &rerun::Points3D::new(face_centers),
+        )
+        .unwrap();
+    }
+
+    pub fn log_vert_rerun(&self, name: &str, vert: VertexId) {
+        use crate::utils::*;
+        use crate::RR;
 
         let pos = self.positions[vert];
 
@@ -296,8 +389,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let he = self.halfedges[halfedge];
 
@@ -313,8 +406,12 @@ impl MeshGraph {
     }
 
     pub fn log_hes_rerun(&self, name: &str, halfedges: &[HalfedgeId]) {
-        use crate::RR;
+        self.log_hes_rerun_with_name(format!("meshgraph/halfedge/{name}"), halfedges);
+    }
+
+    fn log_hes_rerun_with_name(&self, name: String, halfedges: &[HalfedgeId]) {
         use crate::utils::*;
+        use crate::RR;
 
         let mut origins = Vec::with_capacity(halfedges.len());
         let mut vectors = Vec::with_capacity(halfedges.len());
@@ -330,15 +427,15 @@ impl MeshGraph {
         }
 
         RR.log(
-            format!("meshgraph/halfedge/{name}"),
+            name,
             &rerun::Arrows3D::from_vectors(vectors).with_origins(origins),
         )
         .unwrap();
     }
 
     pub fn log_face_rerun(&self, name: &str, face: FaceId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let mut origins = Vec::with_capacity(3);
         let mut vectors = Vec::with_capacity(3);
@@ -381,8 +478,8 @@ impl MeshGraph {
     }
 
     pub fn log_rerun(&self) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
         RR.log(
@@ -419,7 +516,7 @@ impl MeshGraph {
         RR.log(
             "meshgraph/positions",
             &rerun::Points3D::new(self.positions.values().map(vec3_array))
-                .with_radii(self.positions.iter().map(|_| 0.1)),
+                .with_radii(self.positions.iter().map(|_| 0.01)),
         )
         .unwrap();
 
@@ -576,6 +673,28 @@ impl MeshGraph {
 
         RR.log(
             "meshgraph/halfedge_faces",
+            &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
+        )
+        .unwrap();
+
+        origins.clear();
+        vectors.clear();
+
+        for (he_id, he) in &self.halfedges {
+            if let Some(next_id) = he.next {
+                let (he_start, he_end) = he_to_pos[&he_id];
+                let start = he_start * 0.15 + he_end * 0.85;
+
+                let (next_start, next_end) = he_to_pos[&next_id];
+                let end = next_start * 0.85 + next_end * 0.15;
+
+                origins.push(vec3_array(start));
+                vectors.push(vec3_array(end - start));
+            }
+        }
+
+        RR.log(
+            "meshgraph/halfedge_next",
             &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
         )
         .unwrap();

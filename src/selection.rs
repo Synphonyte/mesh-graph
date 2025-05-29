@@ -3,6 +3,7 @@ use hashbrown::HashSet;
 use super::{FaceId, HalfedgeId, MeshGraph, VertexId};
 
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Selection {
     pub vertices: HashSet<VertexId>,
     pub halfedges: HashSet<HalfedgeId>,

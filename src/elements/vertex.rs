@@ -6,6 +6,7 @@ use super::{FaceId, HalfedgeId, VertexId};
 ///
 /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/all.svg" alt="Connectivity" style="max-width: 50em" />
 #[derive(Debug, Default, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Vertex {
     /// One of the halfedges with this vertex as start point.
     /// If possible this is a boundary halfedge, i.e. it has no associated face.
