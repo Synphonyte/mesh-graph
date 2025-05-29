@@ -330,8 +330,8 @@ impl MeshGraph {
 #[cfg(feature = "rerun")]
 impl MeshGraph {
     pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         RR.log(
             format!("meshgraph/selection/{name}/points"),
@@ -376,8 +376,8 @@ impl MeshGraph {
     }
 
     pub fn log_vert_rerun(&self, name: &str, vert: VertexId) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let pos = self.positions[vert];
 
@@ -389,8 +389,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let he = self.halfedges[halfedge];
 
@@ -410,8 +410,8 @@ impl MeshGraph {
     }
 
     fn log_hes_rerun_with_name(&self, name: String, halfedges: &[HalfedgeId]) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let mut origins = Vec::with_capacity(halfedges.len());
         let mut vectors = Vec::with_capacity(halfedges.len());
@@ -434,8 +434,8 @@ impl MeshGraph {
     }
 
     pub fn log_face_rerun(&self, name: &str, face: FaceId) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let mut origins = Vec::with_capacity(3);
         let mut vectors = Vec::with_capacity(3);
@@ -478,8 +478,8 @@ impl MeshGraph {
     }
 
     pub fn log_rerun(&self) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
         RR.log(
