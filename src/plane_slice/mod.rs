@@ -217,6 +217,8 @@ mod tests {
 
     #[test]
     fn test_compute_transform_from_plane_into_xy() {
+        #![allow(clippy::approx_constant)]
+
         let plane_normal = Vec3::new(0.0, 1.0, 1.0).normalize();
         let plane_constant = 6.3;
 
