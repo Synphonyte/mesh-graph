@@ -1,6 +1,6 @@
 use glam::{IVec2, Vec2};
 use hashbrown::{HashMap, HashSet};
-use slotmap::{new_key_type, SecondaryMap, SlotMap};
+use slotmap::{SecondaryMap, SlotMap, new_key_type};
 
 use crate::plane_slice::{Polygon2, PolygonTerminal};
 #[cfg(feature = "rerun")]
