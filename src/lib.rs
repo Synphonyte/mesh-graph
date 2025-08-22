@@ -112,7 +112,7 @@ impl MeshGraph {
     /// Vertices with the same position are merged into a single vertex.
     pub fn triangles(vertex_positions: &[Vec3]) -> Self {
         assert!(
-            vertex_positions.len() % 3 == 0,
+            vertex_positions.len().is_multiple_of(3),
             "Number of vertex positions should be a multiple of 3"
         );
 
@@ -355,8 +355,8 @@ impl MeshGraph {
 #[cfg(feature = "rerun")]
 impl MeshGraph {
     pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         RR.log(
             format!("meshgraph/selection/{name}/points"),
@@ -401,8 +401,8 @@ impl MeshGraph {
     }
 
     pub fn log_vert_rerun(&self, name: &str, vert: VertexId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let pos = self.positions[vert];
 
@@ -414,8 +414,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let he = self.halfedges[halfedge];
 
@@ -435,8 +435,8 @@ impl MeshGraph {
     }
 
     fn log_hes_rerun_with_name(&self, name: String, halfedges: &[HalfedgeId]) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let mut origins = Vec::with_capacity(halfedges.len());
         let mut vectors = Vec::with_capacity(halfedges.len());
@@ -459,8 +459,8 @@ impl MeshGraph {
     }
 
     pub fn log_face_rerun(&self, name: &str, face: FaceId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let mut origins = Vec::with_capacity(3);
         let mut vectors = Vec::with_capacity(3);
@@ -503,8 +503,8 @@ impl MeshGraph {
     }
 
     pub fn log_rerun(&self) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
         RR.log(
