@@ -14,7 +14,7 @@ use crate::utils::vec3_array;
 use crate::{MeshGraph, VertexId};
 
 pub fn plane_slice(
-    mesh: &MeshGraph,
+    mesh_graph: &MeshGraph,
     plane_normal: Vec3,
     plane_constant: f32,
 ) -> impl Iterator<Item = Polygon3> {
@@ -29,7 +29,7 @@ pub fn plane_slice(
         crate::RR
             .log(
                 "mesh",
-                &rerun::Points3D::new(mesh.positions.values().map(vec3_array)),
+                &rerun::Points3D::new(mesh_graph.positions.values().map(vec3_array)),
             )
             .unwrap();
 
@@ -64,7 +64,7 @@ pub fn plane_slice(
     let mut min_bounds = Vec2::splat(f32::INFINITY);
     let mut max_bounds = Vec2::splat(f32::NEG_INFINITY);
 
-    for (vertex_id, vertex) in mesh.positions.iter() {
+    for (vertex_id, vertex) in mesh_graph.positions.iter() {
         let transformed_vertex = transform * vertex.extend(1.0);
 
         debug_assert!((transformed_vertex.w - 1.0).abs() < 1e-6);
@@ -92,9 +92,9 @@ pub fn plane_slice(
 
     let mut hash_grid = HashGrid::new(min_bounds, max_bounds);
 
-    for face in mesh.faces.values() {
+    for face in mesh_graph.faces.values() {
         if let Some((point1, point2)) =
-            intersect_triangle_with_xy_plane(mesh, &transformed_positions, face)
+            intersect_triangle_with_xy_plane(mesh_graph, &transformed_positions, face)
         {
             hash_grid.insert_line(point1, point2);
         }
@@ -108,11 +108,11 @@ pub fn plane_slice(
 }
 
 fn intersect_triangle_with_xy_plane(
-    mesh: &MeshGraph,
+    mesh_graph: &MeshGraph,
     transformed_positions: &SecondaryMap<VertexId, Vec3>,
     face: &crate::Face,
 ) -> Option<(Vec2, Vec2)> {
-    let vertex_ids = face.vertices(mesh);
+    let vertex_ids = face.vertices(mesh_graph);
     let vertices: Vec<Vec3> = vertex_ids
         .iter()
         .map(|&v| transformed_positions[v])
