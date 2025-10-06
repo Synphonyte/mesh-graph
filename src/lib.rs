@@ -78,7 +78,7 @@ lazy_static::lazy_static! {
 /// Halfedge data structure for representing triangle meshes.
 ///
 /// Please see the [crate documentation](crate) for more information.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 #[cfg_attr(feature = "bevy", derive(bevy::prelude::Component))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MeshGraph {
@@ -106,6 +106,12 @@ pub struct MeshGraph {
 }
 
 impl MeshGraph {
+    /// Create a new empty mesh graph
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Create a triangle mesh graph from vertex positions.
     /// Every three positions represent a triangle.
     ///

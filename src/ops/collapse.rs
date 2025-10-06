@@ -390,3 +390,15 @@ impl MeshGraph {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_collapse() {
+        let mut mesh_graph = MeshGraph::new();
+
+        mesh_graph.log_rerun();
+    }
+}
