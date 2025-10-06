@@ -52,7 +52,6 @@ mod ops;
 mod plane_slice;
 pub mod primitives;
 mod selection;
-#[cfg(feature = "rerun")]
 pub mod utils;
 
 pub use elements::*;
