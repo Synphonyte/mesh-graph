@@ -1,157 +1,86 @@
 use itertools::Itertools;
 use parry3d::{
-    math::{Isometry, Point, Vector},
-    partitioning::Qbvh,
-    query::{
-        PointProjection, PointQuery, PointQueryWithLocation, Ray, RayCast, RayIntersection,
-        details::{
-            NormalConstraints, RayCompositeShapeToiAndNormalBestFirstVisitor,
-            RayCompositeShapeToiBestFirstVisitor,
-        },
-        point::PointCompositeShapeProjWithLocationBestFirstVisitor,
-    },
-    shape::{FeatureId, Shape, Triangle, TypedSimdCompositeShape},
+    math::{Isometry, Point},
+    partitioning::Bvh,
+    query::details::NormalConstraints,
+    shape::{CompositeShape, Shape, Triangle, TypedCompositeShape},
 };
+use tracing::instrument;
 
-use crate::{Face, MeshGraph};
+use crate::{MeshGraph, error_none, utils::unwrap_or_return};
 
-impl PointQuery for MeshGraph {
-    #[inline]
-    fn project_local_point(&self, point: &Point<f32>, solid: bool) -> PointProjection {
-        self.project_local_point_and_get_location(point, solid).0
+impl CompositeShape for MeshGraph {
+    fn map_part_at(
+        &self,
+        shape_id: u32,
+        f: &mut dyn FnMut(Option<&Isometry<f32>>, &dyn Shape, Option<&dyn NormalConstraints>),
+    ) {
+        let tri = self.triangle(shape_id);
+        let normal_constraints = Default::default(); // self.triangle_normal_constraints(face_id);
+        f(None, &tri, normal_constraints)
     }
 
-    fn project_local_point_and_get_feature(
-        &self,
-        _point: &Point<f32>,
-    ) -> (PointProjection, FeatureId) {
-        unimplemented!("Not available")
+    fn bvh(&self) -> &Bvh {
+        &self.bvh
     }
 }
 
-impl PointQueryWithLocation for MeshGraph {
-    type Location = (Face, ());
-
-    #[inline]
-    fn project_local_point_and_get_location(
-        &self,
-        point: &Point<f32>,
-        solid: bool,
-    ) -> (PointProjection, Self::Location) {
-        self.project_local_point_and_get_location_with_max_dist(point, solid, f32::MAX)
-            .unwrap()
-    }
-
-    /// Projects a point on `self`, with a maximum projection distance.
-    fn project_local_point_and_get_location_with_max_dist(
-        &self,
-        point: &Point<f32>,
-        solid: bool,
-        max_dist: f32,
-    ) -> Option<(PointProjection, Self::Location)> {
-        let mut visitor =
-            PointCompositeShapeProjWithLocationBestFirstVisitor::new(self, point, solid);
-
-        if let Some((_, (mut proj, (face, _)))) =
-            self.qbvh
-                .traverse_best_first_node(&mut visitor, 0, max_dist)
-        {
-            if let Some(vertex_normals) = &self.vertex_normals {
-                let pseudo_normal = vertex_normals[self.halfedges[face.halfedge].end_vertex];
-
-                let dpt = point - proj.point;
-                proj.is_inside = dpt.dot(&Vector::new(
-                    pseudo_normal.x,
-                    pseudo_normal.y,
-                    pseudo_normal.z,
-                )) <= 0.0;
-            }
-
-            Some((proj, (face, ())))
-        } else {
-            None
-        }
-    }
-}
-
-impl RayCast for MeshGraph {
-    #[inline]
-    fn cast_local_ray(&self, ray: &Ray, max_time_of_impact: f32, solid: bool) -> Option<f32> {
-        let mut visitor =
-            RayCompositeShapeToiBestFirstVisitor::new(self, ray, max_time_of_impact, solid);
-
-        self.qbvh
-            .traverse_best_first(&mut visitor)
-            .map(|(_, (_, toi))| toi)
-    }
-
-    #[inline]
-    fn cast_local_ray_and_get_normal(
-        &self,
-        ray: &Ray,
-        max_time_of_impact: f32,
-        solid: bool,
-    ) -> Option<RayIntersection> {
-        let mut visitor = RayCompositeShapeToiAndNormalBestFirstVisitor::new(
-            self,
-            ray,
-            max_time_of_impact,
-            solid,
-        );
-
-        self.qbvh
-            .traverse_best_first(&mut visitor)
-            .map(|(_, (_, res))| res)
-    }
-}
-
-impl TypedSimdCompositeShape for MeshGraph {
+impl TypedCompositeShape for MeshGraph {
     type PartShape = Triangle;
-    type PartNormalConstraints = (); // TODO : do we need TrianglePseudoNormals?
-    type PartId = Face;
+    type PartNormalConstraints = ();
 
-    #[inline(always)]
-    fn map_typed_part_at(
+    fn map_typed_part_at<T>(
         &self,
-        face: Face,
+        shape_id: u32,
         mut f: impl FnMut(
             Option<&Isometry<f32>>,
             &Self::PartShape,
             Option<&Self::PartNormalConstraints>,
-        ),
-    ) {
-        let tri = self.triangle(face);
+        ) -> T,
+    ) -> Option<T> {
+        let tri = self.triangle(shape_id);
         let pseudo_normals = None; // self.triangle_normal_constraints(face_id);
-        f(None, &tri, pseudo_normals.as_ref())
+        Some(f(None, &tri, pseudo_normals.as_ref()))
     }
 
-    #[inline(always)]
-    fn map_untyped_part_at(
+    fn map_untyped_part_at<T>(
         &self,
-        face: Face,
-        mut f: impl FnMut(Option<&Isometry<f32>>, &dyn Shape, Option<&dyn NormalConstraints>),
-    ) {
-        let tri = self.triangle(face);
-        let pseudo_normals = Some(()); // self.triangle_normal_constraints(face_id);
-        f(
-            None,
-            &tri,
-            pseudo_normals.as_ref().map(|n| n as &dyn NormalConstraints),
-        )
-    }
-
-    fn typed_qbvh(&self) -> &Qbvh<Face> {
-        &self.qbvh
+        shape_id: u32,
+        mut f: impl FnMut(Option<&Isometry<f32>>, &dyn Shape, Option<&dyn NormalConstraints>) -> T,
+    ) -> Option<T> {
+        let tri = self.triangle(shape_id);
+        let pseudo_normals = Default::default(); // self.triangle_normal_constraints(face_id);
+        Some(f(None, &tri, pseudo_normals))
     }
 }
 
 impl MeshGraph {
-    pub fn triangle(&self, face: Face) -> Triangle {
+    #[instrument(skip(self))]
+    pub fn triangle(&self, shape_id: u32) -> Triangle {
+        let face_id = unwrap_or_return!(
+            self.index_to_face_id.get(shape_id as usize),
+            "Index not found",
+            Triangle::default()
+        );
+
+        let face = unwrap_or_return!(
+            self.faces.get(*face_id),
+            "Face not found",
+            Triangle::default()
+        );
+
         let pos = face
             .vertices(self)
-            .into_iter()
-            .map(|v_id| self.positions[v_id])
+            .filter_map(|v_id| {
+                self.positions
+                    .get(v_id)
+                    .or_else(error_none!("Position not found"))
+            })
             .collect_vec();
+
+        if pos.len() < 3 {
+            return Triangle::default();
+        }
 
         Triangle::new(
             Point::new(pos[0].x, pos[0].y, pos[0].z),

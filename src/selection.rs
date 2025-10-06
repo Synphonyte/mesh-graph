@@ -1,4 +1,5 @@
 use hashbrown::HashSet;
+use tracing::error;
 
 use super::{FaceId, HalfedgeId, MeshGraph, VertexId};
 
@@ -37,7 +38,11 @@ impl Selection {
 
         for halfedge in &self.halfedges {
             let he = mesh_graph.halfedges[*halfedge];
-            vertices.insert(he.start_vertex(mesh_graph));
+            if let Some(start_vertex) = he.start_vertex(mesh_graph) {
+                vertices.insert(start_vertex);
+            } else {
+                error!("Start vertex not found");
+            }
             vertices.insert(he.end_vertex);
         }
 

@@ -112,10 +112,9 @@ fn intersect_triangle_with_xy_plane(
     transformed_positions: &SecondaryMap<VertexId, Vec3>,
     face: &crate::Face,
 ) -> Option<(Vec2, Vec2)> {
-    let vertex_ids = face.vertices(mesh_graph);
-    let vertices: Vec<Vec3> = vertex_ids
-        .iter()
-        .map(|&v| transformed_positions[v])
+    let vertices: Vec<Vec3> = face
+        .vertices(mesh_graph)
+        .map(|v| transformed_positions[v])
         .collect();
 
     // Compute signed distances from each vertex to the XY plane (z=0)

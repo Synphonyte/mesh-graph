@@ -1,6 +1,8 @@
 use glam::Vec3;
+use parry3d::{bounding_volume::Aabb, na::Point3};
+use tracing::{error, instrument};
 
-use crate::MeshGraph;
+use crate::{CircularHalfedgesIterator, MeshGraph, error_none};
 
 use super::{FaceId, HalfedgeId, VertexId};
 
@@ -11,57 +13,63 @@ pub struct Face {
     /// Serves as a starting point for traversing the face's edges and vertices
     pub halfedge: HalfedgeId,
 
-    /// The index of the face in the qbvh
-    pub index: usize,
+    /// The index of the face in the BVH
+    pub index: u32,
 
     /// The associated face id
     pub id: FaceId,
 }
 
-impl parry3d::partitioning::IndexedData for Face {
-    fn default() -> Self {
-        Default::default()
-    }
-
-    fn index(&self) -> usize {
-        self.index
-    }
-}
-
 impl Face {
-    // TODO : create iterator instead of returning a Vec
     /// Returns the three halfedges that form this face
-    pub fn halfedges(&self, mesh_graph: &MeshGraph) -> Vec<HalfedgeId> {
-        // TODO :this currently only works for triangle meshes
-        let mut edges = Vec::with_capacity(3);
-        edges.push(self.halfedge);
-
-        let he = mesh_graph.halfedges[self.halfedge];
-        let next_id = he.next.unwrap();
-        edges.push(next_id);
-        edges.push(mesh_graph.halfedges[next_id].next.unwrap());
-
-        edges
+    #[instrument(skip(mesh_graph))]
+    pub fn halfedges<'a>(&self, mesh_graph: &'a MeshGraph) -> CircularHalfedgesIterator<'a> {
+        CircularHalfedgesIterator::new(Some(self.halfedge), mesh_graph, |he, mesh_graph| {
+            mesh_graph
+                .halfedges
+                .get(he)
+                .or_else(error_none!("Halfedge not found"))?
+                .next
+        })
     }
 
-    // TODO : create iterator instead of returning a Vec
     /// Returns the three corner vertices of this face.
-    pub fn vertices(&self, mesh_graph: &MeshGraph) -> Vec<VertexId> {
-        let mut vertices = Vec::with_capacity(3);
-
-        for halfedge in self.halfedges(mesh_graph) {
-            vertices.push(mesh_graph.halfedges[halfedge].end_vertex);
-        }
-
-        vertices
+    #[instrument(skip(mesh_graph))]
+    pub fn vertices(&self, mesh_graph: &MeshGraph) -> impl Iterator<Item = VertexId> {
+        self.halfedges(mesh_graph).filter_map(|he| {
+            mesh_graph
+                .halfedges
+                .get(he)
+                .or_else(error_none!("Halfedge not found"))
+                .map(|he| he.end_vertex)
+        })
     }
 
     /// Center positions of this face.
+    #[instrument(skip(mesh_graph))]
     pub fn center(&self, mesh_graph: &MeshGraph) -> Vec3 {
         let mut sum = Vec3::ZERO;
+
         for vertex in self.vertices(mesh_graph) {
-            sum += mesh_graph.positions[vertex];
+            if let Some(position) = mesh_graph.positions.get(vertex) {
+                sum += position;
+            } else {
+                error!("Vertex position not found");
+            }
         }
+
         sum / 3.0
+    }
+
+    /// Compute the parry Aabb of this triangle
+    #[instrument(skip(mesh_graph))]
+    pub fn aabb(&self, mesh_graph: &MeshGraph) -> Aabb {
+        Aabb::from_points(self.vertices(mesh_graph).filter_map(|v| {
+            mesh_graph
+                .positions
+                .get(v)
+                .or_else(error_none!("Position not found"))
+                .map(|p| Point3::new(p.x, p.y, p.z))
+        }))
     }
 }

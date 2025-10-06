@@ -1,4 +1,6 @@
-use crate::MeshGraph;
+use tracing::{error, instrument};
+
+use crate::{MeshGraph, error_none};
 
 use super::{FaceId, HalfedgeId, VertexId};
 
@@ -37,49 +39,76 @@ impl Halfedge {
     /// Start vertex from which this halfedge points away
     ///
     /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/start_vertex.svg" alt="Connectivity" style="max-width: 28em" />
-    pub fn start_vertex(&self, mesh_graph: &MeshGraph) -> VertexId {
-        mesh_graph.halfedges[self.twin()].end_vertex
-    }
-
-    /// Same as the field `twin` but expects there to be a `Some` which is the case if
-    /// the mesh graph is constructed correctly.
-    ///
-    /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/twin.svg" alt="Connectivity" style="max-width: 28em" />
-    #[inline]
-    pub fn twin(&self) -> HalfedgeId {
-        self.twin.expect("Twin should be connected by now")
+    #[instrument(skip(mesh_graph))]
+    pub fn start_vertex(&self, mesh_graph: &MeshGraph) -> Option<VertexId> {
+        mesh_graph
+            .halfedges
+            .get(self.twin.or_else(error_none!("No twin"))?)
+            .or_else(error_none!("Twin halfedge not found"))
+            .map(|t| t.end_vertex)
     }
 
     /// Previous halfedge that shares the same face. `None` if `self` is a boundary halfedge.
     ///
     /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/prev.svg" alt="Connectivity" style="max-width: 28em" />
+    #[instrument(skip(mesh_graph))]
     pub fn prev(&self, mesh_graph: &MeshGraph) -> Option<HalfedgeId> {
         // TODO : this only works for triangle meshes
         self.next
-            .map(|next_id| mesh_graph.halfedges[next_id].next.unwrap())
+            .map(|next_id| {
+                mesh_graph
+                    .halfedges
+                    .get(next_id)
+                    .or_else(error_none!("Next halfedge not found"))
+                    .map(|h| h.next)
+                    .flatten()
+            })
+            .flatten()
     }
 
     /// In counter-clockwise order next halfedge that has the same start vertex
     ///
     /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/ccw_rotated_neighbour.svg" alt="Connectivity" style="max-width: 28em" />
+    #[instrument(skip(mesh_graph))]
     pub fn ccw_rotated_neighbour(&self, mesh_graph: &MeshGraph) -> Option<HalfedgeId> {
         self.prev(mesh_graph)
-            .map(|prev| mesh_graph.halfedges[prev].twin())
+            .map(|prev| {
+                mesh_graph
+                    .halfedges
+                    .get(prev)
+                    .or_else(error_none!("Previous halfedge not found"))
+                    .map(|h| h.twin.or_else(error_none!("Twin missing")))
+                    .flatten()
+            })
+            .flatten()
     }
 
     /// In clockwise order next halfedge that has the same start vertex
     ///
     /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/cw_rotated_neighbour.svg" alt="Connectivity" style="max-width: 28em" />
+    #[instrument(skip(mesh_graph))]
     pub fn cw_rotated_neighbour(&self, mesh_graph: &MeshGraph) -> Option<HalfedgeId> {
-        mesh_graph.halfedges[self.twin()].next
+        mesh_graph
+            .halfedges
+            .get(self.twin.or_else(error_none!("Twin missing"))?)
+            .map(|h| h.next)
+            .flatten()
     }
 
     /// Length of the halfedge squared.
+    #[instrument(skip(mesh_graph))]
     pub fn length_squared(&self, mesh_graph: &MeshGraph) -> f32 {
-        let start = mesh_graph.positions[self.start_vertex(mesh_graph)];
-        let end = mesh_graph.positions[self.end_vertex];
+        self.len_sqr_inner(mesh_graph).unwrap_or_else(|| {
+            error!("Halfedge invalid. Defaulting to zero length");
+            0.0
+        })
+    }
 
-        start.distance_squared(end)
+    fn len_sqr_inner(&self, mesh_graph: &MeshGraph) -> Option<f32> {
+        let start = mesh_graph.positions.get(self.start_vertex(mesh_graph)?)?;
+        let end = mesh_graph.positions.get(self.end_vertex)?;
+
+        Some(start.distance_squared(*end))
     }
 
     /// Length of the halfedge.
@@ -95,8 +124,24 @@ impl Halfedge {
     }
 
     /// Returns `true` if the start or end vertex is a boundary vertex.
+    #[instrument(skip(mesh_graph))]
     pub fn is_adjacent_to_boundary(&self, mesh_graph: &MeshGraph) -> bool {
-        mesh_graph.vertices[self.start_vertex(mesh_graph)].is_boundary(mesh_graph)
-            || mesh_graph.vertices[self.end_vertex].is_boundary(mesh_graph)
+        if let Some(start_vertex) = self.start_vertex(mesh_graph) {
+            mesh_graph
+                .vertices
+                .get(start_vertex)
+                .or_else(error_none!("Start vertex not found"))
+                .map(|v| v.is_boundary(mesh_graph))
+                .unwrap_or(false)
+                || mesh_graph
+                    .vertices
+                    .get(self.end_vertex)
+                    .or_else(error_none!("End vertex not found"))
+                    .map(|v| v.is_boundary(mesh_graph))
+                    .unwrap_or(false)
+        } else {
+            error!("Start vertex ID not found");
+            false
+        }
     }
 }

@@ -1,6 +1,7 @@
 use hashbrown::HashSet;
+use tracing::instrument;
 
-use crate::{FaceId, HalfedgeId, MeshGraph, VertexId};
+use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none, utils::unwrap_or_return};
 
 impl MeshGraph {
     /// Deletes a face from the mesh graph.
@@ -9,21 +10,34 @@ impl MeshGraph {
     /// longer connected to any other faces.
     ///
     /// Returns the ids of the removed vertices and halfedges.
+    #[instrument(skip(self))]
     pub fn delete_face(&mut self, face_id: FaceId) -> (Vec<VertexId>, Vec<HalfedgeId>) {
-        let face = self.faces[face_id];
+        let face = unwrap_or_return!(self.faces.get(face_id), "Face not found", (vec![], vec![]));
 
-        let vertices = face.vertices(self);
-        let halfedges = face.halfedges(self);
+        let vertices = face.vertices(self).collect::<Vec<_>>();
+        let halfedges = face.halfedges(self).collect::<Vec<_>>();
 
         let mut deleted_halfedges = HashSet::with_capacity(4);
 
         for he_id in halfedges {
-            let twin_id = self.halfedges[he_id].twin();
+            let he = unwrap_or_return!(
+                self.halfedges.get(he_id),
+                "Halfedge not found",
+                (vec![], vec![])
+            );
+            let twin_id = unwrap_or_return!(he.twin, "Twin not found", (vec![], vec![]));
 
-            if self.halfedges[twin_id].is_boundary() {
+            if unwrap_or_return!(
+                self.halfedges.get(twin_id),
+                "Twin halfedge not found",
+                (vec![], vec![])
+            )
+            .is_boundary()
+            {
                 deleted_halfedges.insert(he_id);
                 deleted_halfedges.insert(twin_id);
             } else {
+                // already checked above
                 self.halfedges[he_id].face = None;
                 self.halfedges[he_id].next = None;
             }
@@ -39,7 +53,13 @@ impl MeshGraph {
 
         for &vertex_id in &vertices {
             let mut all_deleted = true;
-            for he_id in self.vertices[vertex_id].outgoing_halfedges(self) {
+            for he_id in unwrap_or_return!(
+                self.vertices.get(vertex_id),
+                "Vertex not found",
+                (vec![], vec![])
+            )
+            .outgoing_halfedges(self)
+            {
                 if !deleted_halfedges.contains(&he_id) {
                     all_deleted = false;
                     break;
@@ -59,12 +79,18 @@ impl MeshGraph {
 
         // Update connections from vertices to deleted halfedges
         for &he_id in &deleted_halfedges {
-            let start_v_id = self.halfedges[he_id].start_vertex(self);
+            // checked when inserted into deleted_halfedges
+            let start_v_id = unwrap_or_return!(
+                self.halfedges[he_id].start_vertex(self),
+                "Start vertex not found",
+                (vec![], vec![])
+            );
             if let Some(v) = self.vertices.get(start_v_id) {
                 self.vertices[start_v_id].outgoing_halfedge = v
                     .outgoing_halfedges(self)
                     .into_iter()
-                    .find(|id| !deleted_halfedges.contains(id));
+                    .find(|id| !deleted_halfedges.contains(id))
+                    .or_else(error_none!("No new outgoing halfedge found"));
             }
         }
 
@@ -72,7 +98,8 @@ impl MeshGraph {
             self.halfedges.remove(he_id);
         }
 
-        self.qbvh.remove(self.faces[face_id]);
+        // already checked at the start of the function
+        self.bvh.remove(self.faces[face_id].index);
         self.faces.remove(face_id);
 
         (deleted_vertices, Vec::from_iter(deleted_halfedges))

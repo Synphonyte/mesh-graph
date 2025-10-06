@@ -1,5 +1,5 @@
 //! MeshGraph is a halfedge data structure for representing triangle meshes.
-//! It uses parry3d's Qbvh to implement some of parry3d's spatial queries.
+//! It uses parry3d's Bvh to implement some of parry3d's spatial queries.
 //! It also uses slotmap to manage the graph nodes.
 //!
 //! This is heavily inspired by [SMesh](https://github.com/Bendzae/SMesh) and
@@ -7,7 +7,7 @@
 //!
 //! ## Features
 //!
-//! - Fast spatial queries using parry3d's Qbvh
+//! - Fast spatial queries using parry3d's Bvh
 //! - High performance using slotmap
 //! - Easy integration with Bevy game engine using the `bevy` Cargo feature
 //! - Good debugging using `rerun` Cargo feature to enable the Rerun integration
@@ -48,6 +48,7 @@
 
 mod elements;
 pub mod integrations;
+mod iter;
 mod ops;
 mod plane_slice;
 pub mod primitives;
@@ -55,19 +56,16 @@ mod selection;
 pub mod utils;
 
 pub use elements::*;
+pub use iter::*;
 pub use plane_slice::*;
 pub use selection::*;
 
 use hashbrown::HashMap;
-use itertools::Itertools;
-use parry3d::{
-    math::Point,
-    partitioning::{Qbvh, QbvhUpdateWorkspace},
-    shape::Triangle,
-};
+use parry3d::partitioning::{Bvh, BvhWorkspace};
 
 use glam::Vec3;
 use slotmap::{SecondaryMap, SlotMap};
+use tracing::{error, instrument};
 
 #[cfg(feature = "rerun")]
 lazy_static::lazy_static! {
@@ -81,13 +79,13 @@ lazy_static::lazy_static! {
 #[cfg_attr(feature = "bevy", derive(bevy::prelude::Component))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MeshGraph {
-    /// Acceleration structure for fast spatial queries. Uses parry3d's Qbvh to implement some of parry3d's spatial queries.
+    /// Acceleration structure for fast spatial queries. Uses parry3d's Bvh to implement some of parry3d's spatial queries.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub qbvh: Qbvh<Face>,
-    /// Used in conjunction with the QBVH to accelerate spatial queries.
+    pub bvh: Bvh,
+    /// Used in conjunction with the BVH to accelerate spatial queries.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub qbvh_workspace: QbvhUpdateWorkspace,
-    /// Used to map indices stored in the QBVH to face IDs.
+    pub bvh_workspace: BvhWorkspace,
+    /// Used to map indices stored in the BVH to face IDs.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub index_to_face_id: Vec<FaceId>,
 
@@ -166,8 +164,8 @@ impl MeshGraph {
     /// Every chunk of three indices represents a triangle.
     pub fn indexed_triangles(vertex_positions: &[Vec3], face_indices: &[usize]) -> Self {
         let mut graph = Self {
-            qbvh: Qbvh::new(),
-            qbvh_workspace: QbvhUpdateWorkspace::default(),
+            bvh: Bvh::new(),
+            bvh_workspace: BvhWorkspace::default(),
             index_to_face_id: Vec::with_capacity(face_indices.len() / 3),
 
             vertices: SlotMap::with_capacity_and_key(vertex_positions.len()),
@@ -254,12 +252,13 @@ impl MeshGraph {
             graph.vertices[c].outgoing_halfedge = Some(he_c_id);
         }
 
-        graph.rebuild_qbvh();
+        graph.refit_bvh();
 
         graph
     }
 
     /// Computes the vertex normals by averaging over the computed face normals
+    #[instrument(skip(self))]
     pub fn compute_vertex_normals(&mut self) {
         let mut normals = SecondaryMap::with_capacity(self.vertices.len());
 
@@ -272,7 +271,13 @@ impl MeshGraph {
                 .expect("Halfedge has definitely a face and thus a next halfedge");
             let he_b = self.halfedges[he_b_id];
 
-            let a = he_a.start_vertex(self);
+            let a = match he_a.start_vertex(self) {
+                Some(v) => v,
+                None => {
+                    error!("Start vertex not found");
+                    continue;
+                }
+            };
             let b = he_a.end_vertex;
             let c = he_b.end_vertex;
 
@@ -300,60 +305,26 @@ impl MeshGraph {
         }
     }
 
-    pub fn rebalance_qbvh(&mut self) {
-        self.qbvh.rebalance(0.0, &mut self.qbvh_workspace);
+    /// Calls the `optimize_incremental` method of the BVH.
+    #[inline]
+    pub fn optimize_bvh_incremental(&mut self) {
+        self.bvh.optimize_incremental(&mut self.bvh_workspace);
     }
 
-    /// Recomputes the bounding boxes of the QBVH. This is necessary when the mesh is modified.
+    /// Recomputes the bounding boxes of the BVH. This is necessary when the mesh is modified.
     ///
-    /// It does not no change the topology of the QBVH. Call `rebalance_qbvh` to to that.
-    pub fn refit_qbvh(&mut self) {
-        let mesh_graph = self.clone();
-
-        self.qbvh.refit(0.0, &mut self.qbvh_workspace, |face| {
-            let pos = face
-                .vertices(&mesh_graph)
-                .into_iter()
-                .map(|v| {
-                    let Vec3 { x, y, z } = mesh_graph.positions[v];
-                    Point::new(x, y, z)
-                })
-                .collect_vec();
-
-            Triangle::new(pos[0], pos[1], pos[2]).local_aabb()
-        });
+    /// It does not no change the topology of the BVH. Call `rebalance_bvh` to to that.
+    #[inline]
+    pub fn refit_bvh(&mut self) {
+        self.bvh.refit(&mut self.bvh_workspace);
     }
 
     fn recount_faces(&mut self) {
         self.index_to_face_id.clear();
         for (id, face) in &mut self.faces {
-            face.index = self.index_to_face_id.len();
+            face.index = self.index_to_face_id.len() as u32;
             self.index_to_face_id.push(id);
         }
-    }
-
-    /// Clear and rebuild the QBVH.
-    pub fn rebuild_qbvh(&mut self) {
-        self.recount_faces();
-
-        let data = self
-            .faces
-            .values()
-            .map(|face| {
-                let pos = face
-                    .vertices(self)
-                    .into_iter()
-                    .map(|v| {
-                        let Vec3 { x, y, z } = self.positions[v];
-                        Point::new(x, y, z)
-                    })
-                    .collect_vec();
-
-                (*face, Triangle::new(pos[0], pos[1], pos[2]).local_aabb())
-            })
-            .collect_vec();
-
-        self.qbvh.clear_and_rebuild(data.into_iter(), 0.0);
     }
 }
 
