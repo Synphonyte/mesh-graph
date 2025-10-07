@@ -617,14 +617,14 @@ impl MeshGraph {
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use super::*;
+#[cfg(test)]
+mod test {
+    use super::*;
 
-//     #[test]
-//     fn test_collapse() {
-//         let mut mesh_graph = MeshGraph::new();
+    #[test]
+    fn test_collapse() {
+        let mut mesh_graph = MeshGraph::new();
 
-//         mesh_graph.log_rerun();
-//     }
-// }
+        mesh_graph.log_rerun();
+    }
+}
