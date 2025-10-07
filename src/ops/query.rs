@@ -1,13 +1,105 @@
 use itertools::Itertools;
 use parry3d::{
-    math::{Isometry, Point},
+    math::{Isometry, Point, Vector},
     partitioning::Bvh,
-    query::details::NormalConstraints,
-    shape::{CompositeShape, Shape, Triangle, TypedCompositeShape},
+    query::{
+        PointProjection, PointQuery, PointQueryWithLocation, Ray, RayCast, RayIntersection,
+        details::NormalConstraints,
+    },
+    shape::{CompositeShape, CompositeShapeRef, FeatureId, Shape, Triangle, TypedCompositeShape},
 };
 use tracing::instrument;
 
-use crate::{MeshGraph, error_none, utils::unwrap_or_return};
+use crate::{Face, MeshGraph, error_none, utils::unwrap_or_return};
+
+impl PointQuery for MeshGraph {
+    #[inline]
+    fn project_local_point(&self, point: &Point<f32>, solid: bool) -> PointProjection {
+        self.project_local_point_and_get_location(point, solid).0
+    }
+
+    fn project_local_point_and_get_feature(
+        &self,
+        _point: &Point<f32>,
+    ) -> (PointProjection, FeatureId) {
+        unimplemented!("Not available")
+    }
+}
+
+impl PointQueryWithLocation for MeshGraph {
+    type Location = Face;
+
+    #[inline]
+    fn project_local_point_and_get_location(
+        &self,
+        point: &Point<f32>,
+        solid: bool,
+    ) -> (PointProjection, Self::Location) {
+        self.project_local_point_and_get_location_with_max_dist(point, solid, f32::MAX)
+            .unwrap()
+    }
+
+    /// Projects a point on `self`, with a maximum projection distance.
+    fn project_local_point_and_get_location_with_max_dist(
+        &self,
+        point: &Point<f32>,
+        solid: bool,
+        max_dist: f32,
+    ) -> Option<(PointProjection, Self::Location)> {
+        let (shape_id, (mut proj, _)) =
+            CompositeShapeRef(self).project_local_point_and_get_location(point, max_dist, solid)?;
+
+        // TODO : this could be more precise by interpolating the normal depending on the hit location
+
+        let face_id = self
+            .index_to_face_id
+            .get(shape_id as usize)
+            .or_else(error_none!("Face not found"))?;
+        let face = self
+            .faces
+            .get(*face_id)
+            .or_else(error_none!("Face not found"))?;
+
+        let vertex_normals = self.vertex_normals.as_ref()?;
+        let he = self
+            .halfedges
+            .get(face.halfedge)
+            .or_else(error_none!("Halfedge not found"))?;
+        let pseudo_normal = vertex_normals
+            .get(he.end_vertex)
+            .or_else(error_none!("Vertex normal not found"))?;
+
+        let dpt = point - proj.point;
+        proj.is_inside = dpt.dot(&Vector::new(
+            pseudo_normal.x,
+            pseudo_normal.y,
+            pseudo_normal.z,
+        )) <= 0.0;
+
+        Some((proj, *face))
+    }
+}
+
+impl RayCast for MeshGraph {
+    #[inline]
+    fn cast_local_ray(&self, ray: &Ray, max_time_of_impact: f32, solid: bool) -> Option<f32> {
+        CompositeShapeRef(self)
+            .cast_local_ray(ray, max_time_of_impact, solid)
+            .map(|hit| hit.1)
+    }
+
+    #[inline]
+    fn cast_local_ray_and_get_normal(
+        &self,
+        ray: &Ray,
+        max_time_of_impact: f32,
+        solid: bool,
+    ) -> Option<RayIntersection> {
+        CompositeShapeRef(self)
+            .cast_local_ray_and_get_normal(ray, max_time_of_impact, solid)
+            .map(|(_, res)| res)
+    }
+}
 
 impl CompositeShape for MeshGraph {
     fn map_part_at(

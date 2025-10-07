@@ -316,6 +316,7 @@ impl MeshGraph {
     /// It does not no change the topology of the BVH. Call `rebalance_bvh` to to that.
     #[inline]
     pub fn refit_bvh(&mut self) {
+        self.recount_faces();
         self.bvh.refit(&mut self.bvh_workspace);
     }
 
@@ -331,8 +332,10 @@ impl MeshGraph {
 #[cfg(feature = "rerun")]
 impl MeshGraph {
     pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
-        use crate::RR;
+        use itertools::Itertools;
+
         use crate::utils::*;
+        use crate::RR;
 
         RR.log(
             format!("meshgraph/selection/{name}/points"),
@@ -377,8 +380,8 @@ impl MeshGraph {
     }
 
     pub fn log_vert_rerun(&self, name: &str, vert: VertexId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let pos = self.positions[vert];
 
@@ -390,12 +393,12 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let he = self.halfedges[halfedge];
 
-        let start = self.positions[he.start_vertex(self)];
+        let start = self.positions[he.start_vertex(self).unwrap()];
         let end = self.positions[he.end_vertex];
 
         RR.log(
@@ -411,8 +414,8 @@ impl MeshGraph {
     }
 
     fn log_hes_rerun_with_name(&self, name: String, halfedges: &[HalfedgeId]) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let mut origins = Vec::with_capacity(halfedges.len());
         let mut vectors = Vec::with_capacity(halfedges.len());
@@ -420,7 +423,7 @@ impl MeshGraph {
         for &he_id in halfedges {
             let he = self.halfedges[he_id];
 
-            let start = self.positions[he.start_vertex(self)];
+            let start = self.positions[he.start_vertex(self).unwrap()];
             let end = self.positions[he.end_vertex];
 
             origins.push(vec3_array(start));
@@ -435,19 +438,17 @@ impl MeshGraph {
     }
 
     pub fn log_face_rerun(&self, name: &str, face: FaceId) {
-        use crate::RR;
+        use itertools::Itertools;
+
         use crate::utils::*;
+        use crate::RR;
 
         let mut origins = Vec::with_capacity(3);
         let mut vectors = Vec::with_capacity(3);
 
         let face = self.faces[face];
 
-        let pos = face
-            .vertices(self)
-            .iter()
-            .map(|v| self.positions[*v])
-            .collect::<Vec<_>>();
+        let pos = face.vertices(self).map(|v| self.positions[v]).collect_vec();
 
         let center = pos.iter().copied().reduce(|a, b| a + b).unwrap() / pos.len() as f32;
 
@@ -461,7 +462,7 @@ impl MeshGraph {
         for he_id in face.halfedges(self) {
             let he = self.halfedges[he_id];
 
-            let start = pos[&he.start_vertex(self)];
+            let start = pos[&he.start_vertex(self).unwrap()];
             let end = pos[&he.end_vertex];
 
             origins.push(vec3_array(start));
@@ -479,8 +480,8 @@ impl MeshGraph {
     }
 
     pub fn log_rerun(&self) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
         RR.log(
@@ -527,11 +528,9 @@ impl MeshGraph {
         let mut he_to_pos = HashMap::<HalfedgeId, (Vec3, Vec3)>::default();
 
         for face in self.faces.values() {
-            let pos = face
-                .vertices(self)
-                .iter()
-                .map(|v| self.positions[*v])
-                .collect::<Vec<_>>();
+            use itertools::Itertools;
+
+            let pos = face.vertices(self).map(|v| self.positions[v]).collect_vec();
 
             let center = pos.iter().copied().reduce(|a, b| a + b).unwrap() / pos.len() as f32;
 
@@ -545,7 +544,7 @@ impl MeshGraph {
             for he_id in face.halfedges(self) {
                 let he = self.halfedges[he_id];
 
-                let start = pos[&he.start_vertex(self)];
+                let start = pos[&he.start_vertex(self).unwrap()];
                 let end = pos[&he.end_vertex];
 
                 he_to_pos.insert(he_id, (start, end));
@@ -557,7 +556,7 @@ impl MeshGraph {
 
         for (he_id, he) in &self.halfedges {
             if he.is_boundary() {
-                let start_vertex = he.start_vertex(self);
+                let start_vertex = he.start_vertex(self).unwrap();
                 let end_vertex = he.end_vertex;
 
                 let start = self.positions[start_vertex];
@@ -592,7 +591,7 @@ impl MeshGraph {
         vectors.clear();
 
         for (he_id, he) in &self.halfedges {
-            let twin = he.twin();
+            let twin = he.twin.unwrap();
 
             let (he_start, he_end) = he_to_pos[&he_id];
             let (tw_start, tw_end) = he_to_pos[&twin];
