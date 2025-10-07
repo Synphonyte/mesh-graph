@@ -3,10 +3,11 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2025-10-07
 
 - Made the mesh graph API a lot less prone to panic at the cost of some `Option` return types.
 - Added `CircularHalfedgesIterator`.
+- Updated dependencies
 
 ## [0.2.2] - 2025-07-22
 
