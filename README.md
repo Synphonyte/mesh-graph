@@ -8,19 +8,17 @@
 <!-- cargo-rdme start -->
 
 MeshGraph is a halfedge data structure for representing triangle meshes.
-It uses parry3d's Qbvh to implement some of parry3d's spatial queries.
-It also uses slotmap to manage the graph nodes.
 
 This is heavily inspired by [SMesh](https://github.com/Bendzae/SMesh) and
 [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh).
 
 ### Features
 
-- Fast spatial queries using parry3d's Qbvh
+- Fast spatial queries using parry3d's Bvh
 - High performance using slotmap
 - Easy integration with Bevy game engine using the `bevy` Cargo feature
 - Good debugging using `rerun` Cargo feature to enable the Rerun integration
-- Nice documentation with illustrations
+- Best in class documentation with illustrations
 
 ### Usage
 

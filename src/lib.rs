@@ -1,6 +1,4 @@
 //! MeshGraph is a halfedge data structure for representing triangle meshes.
-//! It uses parry3d's Bvh to implement some of parry3d's spatial queries.
-//! It also uses slotmap to manage the graph nodes.
 //!
 //! This is heavily inspired by [SMesh](https://github.com/Bendzae/SMesh) and
 //! [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh).
@@ -11,7 +9,7 @@
 //! - High performance using slotmap
 //! - Easy integration with Bevy game engine using the `bevy` Cargo feature
 //! - Good debugging using `rerun` Cargo feature to enable the Rerun integration
-//! - Nice documentation with illustrations
+//! - Best in class documentation with illustrations
 //!
 //! ## Usage
 //!
@@ -334,8 +332,8 @@ impl MeshGraph {
     pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
         use itertools::Itertools;
 
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         RR.log(
             format!("meshgraph/selection/{name}/points"),
@@ -380,8 +378,8 @@ impl MeshGraph {
     }
 
     pub fn log_vert_rerun(&self, name: &str, vert: VertexId) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let pos = self.positions[vert];
 
@@ -393,8 +391,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let he = self.halfedges[halfedge];
 
@@ -414,8 +412,8 @@ impl MeshGraph {
     }
 
     fn log_hes_rerun_with_name(&self, name: String, halfedges: &[HalfedgeId]) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let mut origins = Vec::with_capacity(halfedges.len());
         let mut vectors = Vec::with_capacity(halfedges.len());
@@ -440,8 +438,8 @@ impl MeshGraph {
     pub fn log_face_rerun(&self, name: &str, face: FaceId) {
         use itertools::Itertools;
 
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let mut origins = Vec::with_capacity(3);
         let mut vectors = Vec::with_capacity(3);
@@ -480,8 +478,8 @@ impl MeshGraph {
     }
 
     pub fn log_rerun(&self) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
         RR.log(
