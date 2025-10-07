@@ -26,8 +26,7 @@ impl MeshGraph {
                 .halfedges
                 .get(he)
                 .or_else(error_none!("Halfedge not found"))
-                .map(|he| he.twin.or_else(error_none!("Twin missing")))
-                .flatten();
+                .and_then(|he| he.twin.or_else(error_none!("Twin missing")));
             let twin_already_in = twin
                 .map(|twin| dedup_halfedges.contains(&twin))
                 .unwrap_or_default();
@@ -626,6 +625,6 @@ mod test {
     fn test_collapse() {
         let mut mesh_graph = MeshGraph::new();
 
-        mesh_graph.log_rerun();
+        // mesh_graph.log_rerun();
     }
 }

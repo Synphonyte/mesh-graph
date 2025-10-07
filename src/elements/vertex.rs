@@ -32,8 +32,7 @@ impl Vertex {
                     .or_else(error_none!("Vertex has no outgoing halfedge"))?,
             )
             .or_else(error_none!("Outgoing halfedge not found"))
-            .map(|halfedge| halfedge.twin.or_else(error_none!("Twin is None")))
-            .flatten()
+            .and_then(|halfedge| halfedge.twin.or_else(error_none!("Twin is None")))
     }
 
     /// Returns all halfedges that point away from this vertex.

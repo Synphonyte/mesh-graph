@@ -54,16 +54,13 @@ impl Halfedge {
     #[instrument(skip(mesh_graph))]
     pub fn prev(&self, mesh_graph: &MeshGraph) -> Option<HalfedgeId> {
         // TODO : this only works for triangle meshes
-        self.next
-            .map(|next_id| {
-                mesh_graph
-                    .halfedges
-                    .get(next_id)
-                    .or_else(error_none!("Next halfedge not found"))
-                    .map(|h| h.next)
-                    .flatten()
-            })
-            .flatten()
+        self.next.and_then(|next_id| {
+            mesh_graph
+                .halfedges
+                .get(next_id)
+                .or_else(error_none!("Next halfedge not found"))
+                .and_then(|h| h.next)
+        })
     }
 
     /// In counter-clockwise order next halfedge that has the same start vertex
@@ -71,16 +68,13 @@ impl Halfedge {
     /// <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/halfedge/ccw_rotated_neighbour.svg" alt="Connectivity" style="max-width: 28em" />
     #[instrument(skip(mesh_graph))]
     pub fn ccw_rotated_neighbour(&self, mesh_graph: &MeshGraph) -> Option<HalfedgeId> {
-        self.prev(mesh_graph)
-            .map(|prev| {
-                mesh_graph
-                    .halfedges
-                    .get(prev)
-                    .or_else(error_none!("Previous halfedge not found"))
-                    .map(|h| h.twin.or_else(error_none!("Twin missing")))
-                    .flatten()
-            })
-            .flatten()
+        self.prev(mesh_graph).and_then(|prev| {
+            mesh_graph
+                .halfedges
+                .get(prev)
+                .or_else(error_none!("Previous halfedge not found"))
+                .and_then(|h| h.twin.or_else(error_none!("Twin missing")))
+        })
     }
 
     /// In clockwise order next halfedge that has the same start vertex
@@ -91,8 +85,7 @@ impl Halfedge {
         mesh_graph
             .halfedges
             .get(self.twin.or_else(error_none!("Twin missing"))?)
-            .map(|h| h.next)
-            .flatten()
+            .and_then(|h| h.next)
     }
 
     /// Length of the halfedge squared.
