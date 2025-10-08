@@ -145,15 +145,6 @@ impl MeshGraph {
         // insert new face
         let new_face_id = self.insert_face(new_halfedge_id);
 
-        // checked above
-        let face = self.faces[face_id];
-        // freshly inserted
-        let new_face = self.faces[new_face_id];
-        self.bvh
-            .insert_or_update_partially(face.aabb(self), face.index, 0.0);
-        self.bvh
-            .insert_or_update_partially(new_face.aabb(self), new_face.index, 0.0);
-
         let new_twin = self.insert_halfedge(center_v);
 
         self.halfedges[new_twin].next = Some(new_halfedge_id);
@@ -170,6 +161,15 @@ impl MeshGraph {
         self.halfedges[next_he].face = Some(new_face_id);
 
         self.halfedges[existing_halfedge_id].end_vertex = center_v;
+
+        // checked above
+        let face = self.faces[face_id];
+        // freshly inserted
+        let new_face = self.faces[new_face_id];
+        self.bvh
+            .insert_or_update_partially(face.aabb(self), face.index, 0.0);
+        self.bvh
+            .insert_or_update_partially(new_face.aabb(self), new_face.index, 0.0);
 
         #[cfg(feature = "rerun")]
         {

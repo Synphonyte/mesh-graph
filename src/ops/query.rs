@@ -14,6 +14,7 @@ use crate::{Face, MeshGraph, error_none, utils::unwrap_or_return};
 
 impl PointQuery for MeshGraph {
     #[inline]
+    #[instrument(skip(self))]
     fn project_local_point(&self, point: &Point<f32>, solid: bool) -> PointProjection {
         self.project_local_point_and_get_location(point, solid).0
     }
@@ -30,6 +31,7 @@ impl PointQueryWithLocation for MeshGraph {
     type Location = Face;
 
     #[inline]
+    #[instrument(skip(self))]
     fn project_local_point_and_get_location(
         &self,
         point: &Point<f32>,
@@ -40,6 +42,7 @@ impl PointQueryWithLocation for MeshGraph {
     }
 
     /// Projects a point on `self`, with a maximum projection distance.
+    #[instrument(skip(self))]
     fn project_local_point_and_get_location_with_max_dist(
         &self,
         point: &Point<f32>,
@@ -53,28 +56,29 @@ impl PointQueryWithLocation for MeshGraph {
 
         let face_id = self
             .index_to_face_id
-            .get(shape_id as usize)
+            .get(&shape_id)
             .or_else(error_none!("Face not found"))?;
         let face = self
             .faces
             .get(*face_id)
             .or_else(error_none!("Face not found"))?;
 
-        let vertex_normals = self.vertex_normals.as_ref()?;
-        let he = self
-            .halfedges
-            .get(face.halfedge)
-            .or_else(error_none!("Halfedge not found"))?;
-        let pseudo_normal = vertex_normals
-            .get(he.end_vertex)
-            .or_else(error_none!("Vertex normal not found"))?;
+        if let Some(vertex_normals) = self.vertex_normals.as_ref() {
+            let he = self
+                .halfedges
+                .get(face.halfedge)
+                .or_else(error_none!("Halfedge not found"))?;
+            let pseudo_normal = vertex_normals
+                .get(he.end_vertex)
+                .or_else(error_none!("Vertex normal not found"))?;
 
-        let dpt = point - proj.point;
-        proj.is_inside = dpt.dot(&Vector::new(
-            pseudo_normal.x,
-            pseudo_normal.y,
-            pseudo_normal.z,
-        )) <= 0.0;
+            let dpt = point - proj.point;
+            proj.is_inside = dpt.dot(&Vector::new(
+                pseudo_normal.x,
+                pseudo_normal.y,
+                pseudo_normal.z,
+            )) <= 0.0;
+        }
 
         Some((proj, *face))
     }
@@ -82,6 +86,7 @@ impl PointQueryWithLocation for MeshGraph {
 
 impl RayCast for MeshGraph {
     #[inline]
+    #[instrument(skip(self))]
     fn cast_local_ray(&self, ray: &Ray, max_time_of_impact: f32, solid: bool) -> Option<f32> {
         CompositeShapeRef(self)
             .cast_local_ray(ray, max_time_of_impact, solid)
@@ -89,6 +94,7 @@ impl RayCast for MeshGraph {
     }
 
     #[inline]
+    #[instrument(skip(self))]
     fn cast_local_ray_and_get_normal(
         &self,
         ray: &Ray,
@@ -102,6 +108,7 @@ impl RayCast for MeshGraph {
 }
 
 impl CompositeShape for MeshGraph {
+    #[instrument(skip(self, f))]
     fn map_part_at(
         &self,
         shape_id: u32,
@@ -121,6 +128,7 @@ impl TypedCompositeShape for MeshGraph {
     type PartShape = Triangle;
     type PartNormalConstraints = ();
 
+    #[instrument(skip(self, f))]
     fn map_typed_part_at<T>(
         &self,
         shape_id: u32,
@@ -135,6 +143,7 @@ impl TypedCompositeShape for MeshGraph {
         Some(f(None, &tri, pseudo_normals.as_ref()))
     }
 
+    #[instrument(skip(self, f))]
     fn map_untyped_part_at<T>(
         &self,
         shape_id: u32,
@@ -150,7 +159,7 @@ impl MeshGraph {
     #[instrument(skip(self))]
     pub fn triangle(&self, shape_id: u32) -> Triangle {
         let face_id = unwrap_or_return!(
-            self.index_to_face_id.get(shape_id as usize),
+            self.index_to_face_id.get(&shape_id),
             "Index not found",
             Triangle::default()
         );

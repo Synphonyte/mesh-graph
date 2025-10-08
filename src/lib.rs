@@ -51,6 +51,8 @@ mod ops;
 mod plane_slice;
 pub mod primitives;
 mod selection;
+#[cfg(feature = "serde")]
+mod serialize;
 pub mod utils;
 
 pub use elements::*;
@@ -76,6 +78,10 @@ lazy_static::lazy_static! {
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "bevy", derive(bevy::prelude::Component))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(from = "crate::serialize::MeshGraphIntermediate")
+)]
 pub struct MeshGraph {
     /// Acceleration structure for fast spatial queries. Uses parry3d's Bvh to implement some of parry3d's spatial queries.
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -85,7 +91,10 @@ pub struct MeshGraph {
     pub bvh_workspace: BvhWorkspace,
     /// Used to map indices stored in the BVH to face IDs.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub index_to_face_id: Vec<FaceId>,
+    pub index_to_face_id: HashMap<u32, FaceId>,
+    /// Used to compute the next index for a new face
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub next_index: u32,
 
     /// Maps vertex IDs to their corresponding graph node
     pub vertices: SlotMap<VertexId, Vertex>,
@@ -161,10 +170,11 @@ impl MeshGraph {
     /// Create a triangle mesh graph from vertex positions and face indices.
     /// Every chunk of three indices represents a triangle.
     pub fn indexed_triangles(vertex_positions: &[Vec3], face_indices: &[usize]) -> Self {
-        let mut graph = Self {
+        let mut mesh_graph = Self {
             bvh: Bvh::new(),
             bvh_workspace: BvhWorkspace::default(),
-            index_to_face_id: Vec::with_capacity(face_indices.len() / 3),
+            index_to_face_id: HashMap::with_capacity(face_indices.len() / 3),
+            next_index: 0,
 
             vertices: SlotMap::with_capacity_and_key(vertex_positions.len()),
             halfedges: SlotMap::with_capacity_and_key(face_indices.len()),
@@ -177,7 +187,7 @@ impl MeshGraph {
         let mut vertex_ids = Vec::with_capacity(vertex_positions.len());
 
         for pos in vertex_positions {
-            vertex_ids.push(graph.insert_vertex(*pos));
+            vertex_ids.push(mesh_graph.insert_vertex(*pos));
         }
 
         let mut start_end_vertex_to_halfedge =
@@ -193,9 +203,13 @@ impl MeshGraph {
                 RR.log(
                     "meshgraph/construct/zero_face",
                     &rerun::Points3D::new(
-                        [graph.positions[a], graph.positions[b], graph.positions[c]]
-                            .iter()
-                            .map(crate::utils::vec3_array),
+                        [
+                            mesh_graph.positions[a],
+                            mesh_graph.positions[b],
+                            mesh_graph.positions[c],
+                        ]
+                        .iter()
+                        .map(crate::utils::vec3_array),
                     ),
                 )
                 .unwrap();
@@ -203,56 +217,56 @@ impl MeshGraph {
                 continue;
             }
 
-            let he_a_id = graph.insert_halfedge(b);
-            let he_b_id = graph.insert_halfedge(c);
-            let he_c_id = graph.insert_halfedge(a);
+            let he_a_id = mesh_graph.insert_halfedge(b);
+            let he_b_id = mesh_graph.insert_halfedge(c);
+            let he_c_id = mesh_graph.insert_halfedge(a);
 
             start_end_vertex_to_halfedge.insert((b, c), he_b_id);
             start_end_vertex_to_halfedge.insert((c, a), he_c_id);
 
-            let face_id = graph.insert_face(he_a_id);
+            let face_id = mesh_graph.insert_face(he_a_id);
 
-            let he_a = &mut graph.halfedges[he_a_id];
+            let he_a = &mut mesh_graph.halfedges[he_a_id];
             he_a.next = Some(he_b_id);
             he_a.face = Some(face_id);
 
             if let Some(twin_a_id) = start_end_vertex_to_halfedge.get(&(b, a)) {
                 he_a.twin = Some(*twin_a_id);
-                graph.halfedges[*twin_a_id].twin = Some(he_a_id);
+                mesh_graph.halfedges[*twin_a_id].twin = Some(he_a_id);
             } else {
                 start_end_vertex_to_halfedge.insert((a, b), he_a_id);
             }
 
-            let he_b = &mut graph.halfedges[he_b_id];
+            let he_b = &mut mesh_graph.halfedges[he_b_id];
             he_b.next = Some(he_c_id);
             he_b.face = Some(face_id);
 
             if let Some(twin_b_id) = start_end_vertex_to_halfedge.get(&(c, b)) {
                 he_b.twin = Some(*twin_b_id);
-                graph.halfedges[*twin_b_id].twin = Some(he_b_id);
+                mesh_graph.halfedges[*twin_b_id].twin = Some(he_b_id);
             } else {
                 start_end_vertex_to_halfedge.insert((b, c), he_b_id);
             }
 
-            let he_c = &mut graph.halfedges[he_c_id];
+            let he_c = &mut mesh_graph.halfedges[he_c_id];
             he_c.next = Some(he_a_id);
             he_c.face = Some(face_id);
 
             if let Some(twin_c_id) = start_end_vertex_to_halfedge.get(&(a, c)) {
                 he_c.twin = Some(*twin_c_id);
-                graph.halfedges[*twin_c_id].twin = Some(he_c_id);
+                mesh_graph.halfedges[*twin_c_id].twin = Some(he_c_id);
             } else {
                 start_end_vertex_to_halfedge.insert((c, a), he_c_id);
             }
 
-            graph.vertices[a].outgoing_halfedge = Some(he_a_id);
-            graph.vertices[b].outgoing_halfedge = Some(he_b_id);
-            graph.vertices[c].outgoing_halfedge = Some(he_c_id);
+            mesh_graph.vertices[a].outgoing_halfedge = Some(he_a_id);
+            mesh_graph.vertices[b].outgoing_halfedge = Some(he_b_id);
+            mesh_graph.vertices[c].outgoing_halfedge = Some(he_c_id);
         }
 
-        graph.refit_bvh();
+        mesh_graph.rebuild_bvh();
 
-        graph
+        mesh_graph
     }
 
     /// Computes the vertex normals by averaging over the computed face normals
@@ -310,20 +324,20 @@ impl MeshGraph {
     }
 
     /// Recomputes the bounding boxes of the BVH. This is necessary when the mesh is modified.
-    ///
-    /// It does not no change the topology of the BVH. Call `rebalance_bvh` to to that.
     #[inline]
     pub fn refit_bvh(&mut self) {
-        self.recount_faces();
         self.bvh.refit(&mut self.bvh_workspace);
     }
 
-    fn recount_faces(&mut self) {
-        self.index_to_face_id.clear();
-        for (id, face) in &mut self.faces {
-            face.index = self.index_to_face_id.len() as u32;
-            self.index_to_face_id.push(id);
+    /// Rebuilds the BVH from scratch
+    #[inline]
+    pub fn rebuild_bvh(&mut self) {
+        for face in self.faces.values() {
+            self.bvh
+                .insert_or_update_partially(face.aabb(self), face.index, 0.0);
         }
+        self.bvh
+            .rebuild(&mut self.bvh_workspace, Default::default());
     }
 }
 

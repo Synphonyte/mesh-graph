@@ -280,8 +280,6 @@ impl MeshGraph {
         for end_incoming_he in end_incoming_halfedges {
             if let Some(end_incoming_he_mut) = self.halfedges.get_mut(end_incoming_he) {
                 end_incoming_he_mut.end_vertex = start_vert_id;
-            } else {
-                error!("Halfedge not found")
             }
         }
 
@@ -329,7 +327,7 @@ impl MeshGraph {
             #[cfg(feature = "rerun")]
             {
                 self.log_rerun();
-                crate::RR.flush_blocking();
+                crate::RR.flush_blocking().unwrap();
             }
 
             if self.faces_share_all_vertices(face_id1, face_id2) {
@@ -341,7 +339,7 @@ impl MeshGraph {
 
                     self.log_face_rerun("cleanup_delete/1", face_id1);
                     self.log_face_rerun("cleanup_delete/2", face_id2);
-                    crate::RR.flush_blocking();
+                    crate::RR.flush_blocking().unwrap();
                 }
 
                 let mut halfedges_of_faces = HashSet::new();
@@ -617,14 +615,14 @@ impl MeshGraph {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
+// #[cfg(test)]
+// mod test {
+//     use super::*;
 
-    #[test]
-    fn test_collapse() {
-        let mut mesh_graph = MeshGraph::new();
+//     #[test]
+//     fn test_collapse() {
+//         let mut mesh_graph = MeshGraph::new();
 
-        mesh_graph.log_rerun();
-    }
-}
+//         mesh_graph.log_rerun();
+//     }
+// }

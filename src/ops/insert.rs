@@ -30,11 +30,13 @@ impl MeshGraph {
     pub fn insert_face(&mut self, halfedge: HalfedgeId) -> FaceId {
         let face_id = self.faces.insert_with_key(|id| Face {
             halfedge,
-            index: self.index_to_face_id.len() as u32,
+            index: self.next_index,
             id,
         });
 
-        self.index_to_face_id.push(face_id);
+        self.index_to_face_id.insert(self.next_index, face_id);
+
+        self.next_index += 1;
 
         face_id
     }
