@@ -1,7 +1,7 @@
 use bevy::{
     asset::RenderAssetUsages,
     prelude::*,
-    render::mesh::{Indices, PrimitiveTopology},
+    mesh::{Indices, PrimitiveTopology},
 };
 
 use crate::MeshGraph;
