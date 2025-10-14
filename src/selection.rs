@@ -1,5 +1,5 @@
 use hashbrown::HashSet;
-use tracing::error;
+use tracing::{error, instrument};
 
 use super::{FaceId, HalfedgeId, MeshGraph, VertexId};
 
@@ -54,6 +54,29 @@ impl Selection {
     }
 
     // TODO : also resolve to faces
+
+    #[instrument(skip(mesh_graph))]
+    /// Grows the selection by neighboring vertices. It returns the new vertices.
+    pub fn grow(&mut self, mesh_graph: &MeshGraph) -> HashSet<VertexId> {
+        let existing_verts = self.resolve_to_vertices(mesh_graph);
+
+        let mut new_verts = HashSet::new();
+
+        for vert_id in &existing_verts {
+            if let Some(vert) = mesh_graph.vertices.get(*vert_id) {
+                for neighbor in vert.neighbours(mesh_graph) {
+                    if !existing_verts.contains(&neighbor) {
+                        new_verts.insert(neighbor);
+                        self.insert(neighbor);
+                    }
+                }
+            } else {
+                error!("Vertex not found");
+            }
+        }
+
+        new_verts
+    }
 }
 
 pub trait SelectionOps<T> {

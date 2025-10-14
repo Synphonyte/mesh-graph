@@ -3,18 +3,18 @@ name = "mesh-graph"
 version = "0.3.1"
 edition = "2024"
 authors = ["Marc-Stefan Cassola"]
-categories = ["graphics", "algorithms", "mathematics"]
+categories = ["algorithms", "graphics", "mathematics"]
 description = "Fast halfedge triangle mesh graph in pure Rust "
 exclude = ["examples/", "tests/"]
-keywords = ["3D", "halfedge-graph", "real-time", "mesh", "topology"]
+keywords = ["3D", "halfedge-graph", "mesh", "real-time", "topology"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/Synphonyte/mesh-graph"
 
 [dependencies]
 anyhow = "1"
-bevy = { version = "0.17.2", optional = true }
-cfg-if = { version = "1.0.0", optional = true }
+bevy = { version = "0.17", optional = true }
+cfg-if = { version = "1", optional = true }
 derive_more = { version = "2", features = ["deref", "deref_mut"] }
 glam = "0.30"
 hashbrown = "0.16.0"
@@ -29,5 +29,5 @@ tracing = "0.1.41"
 [features]
 default = []
 bevy = ["dep:bevy"]
-rerun = ["dep:rerun", "dep:lazy_static", "dep:cfg-if"]
-serde = ["dep:serde", "slotmap/serde", "glam/serde", "hashbrown/serde"]
+rerun = ["dep:cfg-if", "dep:lazy_static", "dep:rerun"]
+serde = ["dep:serde", "glam/serde", "hashbrown/serde", "slotmap/serde"]

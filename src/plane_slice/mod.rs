@@ -154,7 +154,7 @@ fn intersect_triangle_with_xy_plane(
     }
 }
 
-fn compute_transform_from_plane_into_xy(plane_normal: Vec3, plane_constant: f32) -> Mat4 {
+pub fn compute_transform_from_plane_into_xy(plane_normal: Vec3, plane_constant: f32) -> Mat4 {
     // Create an orthonormal basis where n is the Z-axis
     // Find a vector perpendicular to n
     let up = if plane_normal.x.abs() < 0.9 {
