@@ -1,6 +1,6 @@
 use tracing::instrument;
 
-use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
+use crate::{error_none, FaceId, HalfedgeId, MeshGraph, VertexId};
 
 impl MeshGraph {
     /// Test if two faces have at least one halfedge in common.
@@ -171,7 +171,57 @@ impl MeshGraph {
         .then_some(())
     }
 
-    pub fn make_outgoing_halfedge_boundary_if_possible(&mut self, _vertex_id: VertexId) {
-        todo!()
+    #[inline]
+    #[instrument(skip(self))]
+    pub fn make_outgoing_halfedge_boundary_if_possible(&mut self, vertex_id: VertexId) {
+        let _ = self.make_outgoing_halfedge_boundary_if_possible_inner(vertex_id);
+    }
+
+    fn make_outgoing_halfedge_boundary_if_possible_inner(
+        &mut self,
+        vertex_id: VertexId,
+    ) -> Option<()> {
+        let vertex = self
+            .vertices
+            .get(vertex_id)
+            .or_else(error_none!("Vertex not found"))?;
+
+        let he = self
+            .halfedges
+            .get(
+                vertex
+                    .outgoing_halfedge
+                    .or_else(error_none!("Vertex should have a outgoing halfedge"))?,
+            )
+            .or_else(error_none!("Halfedge not found"))?;
+
+        let face = self
+            .faces
+            .get(
+                he.face
+                    .or_else(error_none!("Face should be already specified"))?,
+            )
+            .or_else(error_none!("Face not found"))?;
+
+        let boundary_he_id = face.halfedges(self).find_map(|he_id| {
+            let he = self
+                .halfedges
+                .get(he_id)
+                .or_else(error_none!("Halfedge not found"))?;
+            if he.is_boundary() {
+                Some(he_id)
+            } else {
+                None
+            }
+        });
+
+        if boundary_he_id.is_some() {
+            self.vertices
+                .get_mut(vertex_id)
+                .or_else(error_none!("Vertex not found"))?
+                .outgoing_halfedge = boundary_he_id;
+        }
+
+        Some(())
     }
 }
