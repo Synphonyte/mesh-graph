@@ -184,14 +184,13 @@ impl MeshGraph {
             vertex_normals: None,
         };
 
+        let mut vertex_to_outgoing_halfedges = SecondaryMap::with_capacity(vertex_positions.len());
+
         let mut vertex_ids = Vec::with_capacity(vertex_positions.len());
 
         for pos in vertex_positions {
             vertex_ids.push(mesh_graph.insert_vertex(*pos));
         }
-
-        let mut start_end_vertex_to_halfedge =
-            HashMap::<(VertexId, VertexId), HalfedgeId>::default();
 
         for chunk in face_indices.chunks_exact(3) {
             let a = vertex_ids[chunk[0]];
@@ -217,53 +216,25 @@ impl MeshGraph {
                 continue;
             }
 
-            let he_a_id = mesh_graph.insert_halfedge(b);
-            let he_b_id = mesh_graph.insert_halfedge(c);
-            let he_c_id = mesh_graph.insert_halfedge(a);
+            let (he_a_id, _) =
+                mesh_graph.insert_or_get_edge(a, b, &mut vertex_to_outgoing_halfedges);
+            let (he_b_id, _) =
+                mesh_graph.insert_or_get_edge(b, c, &mut vertex_to_outgoing_halfedges);
+            let (he_c_id, _) =
+                mesh_graph.insert_or_get_edge(c, a, &mut vertex_to_outgoing_halfedges);
 
-            start_end_vertex_to_halfedge.insert((b, c), he_b_id);
-            start_end_vertex_to_halfedge.insert((c, a), he_c_id);
+            let _face_id = mesh_graph.insert_face(he_a_id, he_b_id, he_c_id);
 
-            let face_id = mesh_graph.insert_face(he_a_id);
-
-            let he_a = &mut mesh_graph.halfedges[he_a_id];
-            he_a.next = Some(he_b_id);
-            he_a.face = Some(face_id);
-
-            if let Some(twin_a_id) = start_end_vertex_to_halfedge.get(&(b, a)) {
-                he_a.twin = Some(*twin_a_id);
-                mesh_graph.halfedges[*twin_a_id].twin = Some(he_a_id);
-            } else {
-                start_end_vertex_to_halfedge.insert((a, b), he_a_id);
-            }
-
-            let he_b = &mut mesh_graph.halfedges[he_b_id];
-            he_b.next = Some(he_c_id);
-            he_b.face = Some(face_id);
-
-            if let Some(twin_b_id) = start_end_vertex_to_halfedge.get(&(c, b)) {
-                he_b.twin = Some(*twin_b_id);
-                mesh_graph.halfedges[*twin_b_id].twin = Some(he_b_id);
-            } else {
-                start_end_vertex_to_halfedge.insert((b, c), he_b_id);
-            }
-
-            let he_c = &mut mesh_graph.halfedges[he_c_id];
-            he_c.next = Some(he_a_id);
-            he_c.face = Some(face_id);
-
-            if let Some(twin_c_id) = start_end_vertex_to_halfedge.get(&(a, c)) {
-                he_c.twin = Some(*twin_c_id);
-                mesh_graph.halfedges[*twin_c_id].twin = Some(he_c_id);
-            } else {
-                start_end_vertex_to_halfedge.insert((c, a), he_c_id);
-            }
-
-            mesh_graph.vertices[a].outgoing_halfedge = Some(he_a_id);
-            mesh_graph.vertices[b].outgoing_halfedge = Some(he_b_id);
-            mesh_graph.vertices[c].outgoing_halfedge = Some(he_c_id);
+            // #[cfg(feature = "rerun")]
+            // {
+            //     mesh_graph.log_hes_rerun(
+            //         "indexed_triangles/halfedges",
+            //         &mesh_graph.halfedges.keys().collect::<Vec<_>>(),
+            //     );
+            // }
         }
 
+        mesh_graph.make_all_outgoing_halfedges_boundary_if_possible();
         mesh_graph.rebuild_bvh();
 
         mesh_graph
@@ -374,7 +345,6 @@ impl MeshGraph {
 
                 let center = face
                     .vertices(self)
-                    .into_iter()
                     .map(|v_id| self.positions[v_id])
                     .reduce(|acc, p| acc + p)
                     .unwrap()
@@ -466,7 +436,6 @@ impl MeshGraph {
 
         let pos = face
             .vertices(self)
-            .into_iter()
             .zip(pos)
             .map(|(v, p)| (v, center * 0.1 + p * 0.9))
             .collect::<HashMap<_, _>>();
@@ -548,7 +517,6 @@ impl MeshGraph {
 
             let pos = face
                 .vertices(self)
-                .into_iter()
                 .zip(pos)
                 .map(|(v, p)| (v, center * 0.1 + p * 0.9))
                 .collect::<HashMap<_, _>>();

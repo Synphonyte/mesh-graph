@@ -11,8 +11,8 @@ use crate::{
 impl MeshGraph {
     /// Collapses edges until all edges have a length above the minimum length.
     ///
-    /// This will schedule necessary updates to the QBVH but you have to call
-    /// `refit()` and maybe `rebalance()` after the operation.
+    /// This will schedule necessary updates to the BVH but you have to call
+    /// `refit()` after the operation.
     #[instrument(skip(self))]
     pub fn collapse_until_edges_above_min_length(
         &mut self,
@@ -46,18 +46,24 @@ impl MeshGraph {
 
         while !halfedges_to_collapse.is_empty() {
             let mut min_len = f32::MAX;
-            let mut min_he = HalfedgeId::default();
+            let mut min_he_id = None;
 
-            for (&he, &len) in &halfedges_to_collapse {
-                if len < min_len {
+            for (&he_id, &len) in &halfedges_to_collapse {
+                if len < min_len && self.can_collapse_edge(he_id, min_length_squared) {
                     min_len = len;
-                    min_he = he;
+                    min_he_id = Some(he_id);
                 }
             }
 
-            let start_vertex = self.halfedges[min_he].start_vertex(self);
+            if min_he_id.is_none() {
+                // couldn't find a valid halfedge to collapse
+                break;
+            }
+            let min_he_id = min_he_id.unwrap();
 
-            let (verts, halfedges, faces) = self.collapse_edge(min_he);
+            let start_vertex = self.halfedges[min_he_id].start_vertex(self);
+
+            let (verts, halfedges, faces) = self.collapse_edge(min_he_id);
 
             #[cfg(feature = "rerun")]
             {
@@ -73,7 +79,7 @@ impl MeshGraph {
                 self.log_rerun();
             }
 
-            halfedges_to_collapse.remove(&min_he);
+            halfedges_to_collapse.remove(&min_he_id);
 
             for vert in verts {
                 selection.remove(vert);
@@ -133,6 +139,174 @@ impl MeshGraph {
                 self.log_rerun();
             }
         }
+    }
+
+    #[inline]
+    fn can_collapse_edge(&mut self, halfedge_id: HalfedgeId, min_length_squared: f32) -> bool {
+        self.can_collapse_edge_inner(halfedge_id, min_length_squared)
+            .is_some()
+    }
+
+    #[instrument(skip(self))]
+    fn can_collapse_edge_inner(
+        &mut self,
+        halfedge_id: HalfedgeId,
+        min_length_squared: f32,
+    ) -> Option<()> {
+        // TODO : consider boundary edge
+        //
+        //          end_vertex
+        //  .            .            .
+        // ( ) ◀─────── ( ) ───────▶ ( )
+        //  '      3     '     2      '
+        //            ╱ ▲ │ ╲
+        //          4╱  │ │  ╲1
+        //          ╱   │ │0  ╲
+        //         ╱    │ │    ╲
+        //        ▼     │ │     ▼
+        //       .      │ │      .
+        //      ( )   he│ │twin ( )
+        //       '      │ │      '
+        //        ▲     │ │     ▲
+        //         ╲    │ │    ╱
+        //          ╲  0│ │   ╱
+        //          1╲  │ │  ╱4
+        //            ╲ │ ▼ ╱
+        //  .      2     .     3      .
+        // ( ) ◀─────── ( ) ───────▶ ( )
+        //  '            '            '
+        //         start_vertex
+
+        let he = self
+            .halfedges
+            .get(halfedge_id)
+            .or_else(error_none!("Halfedge not found"))?;
+
+        let start_vertex_id = he.start_vertex(self)?;
+        self.vertices
+            .get_mut(start_vertex_id)
+            .or_else(error_none!("Start vertex not found"))?
+            .outgoing_halfedge = Some(halfedge_id);
+
+        // just made sure that this exists
+        let start_outgoing_vertex_ids = self.vertices[start_vertex_id]
+            .outgoing_halfedges(self)
+            .skip(2)
+            .filter_map(|he_id| {
+                Some(
+                    self.halfedges
+                        .get(he_id)
+                        .or_else(error_none!("Halfedge not found"))?
+                        .end_vertex,
+                )
+            })
+            .collect_vec();
+
+        let twin_id = he.twin.or_else(error_none!("Twin halfedge not found"))?;
+
+        let end_vertex_id = he.end_vertex;
+        self.vertices
+            .get_mut(end_vertex_id)
+            .or_else(error_none!("End vertex not found"))?
+            .outgoing_halfedge = Some(twin_id);
+
+        // just made sure that this exists
+        let end_outgoing_vertex_ids = self.vertices[end_vertex_id]
+            .outgoing_halfedges(self)
+            .skip(2)
+            .filter_map(|he_id| {
+                Some(
+                    self.halfedges
+                        .get(he_id)
+                        .or_else(error_none!("Halfedge not found"))?
+                        .end_vertex,
+                )
+            })
+            .collect_vec();
+
+        let neighbours = start_outgoing_vertex_ids
+            .into_iter()
+            .chain(end_outgoing_vertex_ids)
+            .collect_vec();
+
+        if neighbours.is_empty() {
+            error!("Vertex has no neighbours");
+            return None;
+        }
+
+        let start_pos = self
+            .positions
+            .get(start_vertex_id)
+            .or_else(error_none!("Start position not found"))?;
+
+        let end_pos = self
+            .positions
+            .get(end_vertex_id)
+            .or_else(error_none!("End position not found"))?;
+
+        let center = (start_pos + end_pos) * 0.5;
+
+        let mut prev_diff = (self
+            .positions
+            .get(neighbours[neighbours.len() - 1])
+            .or_else(error_none!("Last neighbour position not found"))?
+            - center)
+            .normalize();
+
+        let mut normal = Vec3::ZERO;
+
+        if let Some(face_id) = he.face {
+            let face = self
+                .faces
+                .get(face_id)
+                .or_else(error_none!("Face not found"))?;
+            normal += face.normal(self)?;
+        }
+
+        if let Some(face_id) = self
+            .halfedges
+            .get(twin_id)
+            .or_else(error_none!("Face not found"))?
+            .face
+        {
+            let face = self
+                .faces
+                .get(face_id)
+                .or_else(error_none!("Face not found"))?;
+            normal += face.normal(self)?;
+        }
+
+        if normal == Vec3::ZERO {
+            error!("Halfedge as no adjacent faces");
+            return None;
+        }
+
+        normal = normal.normalize();
+
+        // give a bit of leeway to the length of the neighbour edge
+        let max_length_squared = min_length_squared * 5.0;
+
+        for neighbour_id in neighbours {
+            let diff = (self
+                .positions
+                .get(neighbour_id)
+                .or_else(error_none!("Neighbour position not found"))?
+                - center);
+
+            if diff.length_squared() > max_length_squared {
+                // neighbour edge would be too long
+                return None;
+            }
+
+            if diff.normalize().cross(prev_diff).dot(normal) < 0.1 {
+                // degenerate or reversed triangle
+                return None;
+            }
+
+            prev_diff = diff;
+        }
+
+        Some(())
     }
 
     /// Collapse an edge in the mesh graph.
@@ -201,30 +375,7 @@ impl MeshGraph {
 
         let center_pos = (start_pos + end_pos) * 0.5;
 
-        let mut normal = None;
         if !he.is_boundary() {
-            let next_id = unwrap_or_return!(
-                he.next,
-                "Next halfedge not found",
-                (removed_vertices, removed_halfedges, removed_faces)
-            );
-            let next = unwrap_or_return!(
-                self.halfedges.get(next_id),
-                "Halfedge not found",
-                (removed_vertices, removed_halfedges, removed_faces)
-            );
-            let third_pos = unwrap_or_return!(
-                self.positions.get(next.end_vertex),
-                "Third position not found",
-                (removed_vertices, removed_halfedges, removed_faces)
-            );
-
-            normal = Some(
-                (start_pos - end_pos)
-                    .cross(start_pos - third_pos)
-                    .normalize(),
-            );
-
             let (face_id, halfedges) = unwrap_or_return!(
                 self.remove_halfedge_face(halfedge_id),
                 "Could not remove face",
@@ -247,25 +398,6 @@ impl MeshGraph {
         );
 
         if !twin.is_boundary() {
-            if normal.is_none() {
-                let twin_id = unwrap_or_return!(
-                    twin.next,
-                    "Twin missing",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                );
-                let twin = unwrap_or_return!(
-                    self.halfedges.get(twin_id),
-                    "Halfedge not found",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                );
-                let third_pos = unwrap_or_return!(
-                    self.positions.get(twin.end_vertex),
-                    "Could not find third position",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                );
-                normal = Some((end_pos - start_pos).cross(end_pos - third_pos).normalize());
-            }
-
             let (face_id, halfedges) = unwrap_or_return!(
                 self.remove_halfedge_face(twin_id),
                 "Failed to remove halfedge face",
@@ -327,7 +459,6 @@ impl MeshGraph {
             #[cfg(feature = "rerun")]
             {
                 self.log_rerun();
-                crate::RR.flush_blocking().unwrap();
             }
 
             if self.faces_share_all_vertices(face_id1, face_id2) {
@@ -339,7 +470,6 @@ impl MeshGraph {
 
                     self.log_face_rerun("cleanup_delete/1", face_id1);
                     self.log_face_rerun("cleanup_delete/2", face_id2);
-                    crate::RR.flush_blocking().unwrap();
                 }
 
                 let mut halfedges_of_faces = HashSet::new();
@@ -454,8 +584,6 @@ impl MeshGraph {
             first = false;
         }
 
-        self.check_vertex_faces_for_overlapping(start_vert_id, normal.unwrap());
-
         (removed_vertices, removed_halfedges, removed_faces)
     }
 
@@ -552,66 +680,6 @@ impl MeshGraph {
             .twin = Some(next_twin_id);
 
         Some((face_id, [next_he_id, prev_he_id]))
-    }
-
-    #[instrument(skip(self))]
-    fn check_vertex_faces_for_overlapping(&mut self, vertex_id: VertexId, normal: Vec3) {
-        let vertex = *unwrap_or_return!(self.vertices.get(vertex_id), "Vertex not found");
-        let pos = *unwrap_or_return!(self.positions.get(vertex_id), "Position not found");
-
-        let neighbours = vertex.neighbours(self).collect::<Vec<_>>();
-
-        if neighbours.is_empty() {
-            error!("Vertex has no neighbours");
-            return;
-        }
-
-        let mut prev_diff = (unwrap_or_return!(
-            self.positions.get(neighbours[neighbours.len() - 1]),
-            "Last neighbour position not found"
-        ) - pos)
-            .normalize();
-
-        for neighbour_id in neighbours {
-            let mut diff = (unwrap_or_return!(
-                self.positions.get(neighbour_id),
-                "Neighbour position not found"
-            ) - pos)
-                .normalize();
-
-            // smooth out degenerate faces
-            if diff.cross(prev_diff).dot(normal) < 0.1 {
-                let mut avg_pos = Vec3::ZERO;
-
-                let n_neighbours = unwrap_or_return!(
-                    self.vertices.get(neighbour_id),
-                    "Neighbour vertex not found"
-                )
-                .neighbours(self)
-                .collect::<Vec<_>>();
-
-                let len = n_neighbours.len();
-
-                if len == 0 {
-                    error!("Neighbour vertex has no neighbours");
-                    continue;
-                }
-
-                for n_id in n_neighbours {
-                    avg_pos += *unwrap_or_return!(
-                        self.positions.get(n_id),
-                        "Neighbour's neighbour position not found"
-                    );
-                }
-                avg_pos /= len as f32;
-
-                // already checked above
-                self.positions[neighbour_id] = avg_pos;
-                diff = (avg_pos - pos).normalize();
-            }
-
-            prev_diff = diff;
-        }
     }
 }
 

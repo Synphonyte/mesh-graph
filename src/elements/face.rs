@@ -48,28 +48,41 @@ impl Face {
     /// Center positions of this face.
     #[instrument(skip(mesh_graph))]
     pub fn center(&self, mesh_graph: &MeshGraph) -> Vec3 {
-        let mut sum = Vec3::ZERO;
-
-        for vertex in self.vertices(mesh_graph) {
-            if let Some(position) = mesh_graph.positions.get(vertex) {
-                sum += position;
-            } else {
-                error!("Vertex position not found");
-            }
-        }
-
-        sum / 3.0
+        self.vertex_positions(mesh_graph).sum::<Vec3>() / 3.0
     }
 
     /// Compute the parry Aabb of this triangle
     #[instrument(skip(mesh_graph))]
     pub fn aabb(&self, mesh_graph: &MeshGraph) -> Aabb {
-        Aabb::from_points(self.vertices(mesh_graph).filter_map(|v| {
+        Aabb::from_points(
+            self.vertex_positions(mesh_graph)
+                .map(|p| Point3::new(p.x, p.y, p.z)),
+        )
+    }
+
+    #[instrument(skip(mesh_graph))]
+    pub fn vertex_positions(&self, mesh_graph: &MeshGraph) -> impl Iterator<Item = Vec3> {
+        self.vertices(mesh_graph).filter_map(|v| {
             mesh_graph
                 .positions
                 .get(v)
                 .or_else(error_none!("Position not found"))
-                .map(|p| Point3::new(p.x, p.y, p.z))
-        }))
+                .copied()
+        })
+    }
+
+    /// Compute the normal of this triangle
+    #[instrument(skip(mesh_graph))]
+    pub fn normal(&self, mesh_graph: &MeshGraph) -> Option<Vec3> {
+        let positions = self.vertex_positions(mesh_graph).collect::<Vec<_>>();
+
+        if positions.len() < 3 {
+            error!("Face has less than 3 vertex positions");
+            return None;
+        }
+
+        let a = positions[1] - positions[0];
+        let b = positions[2] - positions[0];
+        Some(a.cross(b).normalize())
     }
 }

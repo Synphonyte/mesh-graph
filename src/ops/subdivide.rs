@@ -142,23 +142,13 @@ impl MeshGraph {
         self.halfedges[new_he].next = Some(last_he);
         self.halfedges[new_he].face = Some(face_id);
 
-        // insert new face
-        let new_face_id = self.insert_face(new_halfedge_id);
-
         let new_twin = self.insert_halfedge(center_v);
 
-        self.halfedges[new_twin].next = Some(new_halfedge_id);
-        self.halfedges[new_twin].face = Some(new_face_id);
+        // insert new face
+        let new_face_id = self.insert_face(new_halfedge_id, next_he, new_twin);
+
         self.halfedges[new_twin].twin = Some(new_he);
         self.halfedges[new_he].twin = Some(new_twin);
-
-        // inserted just before this function is called
-        self.halfedges[new_halfedge_id].next = Some(next_he);
-        self.halfedges[new_halfedge_id].face = Some(new_face_id);
-
-        // checked above
-        self.halfedges[next_he].next = Some(new_twin);
-        self.halfedges[next_he].face = Some(new_face_id);
 
         self.halfedges[existing_halfedge_id].end_vertex = center_v;
 
