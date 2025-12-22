@@ -174,7 +174,7 @@ mod tests {
 
         assert_eq!(mesh_graph.vertices.len(), 3);
         assert_eq!(mesh_graph.faces.len(), 1);
-        assert_eq!(mesh_graph.halfedges.len(), 3);
+        assert_eq!(mesh_graph.halfedges.len(), 6);
     }
 
     #[test]
@@ -189,6 +189,6 @@ mod tests {
 
         assert_eq!(mesh_graph.vertices.len(), 4);
         assert_eq!(mesh_graph.faces.len(), 2);
-        assert_eq!(mesh_graph.halfedges.len(), 6);
+        assert_eq!(mesh_graph.halfedges.len(), 10);
     }
 }
