@@ -3,6 +3,16 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-12-22
+
+- Changed the collapse edges to get min length edges to check if a potential edge collapse would
+  lead to a self-intersection and then doesn't collapse it.
+- Added `Face::normal()` and `Face::is_degenerate()`.
+- Made `MeshGraph` construction from indexes vertices more robust.
+  - To that end there is now a `MeshGraph::insert_or_get_edge()`.
+  - And `MeshGraph::insert_face()` now requires all three halfedges as arguments.
+- Implemented `MeshGraph::make_outgoing_halfedge_boundary_if_possible()` and added `MeshGraph::make_all_outgoing_halfedges_boundary_if_possible()`.
+
 ## [0.3.2] - 2025-10-16
 
 - Fixed bevy integration (thanks to @madmaxio).
