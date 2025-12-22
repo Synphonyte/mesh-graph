@@ -287,11 +287,11 @@ impl MeshGraph {
         let max_length_squared = min_length_squared * 5.0;
 
         for neighbour_id in neighbours {
-            let diff = (self
+            let diff = self
                 .positions
                 .get(neighbour_id)
                 .or_else(error_none!("Neighbour position not found"))?
-                - center);
+                - center;
 
             if diff.length_squared() > max_length_squared {
                 // neighbour edge would be too long

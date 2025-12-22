@@ -1,4 +1,5 @@
 use glam::Vec3;
+use itertools::Itertools;
 use parry3d::{bounding_volume::Aabb, na::Point3};
 use tracing::{error, instrument};
 
@@ -60,6 +61,7 @@ impl Face {
         )
     }
 
+    /// Returns an iterator over the vertex positions of this face.
     #[instrument(skip(mesh_graph))]
     pub fn vertex_positions(&self, mesh_graph: &MeshGraph) -> impl Iterator<Item = Vec3> {
         self.vertices(mesh_graph).filter_map(|v| {
@@ -74,7 +76,7 @@ impl Face {
     /// Compute the normal of this triangle
     #[instrument(skip(mesh_graph))]
     pub fn normal(&self, mesh_graph: &MeshGraph) -> Option<Vec3> {
-        let positions = self.vertex_positions(mesh_graph).collect::<Vec<_>>();
+        let positions = self.vertex_positions(mesh_graph).collect_vec();
 
         if positions.len() < 3 {
             error!("Face has less than 3 vertex positions");
@@ -84,5 +86,36 @@ impl Face {
         let a = positions[1] - positions[0];
         let b = positions[2] - positions[0];
         Some(a.cross(b).normalize())
+    }
+
+    /// Wether this triangle is degenerate.
+    #[instrument(skip(mesh_graph))]
+    pub fn is_degenerate(&self, mesh_graph: &MeshGraph, epsilon_sqr: f32) -> bool {
+        let positions = self.vertex_positions(mesh_graph).collect_vec();
+
+        if positions.len() < 3 {
+            error!("Face has less than 3 vertex positions");
+            return true;
+        }
+
+        let p0 = positions[0];
+        let p1 = positions[1];
+        let p2 = positions[2];
+
+        // Check for coincident vertices
+        if p0.distance_squared(p1) < epsilon_sqr
+            || p0.distance_squared(p2) < epsilon_sqr
+            || p1.distance_squared(p2) < epsilon_sqr
+        {
+            return true;
+        }
+
+        // Check for collinear vertices using cross product
+        let a = p1 - p0;
+        let b = p2 - p0;
+        let cross = a.cross(b);
+
+        // Triangle is degenerate if cross product magnitude is very small
+        cross.length_squared() < epsilon_sqr
     }
 }
