@@ -4,8 +4,8 @@ use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{
-    FaceId, HalfedgeId, MeshGraph, Selection, SelectionOps, VertexId, error_none,
-    utils::unwrap_or_return,
+    error_none, utils::unwrap_or_return, FaceId, HalfedgeId, MeshGraph, Selection, SelectionOps,
+    VertexId,
 };
 
 impl MeshGraph {
@@ -683,14 +683,117 @@ impl MeshGraph {
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use super::*;
+#[cfg(test)]
+mod test {
+    use super::*;
 
-//     #[test]
-//     fn test_collapse() {
-//         let mut mesh_graph = MeshGraph::new();
+    macro_rules! log_faces_rerun {
+        ($mg:ident, $($face:expr),*) => {
+            #[cfg(feature = "rerun")]
+            {
+                $(
+                    $mg.log_face_rerun(&format!("{:?}", $face), $face);
+                )*
+                crate::RR.flush_blocking().unwrap();
+            }
+        };
+    }
 
-//         mesh_graph.log_rerun();
-//     }
-// }
+    #[test]
+    fn test_collapse_edge() {
+        let mut mesh_graph = MeshGraph::new();
+
+        let face1 = mesh_graph.create_face(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 4.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+        );
+
+        let he1 = mesh_graph.faces[face1]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[1];
+
+        let face2 = mesh_graph.add_face_to_edge(he1, Vec3::new(2.0, 4.0, 0.0));
+
+        let he2 = mesh_graph.faces[face2.unwrap()]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[2];
+
+        let face3 = mesh_graph.add_face_to_edge(he2, Vec3::new(3.0, 2.0, 0.0));
+
+        let he3 = mesh_graph.faces[face3.unwrap()]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[1];
+
+        let face4 = mesh_graph.add_face_to_edge(he3, Vec3::new(4.0, 4.0, 0.0));
+
+        let he4 = mesh_graph.faces[face4.unwrap()]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[2];
+
+        let face5 = mesh_graph.add_face_to_edge(he4, Vec3::new(4.0, 0.0, 0.0));
+
+        let he5 = mesh_graph.faces[face5.unwrap()]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[2];
+
+        let face6 = mesh_graph.add_face_to_edge(he5, Vec3::new(2.0, 0.0, 0.0));
+
+        let he6 = mesh_graph.faces[face6.unwrap()]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[2];
+
+        let he3 = mesh_graph.faces[face3.unwrap()]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[2];
+
+        let face7 = mesh_graph.fill_face(he6, he3);
+
+        let he7 = mesh_graph.faces[face7.unwrap()]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[0];
+
+        let he1 = mesh_graph.faces[face1]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[2];
+
+        let face8 = mesh_graph.fill_face(he1, he7);
+
+        log_faces_rerun!(
+            mesh_graph,
+            face1,
+            face2.unwrap(),
+            face3.unwrap(),
+            face4.unwrap(),
+            face5.unwrap(),
+            face6.unwrap(),
+            face7.unwrap(),
+            face8.unwrap()
+        );
+
+        assert_eq!(mesh_graph.halfedges.len(), 30);
+
+        let edge_to_collapse = mesh_graph.faces[face3.unwrap()]
+            .halfedges(&mesh_graph)
+            .into_iter()
+            .collect::<Vec<_>>()[2];
+
+        let (removed_vertex_ids, removed_halfedge_ids, removed_face_ids) =
+            mesh_graph.collapse_edge(edge_to_collapse);
+
+        assert_eq!(removed_vertex_ids.len(), 1);
+        assert_eq!(removed_halfedge_ids.len(), 7);
+        assert_eq!(removed_face_ids.len(), 2);
+
+        assert_eq!(mesh_graph.halfedges.len(), 24);
+    }
+}

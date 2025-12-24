@@ -3,7 +3,7 @@ mod vertex_neighborhood;
 
 use tracing::instrument;
 
-use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
+use crate::{error_none, FaceId, HalfedgeId, MeshGraph, VertexId};
 
 impl MeshGraph {
     /// Test if two faces have at least one halfedge in common.

@@ -3,7 +3,7 @@ use itertools::Itertools;
 use parry3d::{bounding_volume::Aabb, na::Point3};
 use tracing::{error, instrument};
 
-use crate::{CircularHalfedgesIterator, MeshGraph, error_none};
+use crate::{error_none, CircularHalfedgesIterator, MeshGraph};
 
 use super::{FaceId, HalfedgeId, VertexId};
 
