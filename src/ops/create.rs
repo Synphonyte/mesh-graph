@@ -126,6 +126,7 @@ impl MeshGraph {
         self.halfedges[he_id3].face = Some(face_id);
 
         self.halfedges[he_id3].twin = Some(he3_twin);
+        self.halfedges[he3_twin].twin = Some(he_id3);
 
         Some(face_id)
     }
@@ -135,21 +136,21 @@ impl MeshGraph {
         let he = *self
             .halfedges
             .get(he_id)
-            .or_else(error_none!("Halfedge 1 not found"))?;
+            .or_else(error_none!("Halfedge not found"))?;
 
-        if !he.is_boundary() {
-            let twin_id = he.twin.or_else(error_none!("Twin missing"))?;
-
-            if self
-                .halfedges
-                .get(twin_id)
-                .or_else(error_none!("Twin not found"))?
-                .is_boundary()
-            {
-                return Some(twin_id);
-            }
-        } else {
+        if he.is_boundary() {
             return Some(he_id);
+        }
+
+        let twin_id = he.twin.or_else(error_none!("Twin missing"))?;
+
+        let twin_he = self
+            .halfedges
+            .get(twin_id)
+            .or_else(error_none!("Twin not found"))?;
+
+        if twin_he.is_boundary() {
+            return Some(twin_id);
         }
 
         None
