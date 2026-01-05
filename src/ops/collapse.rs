@@ -4,8 +4,8 @@ use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{
-    error_none, utils::unwrap_or_return, FaceId, HalfedgeId, MeshGraph, Selection, SelectionOps,
-    VertexId,
+    FaceId, HalfedgeId, MeshGraph, Selection, SelectionOps, VertexId, error_none,
+    utils::unwrap_or_return,
 };
 
 impl MeshGraph {
@@ -415,11 +415,8 @@ impl MeshGraph {
             }
         }
 
-        self.vertices.remove(end_vert_id);
-        self.positions.remove(end_vert_id);
-        if let Some(normals) = &mut self.vertex_normals {
-            normals.remove(end_vert_id);
-        }
+        self.delete_only_vertex(end_vert_id);
+
         self.halfedges.remove(halfedge_id);
         self.halfedges.remove(twin_id);
         removed_halfedges.push(twin_id);
@@ -703,7 +700,7 @@ mod test {
     fn test_collapse_edge() {
         let mut mesh_graph = MeshGraph::new();
 
-        let face1 = mesh_graph.create_face(
+        let face1 = mesh_graph.face_from_positions(
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 4.0, 0.0),
             Vec3::new(1.0, 2.0, 0.0),
@@ -714,35 +711,35 @@ mod test {
             .into_iter()
             .collect::<Vec<_>>()[1];
 
-        let face2 = mesh_graph.add_face_to_edge(he1, Vec3::new(2.0, 4.0, 0.0));
+        let face2 = mesh_graph.face_from_halfedge_and_position(he1, Vec3::new(2.0, 4.0, 0.0));
 
         let he2 = mesh_graph.faces[face2.unwrap()]
             .halfedges(&mesh_graph)
             .into_iter()
             .collect::<Vec<_>>()[2];
 
-        let face3 = mesh_graph.add_face_to_edge(he2, Vec3::new(3.0, 2.0, 0.0));
+        let face3 = mesh_graph.face_from_halfedge_and_position(he2, Vec3::new(3.0, 2.0, 0.0));
 
         let he3 = mesh_graph.faces[face3.unwrap()]
             .halfedges(&mesh_graph)
             .into_iter()
             .collect::<Vec<_>>()[1];
 
-        let face4 = mesh_graph.add_face_to_edge(he3, Vec3::new(4.0, 4.0, 0.0));
+        let face4 = mesh_graph.face_from_halfedge_and_position(he3, Vec3::new(4.0, 4.0, 0.0));
 
         let he4 = mesh_graph.faces[face4.unwrap()]
             .halfedges(&mesh_graph)
             .into_iter()
             .collect::<Vec<_>>()[2];
 
-        let face5 = mesh_graph.add_face_to_edge(he4, Vec3::new(4.0, 0.0, 0.0));
+        let face5 = mesh_graph.face_from_halfedge_and_position(he4, Vec3::new(4.0, 0.0, 0.0));
 
         let he5 = mesh_graph.faces[face5.unwrap()]
             .halfedges(&mesh_graph)
             .into_iter()
             .collect::<Vec<_>>()[2];
 
-        let face6 = mesh_graph.add_face_to_edge(he5, Vec3::new(2.0, 0.0, 0.0));
+        let face6 = mesh_graph.face_from_halfedge_and_position(he5, Vec3::new(2.0, 0.0, 0.0));
 
         let he6 = mesh_graph.faces[face6.unwrap()]
             .halfedges(&mesh_graph)
@@ -754,7 +751,7 @@ mod test {
             .into_iter()
             .collect::<Vec<_>>()[2];
 
-        let face7 = mesh_graph.fill_face(he6, he3);
+        let face7 = mesh_graph.face_from_halfedges(he6, he3);
 
         let he7 = mesh_graph.faces[face7.unwrap()]
             .halfedges(&mesh_graph)
@@ -766,7 +763,7 @@ mod test {
             .into_iter()
             .collect::<Vec<_>>()[2];
 
-        let face8 = mesh_graph.fill_face(he1, he7);
+        let face8 = mesh_graph.face_from_halfedges(he1, he7);
 
         log_faces_rerun!(
             mesh_graph,

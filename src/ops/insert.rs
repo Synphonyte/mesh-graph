@@ -25,17 +25,12 @@ impl MeshGraph {
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-        vertex_to_outgoing_halfedges: &mut SecondaryMap<VertexId, Vec<HalfedgeId>>,
     ) -> (HalfedgeId, HalfedgeId) {
         let (he1_id, he2_id) = self
-            .insert_or_get_edge_inner(start_vertex_id, end_vertex_id, vertex_to_outgoing_halfedges)
+            .insert_or_get_edge_inner(start_vertex_id, end_vertex_id)
             .unwrap_or_else(|| {
-                let he1_id = self.insert_halfedge(end_vertex_id);
-                let he2_id = self.insert_halfedge(start_vertex_id);
-
-                // in `insert_or_get_edge_inner` we made sure that the outgoing Vecs exist
-                vertex_to_outgoing_halfedges[start_vertex_id].push(he1_id);
-                vertex_to_outgoing_halfedges[end_vertex_id].push(he2_id);
+                let he1_id = self.insert_halfedge(start_vertex_id, end_vertex_id);
+                let he2_id = self.insert_halfedge(end_vertex_id, start_vertex_id);
 
                 (he1_id, he2_id)
             });
@@ -60,12 +55,11 @@ impl MeshGraph {
     }
 
     fn halfedge_from_to(
-        &self,
+        &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-        vertex_to_outgoing_halfedges: &mut SecondaryMap<VertexId, Vec<HalfedgeId>>,
     ) -> Option<HalfedgeId> {
-        vertex_to_outgoing_halfedges
+        self.outgoing_halfedges
             .entry(start_vertex_id)
             .or_else(error_none!("Start vertex not found"))?
             .or_insert_with(Vec::new)
@@ -83,12 +77,9 @@ impl MeshGraph {
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-        vertex_to_outgoing_halfedges: &mut SecondaryMap<VertexId, Vec<HalfedgeId>>,
     ) -> Option<(HalfedgeId, HalfedgeId)> {
-        let mut h1_id =
-            self.halfedge_from_to(start_vertex_id, end_vertex_id, vertex_to_outgoing_halfedges);
-        let mut h2_id =
-            self.halfedge_from_to(end_vertex_id, start_vertex_id, vertex_to_outgoing_halfedges);
+        let mut h1_id = self.halfedge_from_to(start_vertex_id, end_vertex_id);
+        let mut h2_id = self.halfedge_from_to(end_vertex_id, start_vertex_id);
 
         match (h1_id, h2_id) {
             (Some(h1_id), Some(h2_id)) => {
@@ -107,14 +98,10 @@ impl MeshGraph {
                 }
             }
             (Some(_h1_id), None) => {
-                h2_id = Some(self.insert_halfedge(start_vertex_id));
-                // we made sure at the start that the outgoing Vec exists
-                vertex_to_outgoing_halfedges[end_vertex_id].push(h2_id.unwrap());
+                h2_id = Some(self.insert_halfedge(end_vertex_id, start_vertex_id));
             }
             (None, Some(_h2_id)) => {
-                h1_id = Some(self.insert_halfedge(end_vertex_id));
-                // we made sure at the start that the outgoing Vec exists
-                vertex_to_outgoing_halfedges[start_vertex_id].push(h1_id.unwrap());
+                h1_id = Some(self.insert_halfedge(start_vertex_id, end_vertex_id));
             }
             (None, None) => {
                 // the outer method will handle this case
@@ -131,16 +118,25 @@ impl MeshGraph {
 
     /// Inserts a halfedge into the mesh graph. It only connects the halfedge to the given end vertex but not the reverse.
     /// It also doesn't do any other connections.
+    /// It inserts into `self.outgoing_halfedges`.
     ///
     /// Use [`insert_or_get_edge`] instead of this when you can to lower the chance of creating an invalid graph.
-    pub fn insert_halfedge(&mut self, end_vertex: VertexId) -> HalfedgeId {
+    pub fn insert_halfedge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> HalfedgeId {
         let halfedge = Halfedge {
             end_vertex,
             next: None,
             twin: None,
             face: None,
         };
-        self.halfedges.insert(halfedge)
+        let he_id = self.halfedges.insert(halfedge);
+
+        self.outgoing_halfedges
+            .entry(start_vertex)
+            .expect("we just insterted into halfedges above")
+            .or_insert_with(Vec::new)
+            .push(he_id);
+
+        he_id
     }
 
     /// Inserts a face into the mesh graph. It connects the halfedges to the face and the face to the first halfedge.

@@ -69,7 +69,7 @@ impl MeshGraph {
             normals[center_v] = (start_normal + end_normal).normalize();
         }
 
-        let new_he = self.insert_halfedge(end_v);
+        let new_he = self.insert_halfedge(center_v, end_v);
         // inserted just above
         self.vertices[center_v].outgoing_halfedge = Some(new_he);
 
@@ -79,7 +79,7 @@ impl MeshGraph {
             new_halfedges.push(new_face_he);
         }
 
-        let new_twin = self.insert_halfedge(start_v);
+        let new_twin = self.insert_halfedge(center_v, start_v);
 
         if let Some(new_face_he) = self.subdivide_face(twin_id, new_twin, center_v) {
             new_halfedges.push(new_face_he);
@@ -136,13 +136,13 @@ impl MeshGraph {
             .or_else(error_none!("Last halfedge not found"))?;
 
         // rewire existing face
-        let new_he = self.insert_halfedge(self.halfedges[next_he].end_vertex);
+        let new_he = self.insert_halfedge(center_v, self.halfedges[next_he].end_vertex);
 
         self.halfedges[existing_halfedge_id].next = Some(new_he);
         self.halfedges[new_he].next = Some(last_he);
         self.halfedges[new_he].face = Some(face_id);
 
-        let new_twin = self.insert_halfedge(center_v);
+        let new_twin = self.insert_halfedge(self.halfedges[next_he].end_vertex, center_v);
 
         // insert new face
         let new_face_id = self.insert_face(new_halfedge_id, next_he, new_twin);

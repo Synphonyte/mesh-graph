@@ -1,88 +1,59 @@
 use glam::Vec3;
 use tracing::instrument;
 
-use crate::{error_none, FaceId, HalfedgeId, MeshGraph};
+use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
 
 impl MeshGraph {
-    pub fn create_face(&mut self, a: Vec3, b: Vec3, c: Vec3) -> FaceId {
+    pub fn face_from_positions(&mut self, a: Vec3, b: Vec3, c: Vec3) -> FaceId {
         let a_id = self.insert_vertex(a);
         let b_id = self.insert_vertex(b);
         let c_id = self.insert_vertex(c);
 
-        let he_a_id = self.insert_halfedge(b_id);
-        let he_b_id = self.insert_halfedge(c_id);
-        let he_c_id = self.insert_halfedge(a_id);
+        let (he_a_id, _) = self.insert_or_get_edge(a_id, b_id);
+        let (he_b_id, _) = self.insert_or_get_edge(b_id, c_id);
+        let (he_c_id, _) = self.insert_or_get_edge(c_id, a_id);
 
-        let he_a_twin_id = self.insert_halfedge(a_id);
-        let he_b_twin_id = self.insert_halfedge(b_id);
-        let he_c_twin_id = self.insert_halfedge(c_id);
-
-        self.halfedges[he_a_id].next = Some(he_b_id);
-        self.halfedges[he_b_id].next = Some(he_c_id);
-        self.halfedges[he_c_id].next = Some(he_a_id);
-
-        self.halfedges[he_a_id].twin = Some(he_a_twin_id);
-        self.halfedges[he_b_id].twin = Some(he_b_twin_id);
-        self.halfedges[he_c_id].twin = Some(he_c_twin_id);
-
-        self.halfedges[he_a_twin_id].twin = Some(he_a_id);
-        self.halfedges[he_b_twin_id].twin = Some(he_b_id);
-        self.halfedges[he_c_twin_id].twin = Some(he_c_id);
-
-        let face_id = self.insert_face(he_a_id);
-
-        self.halfedges[he_a_id].face = Some(face_id);
-        self.halfedges[he_b_id].face = Some(face_id);
-        self.halfedges[he_c_id].face = Some(face_id);
-
-        self.vertices[a_id].outgoing_halfedge = Some(he_c_twin_id);
-        self.vertices[b_id].outgoing_halfedge = Some(he_a_twin_id);
-        self.vertices[c_id].outgoing_halfedge = Some(he_b_twin_id);
+        let face_id = self.insert_face(he_a_id, he_b_id, he_c_id);
 
         face_id
     }
 
     /// Returns `None` when an edge already has two faces
     #[instrument(skip(self))]
-    pub fn add_face_to_edge(
+    pub fn face_from_halfedge_and_position(
         &mut self,
         he_id: HalfedgeId,
         opposite_vertex_pos: Vec3,
     ) -> Option<FaceId> {
+        let vertex_id = self.insert_vertex(opposite_vertex_pos);
+        self.face_from_halfedge_and_vertex(he_id, vertex_id)
+    }
+
+    /// Returns `None` when an edge already has two faces
+    #[instrument(skip(self))]
+    pub fn face_from_halfedge_and_vertex(
+        &mut self,
+        he_id: HalfedgeId,
+        vertex_id: VertexId,
+    ) -> Option<FaceId> {
         let he_a_id = self.boundary_he(he_id)?;
-        let start_vertex_id_he_a = self.halfedges[he_a_id].start_vertex(self)?;
 
-        let c_id = self.insert_vertex(opposite_vertex_pos);
+        let he_a = self.halfedges[he_a_id];
+        let start_vertex_id_he_a = he_a.start_vertex(self)?;
+        let end_vertex_id_he_a = he_a.end_vertex;
 
-        let he_b_id = self.insert_halfedge(c_id);
-        let he_c_id = self.insert_halfedge(start_vertex_id_he_a);
+        let (he_b_id, _) = self.insert_or_get_edge(end_vertex_id_he_a, vertex_id);
+        let (he_c_id, _) = self.insert_or_get_edge(vertex_id, start_vertex_id_he_a);
 
-        let he_b_twin_id = self.insert_halfedge(self.halfedges[he_a_id].end_vertex);
-        let he_c_twin_id = self.insert_halfedge(c_id);
-
-        self.halfedges[he_a_id].next = Some(he_b_id);
-        self.halfedges[he_b_id].next = Some(he_c_id);
-        self.halfedges[he_c_id].next = Some(he_a_id);
-
-        self.halfedges[he_b_id].twin = Some(he_b_twin_id);
-        self.halfedges[he_c_id].twin = Some(he_c_twin_id);
-
-        self.halfedges[he_b_twin_id].twin = Some(he_b_id);
-        self.halfedges[he_c_twin_id].twin = Some(he_c_id);
-
-        let face_id = self.insert_face(he_a_id);
-
-        self.halfedges[he_a_id].face = Some(face_id);
-        self.halfedges[he_b_id].face = Some(face_id);
-        self.halfedges[he_c_id].face = Some(face_id);
-
-        self.vertices[c_id].outgoing_halfedge = Some(he_b_twin_id);
-
-        Some(face_id)
+        Some(self.insert_face(he_a_id, he_b_id, he_c_id))
     }
 
     #[instrument(skip(self))]
-    pub fn fill_face(&mut self, he_id1: HalfedgeId, he_id2: HalfedgeId) -> Option<FaceId> {
+    pub fn face_from_halfedges(
+        &mut self,
+        he_id1: HalfedgeId,
+        he_id2: HalfedgeId,
+    ) -> Option<FaceId> {
         let he_id1 = self.boundary_he(he_id1)?;
         let he_id2 = self.boundary_he(he_id2)?;
 
@@ -103,34 +74,18 @@ impl MeshGraph {
             .start_vertex(self)
             .or_else(error_none!("Start vertex should be available"))?;
 
-        let he_id3 = if he1_start_vertex == he2.end_vertex {
-            self.insert_halfedge(he2_start_vertex)
+        if he1_start_vertex == he2.end_vertex {
+            let (he_id3, _) = self.insert_or_get_edge(he1.end_vertex, he2_start_vertex);
+
+            Some(self.insert_face(he_id3, he_id2, he_id1))
         } else {
-            self.insert_halfedge(he1_start_vertex)
-        };
+            let (he_id3, _) = self.insert_or_get_edge(he2.end_vertex, he1_start_vertex);
 
-        let he3_twin = if he1_start_vertex == he2.end_vertex {
-            self.insert_halfedge(he1.end_vertex)
-        } else {
-            self.insert_halfedge(he2.end_vertex)
-        };
-
-        let face_id = self.insert_face(he_id3);
-
-        self.halfedges[he_id1].next = Some(he_id2);
-        self.halfedges[he_id2].next = Some(he_id3);
-        self.halfedges[he_id3].next = Some(he_id1);
-
-        self.halfedges[he_id1].face = Some(face_id);
-        self.halfedges[he_id2].face = Some(face_id);
-        self.halfedges[he_id3].face = Some(face_id);
-
-        self.halfedges[he_id3].twin = Some(he3_twin);
-        self.halfedges[he3_twin].twin = Some(he_id3);
-
-        Some(face_id)
+            Some(self.insert_face(he_id3, he_id1, he_id2))
+        }
     }
 
+    /// Return the halfedge or it's twin depending on which one is boundary, or `None` if both are not boundary.
     #[instrument(skip(self))]
     pub fn boundary_he(&self, he_id: HalfedgeId) -> Option<HalfedgeId> {
         let he = *self
@@ -162,13 +117,11 @@ mod test {
     use super::*;
 
     fn create_face(mesh_graph: &mut MeshGraph) -> FaceId {
-        let triangle = (
+        mesh_graph.face_from_positions(
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
-        );
-
-        mesh_graph.create_face(triangle.0, triangle.1, triangle.2)
+        )
     }
 
     fn add_face_to_edge(
@@ -186,7 +139,7 @@ mod test {
             associated_he_id = mesh_graph.halfedges[associated_he_id].twin.unwrap();
         }
 
-        mesh_graph.add_face_to_edge(associated_he_id, pos)
+        mesh_graph.face_from_halfedge_and_position(associated_he_id, pos)
     }
 
     fn fill_face(
@@ -210,7 +163,7 @@ mod test {
             he_id_2 = mesh_graph.halfedges[he_id_2].twin.unwrap();
         }
 
-        mesh_graph.fill_face(he_id_1, he_id_2)
+        mesh_graph.face_from_halfedges(he_id_1, he_id_2)
     }
 
     macro_rules! init_fill_face {
@@ -239,21 +192,27 @@ mod test {
 
         let vertex = vertices.next();
         assert!(vertex.is_some());
-        assert!(mesh_graph.vertices[vertex.unwrap()]
-            .outgoing_halfedge
-            .is_some());
+        assert!(
+            mesh_graph.vertices[vertex.unwrap()]
+                .outgoing_halfedge
+                .is_some()
+        );
 
         let vertex = vertices.next();
         assert!(vertex.is_some());
-        assert!(mesh_graph.vertices[vertex.unwrap()]
-            .outgoing_halfedge
-            .is_some());
+        assert!(
+            mesh_graph.vertices[vertex.unwrap()]
+                .outgoing_halfedge
+                .is_some()
+        );
 
         let vertex = vertices.next();
         assert!(vertex.is_some());
-        assert!(mesh_graph.vertices[vertex.unwrap()]
-            .outgoing_halfedge
-            .is_some());
+        assert!(
+            mesh_graph.vertices[vertex.unwrap()]
+                .outgoing_halfedge
+                .is_some()
+        );
 
         assert!(vertices.next().is_none());
     }

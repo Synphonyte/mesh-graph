@@ -109,6 +109,9 @@ pub struct MeshGraph {
     pub positions: SecondaryMap<VertexId, Vec3>,
     /// Maps vertex IDs to their corresponding normals
     pub vertex_normals: Option<SecondaryMap<VertexId, Vec3>>,
+
+    /// Maps vertex IDs to their corresponding outgoing halfedges (not in any particular order)
+    pub outgoing_halfedges: SecondaryMap<VertexId, Vec<HalfedgeId>>,
 }
 
 impl MeshGraph {
@@ -184,9 +187,8 @@ impl MeshGraph {
 
             positions: SecondaryMap::with_capacity(vertex_positions.len()),
             vertex_normals: None,
+            outgoing_halfedges: SecondaryMap::with_capacity(vertex_positions.len()),
         };
-
-        let mut vertex_to_outgoing_halfedges = SecondaryMap::with_capacity(vertex_positions.len());
 
         let mut vertex_ids = Vec::with_capacity(vertex_positions.len());
 
@@ -218,12 +220,9 @@ impl MeshGraph {
                 continue;
             }
 
-            let (he_a_id, _) =
-                mesh_graph.insert_or_get_edge(a, b, &mut vertex_to_outgoing_halfedges);
-            let (he_b_id, _) =
-                mesh_graph.insert_or_get_edge(b, c, &mut vertex_to_outgoing_halfedges);
-            let (he_c_id, _) =
-                mesh_graph.insert_or_get_edge(c, a, &mut vertex_to_outgoing_halfedges);
+            let (he_a_id, _) = mesh_graph.insert_or_get_edge(a, b);
+            let (he_b_id, _) = mesh_graph.insert_or_get_edge(b, c);
+            let (he_c_id, _) = mesh_graph.insert_or_get_edge(c, a);
 
             let _face_id = mesh_graph.insert_face(he_a_id, he_b_id, he_c_id);
 

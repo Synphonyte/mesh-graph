@@ -67,12 +67,7 @@ impl MeshGraph {
             }
 
             if all_deleted {
-                self.positions.remove(vertex_id);
-                if let Some(normals) = &mut self.vertex_normals {
-                    normals.remove(vertex_id);
-                }
-                self.vertices.remove(vertex_id);
-
+                self.delete_only_vertex(vertex_id);
                 deleted_vertices.push(vertex_id);
             }
         }
@@ -103,5 +98,15 @@ impl MeshGraph {
         self.faces.remove(face_id);
 
         (deleted_vertices, Vec::from_iter(deleted_halfedges))
+    }
+
+    /// Deletes only a vertex, without deleting any faces or halfedges connected to it.
+    pub fn delete_only_vertex(&mut self, vertex_id: VertexId) {
+        self.outgoing_halfedges.remove(vertex_id);
+        self.positions.remove(vertex_id);
+        if let Some(normals) = &mut self.vertex_normals {
+            normals.remove(vertex_id);
+        }
+        self.vertices.remove(vertex_id);
     }
 }
