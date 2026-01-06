@@ -2,16 +2,16 @@ use glam::Vec3;
 use hashbrown::HashMap;
 use itertools::Itertools;
 
-use crate::RR;
 use crate::utils::*;
+use crate::RR;
 use crate::{FaceId, HalfedgeId, MeshGraph, Selection, VertexId};
 
 impl MeshGraph {
     pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
         use itertools::Itertools;
 
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         RR.log(
             format!("meshgraph/selection/{name}/points"),
@@ -65,8 +65,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let he = self.halfedges[halfedge];
 
@@ -106,7 +106,40 @@ impl MeshGraph {
         .unwrap();
     }
 
-    pub fn log_faces_rerun_with_name() {}
+    pub fn log_faces_rerun_with_name(&self, name: String, faces: &[FaceId]) {
+        let mut origins = Vec::with_capacity(faces.len() * 3);
+        let mut vectors = Vec::with_capacity(faces.len() * 3);
+
+        for &face_id in faces {
+            let face = self.faces[face_id];
+
+            let pos = face.vertices(self).map(|v| self.positions[v]).collect_vec();
+
+            let center = pos.iter().copied().reduce(|a, b| a + b).unwrap() / pos.len() as f32;
+
+            let pos = face
+                .vertices(self)
+                .zip(pos)
+                .map(|(v, p)| (v, center * 0.1 + p * 0.9))
+                .collect::<HashMap<_, _>>();
+
+            for he_id in face.halfedges(self) {
+                let he = self.halfedges[he_id];
+
+                let start = pos[&he.start_vertex(self).unwrap()];
+                let end = pos[&he.end_vertex];
+
+                origins.push(vec3_array(start));
+                vectors.push(vec3_array(end - start));
+            }
+        }
+
+        RR.log(
+            name,
+            &rerun::Arrows3D::from_vectors(vectors).with_origins(origins),
+        )
+        .unwrap();
+    }
 
     pub fn log_face_rerun(&self, name: &str, face: FaceId) {
         let mut origins = Vec::with_capacity(3);

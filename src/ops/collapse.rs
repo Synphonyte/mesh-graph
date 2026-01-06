@@ -4,8 +4,8 @@ use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{
-    FaceId, HalfedgeId, MeshGraph, Selection, SelectionOps, VertexId, error_none,
-    utils::unwrap_or_return,
+    error_none, utils::unwrap_or_return, FaceId, HalfedgeId, MeshGraph, Selection, SelectionOps,
+    VertexId,
 };
 
 impl MeshGraph {
@@ -684,18 +684,6 @@ impl MeshGraph {
 mod test {
     use super::*;
 
-    macro_rules! log_faces_rerun {
-        ($mg:ident, $($face:expr),*) => {
-            #[cfg(feature = "rerun")]
-            {
-                $(
-                    $mg.log_face_rerun(&format!("{:?}", $face), $face);
-                )*
-                crate::RR.flush_blocking().unwrap();
-            }
-        };
-    }
-
     #[test]
     fn test_collapse_edge() {
         let mut mesh_graph = MeshGraph::new();
@@ -765,8 +753,7 @@ mod test {
 
         let face8 = mesh_graph.face_from_halfedges(he1, he7);
 
-        log_faces_rerun!(
-            mesh_graph,
+        let faces = vec![
             face1,
             face2.unwrap(),
             face3.unwrap(),
@@ -774,10 +761,18 @@ mod test {
             face5.unwrap(),
             face6.unwrap(),
             face7.unwrap(),
-            face8.unwrap()
-        );
+            face8.unwrap(),
+        ];
 
+        assert_eq!(mesh_graph.vertices.len(), 8);
         assert_eq!(mesh_graph.halfedges.len(), 30);
+        assert_eq!(mesh_graph.faces.len(), 8);
+
+        #[cfg(feature = "rerun")]
+        {
+            mesh_graph.log_faces_rerun_with_name("test_edge_collapse".into(), &faces);
+            crate::RR.flush_blocking().unwrap();
+        }
 
         let edge_to_collapse = mesh_graph.faces[face3.unwrap()]
             .halfedges(&mesh_graph)
@@ -791,6 +786,20 @@ mod test {
         assert_eq!(removed_halfedge_ids.len(), 7);
         assert_eq!(removed_face_ids.len(), 2);
 
+        assert_eq!(mesh_graph.vertices.len(), 7);
         assert_eq!(mesh_graph.halfedges.len(), 24);
+        assert_eq!(mesh_graph.faces.len(), 6);
+
+        #[cfg(feature = "rerun")]
+        {
+            mesh_graph.log_faces_rerun_with_name(
+                "test_edge_collapse".into(),
+                &faces
+                    .into_iter()
+                    .filter(|face| !removed_face_ids.contains(face))
+                    .collect_vec(),
+            );
+            crate::RR.flush_blocking().unwrap();
+        }
     }
 }
