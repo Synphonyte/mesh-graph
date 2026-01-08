@@ -1,6 +1,6 @@
 use hashbrown::HashSet;
 use itertools::Itertools;
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
 
@@ -158,7 +158,7 @@ impl MeshGraph {
                         .or_else(error_none!("Halfedge not found"))?;
 
                     if he.face == Some(face_id1) {
-                        start_idx = (idx + 1) % outgoing_halfedge_ids.len();
+                        start_idx = idx;
                         break;
                     }
                 }
@@ -169,8 +169,6 @@ impl MeshGraph {
                 loop {
                     let he_id = outgoing_halfedge_ids[end_idx];
 
-                    side_one.push(he_id);
-
                     let he = self
                         .halfedges
                         .get(he_id)
@@ -179,6 +177,8 @@ impl MeshGraph {
                     if he.face == Some(face_id2) {
                         break;
                     }
+
+                    side_one.push(he_id);
 
                     end_idx += 1;
                     end_idx %= outgoing_halfedge_ids.len();
@@ -195,8 +195,12 @@ impl MeshGraph {
                     end_idx %= outgoing_halfedge_ids.len();
                 }
 
+                info!("before");
+
                 let new_vertex_id =
                     self.split_regions_at_vertex(vertex_id, side_one, side_two, removed_halfedges);
+
+                info!("after");
 
                 let (del_v_ids, del_he_ids) = self.delete_face(face_id1);
                 removed_vertices.extend(del_v_ids);
@@ -238,7 +242,7 @@ impl MeshGraph {
         let first_he_id = side_one[0];
         let last_he_id = side_one[side_one.len() - 1];
 
-        self.weld_halfedges(vertex_id, first_he_id, last_he_id, removed_halfedges);
+        self.weld_halfedges(vertex_id, last_he_id, first_he_id, removed_halfedges);
 
         let new_vertex_id = self.insert_vertex(
             *self
@@ -260,6 +264,8 @@ impl MeshGraph {
                 .get_mut(he.twin.or_else(error_none!("Twin not found"))?)
                 .or_else(error_none!("Twin not found"))?
                 .end_vertex = new_vertex_id;
+
+            self.outgoing_halfedges[new_vertex_id].push(*he_id);
         }
 
         // we just inserted the new vertex
@@ -271,9 +277,6 @@ impl MeshGraph {
             side_two[side_two.len() - 1],
             removed_halfedges,
         );
-
-        #[cfg(feature = "rerun")]
-        self.log_rerun();
 
         Some(new_vertex_id)
     }
@@ -297,10 +300,6 @@ impl MeshGraph {
         let prev_he_id = he2
             .prev(self)
             .or_else(error_none!("Prev halfedge id not found"))?;
-        self.halfedges
-            .get_mut(prev_he_id)
-            .or_else(error_none!("Prev halfedge not found"))?
-            .next = Some(he_id1);
 
         let he_twin1_id = self
             .halfedges
@@ -308,6 +307,16 @@ impl MeshGraph {
             .or_else(error_none!("Halfedge not found"))?
             .twin
             .or_else(error_none!("Twin halfedge not found"))?;
+
+        self.delete_only_halfedge(he_id2);
+        self.delete_only_halfedge(he_twin1_id);
+        removed_halfedges.push(he_id2);
+        removed_halfedges.push(he_twin1_id);
+
+        self.halfedges
+            .get_mut(prev_he_id)
+            .or_else(error_none!("Prev halfedge not found"))?
+            .next = Some(he_id1);
 
         self.halfedges
             .get_mut(he_twin2_id)
@@ -318,11 +327,6 @@ impl MeshGraph {
             .get_mut(he_id1)
             .or_else(error_none!("Halfedge not found"))?
             .twin = Some(he_twin2_id);
-
-        self.halfedges.remove(he_id2);
-        self.halfedges.remove(he_twin1_id);
-        removed_halfedges.push(he_id2);
-        removed_halfedges.push(he_twin1_id);
 
         self.vertices
             .get_mut(start_vertex_id)
@@ -464,5 +468,122 @@ impl MeshGraph {
         }
 
         Some(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::Vec3;
+    use tracing_subscriber::EnvFilter;
+
+    use super::*;
+
+    #[test]
+    fn test_remove_degenerate_faces() {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_line_number(true)
+            .init();
+
+        let mut meshgraph = MeshGraph::new();
+
+        let center_v_id = meshgraph.insert_vertex(Vec3::new(0.0, 0.0, 1.0));
+
+        let v1_id = meshgraph.insert_vertex(Vec3::new(-0.2, 0.0, 0.0));
+        let (he_c_1_id, _) = meshgraph.insert_or_get_edge(center_v_id, v1_id);
+
+        let v1p_id = meshgraph.insert_vertex(Vec3::new(-0.2, 0.0, 0.0));
+        let (he_c_1p_id, he_1p_c_id) = meshgraph.insert_or_get_edge(center_v_id, v1p_id);
+
+        let v2_id = meshgraph.insert_vertex(Vec3::new(-1.0, 1.0, 0.0));
+        let (he_c_2_id, _) = meshgraph.insert_or_get_edge(center_v_id, v2_id);
+
+        let v3_id = meshgraph.insert_vertex(Vec3::new(-1.0, -1.0, 0.0));
+        let (he_c_3_id, _) = meshgraph.insert_or_get_edge(center_v_id, v3_id);
+
+        let v4_id = meshgraph.insert_vertex(Vec3::new(0.2, 0.0, 0.0));
+        let (he_c_4_id, _) = meshgraph.insert_or_get_edge(center_v_id, v4_id);
+
+        let v4p_id = meshgraph.insert_vertex(Vec3::new(0.2, 0.0, 0.0));
+        let (he_c_4p_id, he_4p_c_id) = meshgraph.insert_or_get_edge(center_v_id, v4p_id);
+
+        let v5_id = meshgraph.insert_vertex(Vec3::new(1.0, -1.0, 0.0));
+        let (he_c_5_id, _) = meshgraph.insert_or_get_edge(center_v_id, v5_id);
+
+        let v6_id = meshgraph.insert_vertex(Vec3::new(1.0, 1.0, 0.0));
+        let (he_c_6_id, _) = meshgraph.insert_or_get_edge(center_v_id, v6_id);
+
+        meshgraph
+            .create_face_from_halfedges(he_c_1_id, he_c_2_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(he_c_2_id, he_c_3_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(he_c_3_id, he_c_1p_id)
+            .unwrap();
+
+        meshgraph
+            .create_face_from_halfedges(he_c_1p_id, he_c_4p_id)
+            .unwrap();
+
+        meshgraph
+            .create_face_from_halfedges(he_c_4p_id, he_c_5_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(he_c_5_id, he_c_6_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(he_c_6_id, he_c_4_id)
+            .unwrap();
+
+        meshgraph
+            .create_face_from_halfedges(he_c_1_id, he_c_4_id)
+            .unwrap();
+
+        meshgraph.halfedges[he_c_1p_id].end_vertex = v1_id;
+        meshgraph.halfedges[he_c_4p_id].end_vertex = v4_id;
+
+        // already created from face above
+        let (he_1p_4p_id, he_4p_1p_id) = meshgraph.insert_or_get_edge(v1p_id, v4p_id);
+        meshgraph.halfedges[he_1p_4p_id].end_vertex = v4_id;
+        meshgraph.halfedges[he_4p_1p_id].end_vertex = v1_id;
+
+        let (he_3_1p_id, he_1p_3_id) = meshgraph.insert_or_get_edge(v3_id, v1p_id);
+        meshgraph.halfedges[he_3_1p_id].end_vertex = v1_id;
+
+        let (he_4p_5_id, he_5_4p_id) = meshgraph.insert_or_get_edge(v4p_id, v5_id);
+        meshgraph.halfedges[he_5_4p_id].end_vertex = v4_id;
+
+        meshgraph.outgoing_halfedges[v1_id].push(he_1p_4p_id);
+        meshgraph.outgoing_halfedges[v1_id].push(he_1p_c_id);
+        meshgraph.outgoing_halfedges[v1_id].push(he_1p_3_id);
+        meshgraph.outgoing_halfedges[v4_id].push(he_4p_1p_id);
+        meshgraph.outgoing_halfedges[v4_id].push(he_4p_c_id);
+        meshgraph.outgoing_halfedges[v4_id].push(he_4p_5_id);
+
+        meshgraph.delete_only_vertex(v1p_id);
+        meshgraph.delete_only_vertex(v4p_id);
+
+        // #[cfg(feature = "rerun")]
+        // meshgraph.log_rerun();
+
+        let mut removed_vertices = vec![];
+        let mut removed_halfedges = vec![];
+        let mut removed_faces = vec![];
+
+        meshgraph.remove_degenerate_faces(
+            center_v_id,
+            &mut removed_vertices,
+            &mut removed_halfedges,
+            &mut removed_faces,
+        );
+
+        #[cfg(feature = "rerun")]
+        {
+            info!("finished");
+            meshgraph.log_rerun();
+            crate::RR.flush_blocking().unwrap();
+        }
     }
 }

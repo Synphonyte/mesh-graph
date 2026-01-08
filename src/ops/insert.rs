@@ -1,5 +1,4 @@
 use glam::Vec3;
-use slotmap::SecondaryMap;
 use tracing::{error, instrument};
 
 use crate::{Face, FaceId, Halfedge, HalfedgeId, MeshGraph, Vertex, VertexId, error_none};
@@ -11,6 +10,8 @@ impl MeshGraph {
         let vertex = Vertex::default();
         let vertex_id = self.vertices.insert(vertex);
         self.positions.insert(vertex_id, position);
+
+        self.outgoing_halfedges.insert(vertex_id, vec![]);
 
         vertex_id
     }

@@ -109,4 +109,18 @@ impl MeshGraph {
         }
         self.vertices.remove(vertex_id);
     }
+
+    /// Deletes only a halfedge, without deleting any faces or vertices connected to it.
+    /// This also doesn't delete or update any twin
+    pub fn delete_only_halfedge(&mut self, he_id: HalfedgeId) {
+        if let Some(he) = self.halfedges.get(he_id) {
+            if let Some(start_v_id) = he.start_vertex(self)
+                && let Some(hes) = self.outgoing_halfedges.get_mut(start_v_id)
+            {
+                hes.retain(|out_he_id| *out_he_id != he_id);
+            }
+
+            self.halfedges.remove(he_id);
+        }
+    }
 }

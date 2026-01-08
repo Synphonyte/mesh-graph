@@ -106,7 +106,10 @@ impl MeshGraph {
         .unwrap();
     }
 
-    pub fn log_faces_rerun_with_name() {}
+    pub fn log_faces_rerun_with_name(&self, name: String, faces: &[FaceId]) {
+        // TODO : implement to show the same stuff as log_rerun (except the rerun::mesh itself)
+        // TODO : then modify log_rerun to use call this function `self.log_faces_rerun_with_name("meshgraph", &self.faces.keys().collect_vec());`
+    }
 
     pub fn log_face_rerun(&self, name: &str, face: FaceId) {
         let mut origins = Vec::with_capacity(3);

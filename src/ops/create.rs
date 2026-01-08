@@ -1,10 +1,10 @@
 use glam::Vec3;
-use tracing::instrument;
+use tracing::{info, instrument};
 
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
 
 impl MeshGraph {
-    pub fn face_from_positions(&mut self, a: Vec3, b: Vec3, c: Vec3) -> FaceId {
+    pub fn create_face_from_positions(&mut self, a: Vec3, b: Vec3, c: Vec3) -> FaceId {
         let a_id = self.insert_vertex(a);
         let b_id = self.insert_vertex(b);
         let c_id = self.insert_vertex(c);
@@ -20,18 +20,18 @@ impl MeshGraph {
 
     /// Returns `None` when an edge already has two faces
     #[instrument(skip(self))]
-    pub fn face_from_halfedge_and_position(
+    pub fn create_face_from_halfedge_and_position(
         &mut self,
         he_id: HalfedgeId,
         opposite_vertex_pos: Vec3,
     ) -> Option<FaceId> {
         let vertex_id = self.insert_vertex(opposite_vertex_pos);
-        self.face_from_halfedge_and_vertex(he_id, vertex_id)
+        self.create_face_from_halfedge_and_vertex(he_id, vertex_id)
     }
 
     /// Returns `None` when an edge already has two faces
     #[instrument(skip(self))]
-    pub fn face_from_halfedge_and_vertex(
+    pub fn create_face_from_halfedge_and_vertex(
         &mut self,
         he_id: HalfedgeId,
         vertex_id: VertexId,
@@ -49,7 +49,7 @@ impl MeshGraph {
     }
 
     #[instrument(skip(self))]
-    pub fn face_from_halfedges(
+    pub fn create_face_from_halfedges(
         &mut self,
         he_id1: HalfedgeId,
         he_id2: HalfedgeId,
@@ -78,6 +78,22 @@ impl MeshGraph {
             let (he_id3, _) = self.insert_or_get_edge(he1.end_vertex, he2_start_vertex);
 
             Some(self.insert_face(he_id3, he_id2, he_id1))
+        } else if he1_start_vertex == he2_start_vertex {
+            let (he_id3, _) = self.insert_or_get_edge(he1.end_vertex, he2.end_vertex);
+
+            Some(self.insert_face(
+                he_id3,
+                he2.twin.or_else(error_none!("Twin not set"))?,
+                he_id1,
+            ))
+        } else if he1.end_vertex == he2.end_vertex {
+            let (he_id3, _) = self.insert_or_get_edge(he2_start_vertex, he1_start_vertex);
+
+            Some(self.insert_face(
+                he_id3,
+                he_id1,
+                he2.twin.or_else(error_none!("Twin not set"))?,
+            ))
         } else {
             let (he_id3, _) = self.insert_or_get_edge(he2.end_vertex, he1_start_vertex);
 
@@ -117,7 +133,7 @@ mod test {
     use super::*;
 
     fn create_face(mesh_graph: &mut MeshGraph) -> FaceId {
-        mesh_graph.face_from_positions(
+        mesh_graph.create_face_from_positions(
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
@@ -139,7 +155,7 @@ mod test {
             associated_he_id = mesh_graph.halfedges[associated_he_id].twin.unwrap();
         }
 
-        mesh_graph.face_from_halfedge_and_position(associated_he_id, pos)
+        mesh_graph.create_face_from_halfedge_and_position(associated_he_id, pos)
     }
 
     fn fill_face(
@@ -163,7 +179,7 @@ mod test {
             he_id_2 = mesh_graph.halfedges[he_id_2].twin.unwrap();
         }
 
-        mesh_graph.face_from_halfedges(he_id_1, he_id_2)
+        mesh_graph.create_face_from_halfedges(he_id_1, he_id_2)
     }
 
     macro_rules! init_fill_face {
