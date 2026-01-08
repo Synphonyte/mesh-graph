@@ -586,4 +586,14 @@ mod tests {
             crate::RR.flush_blocking().unwrap();
         }
     }
+
+    #[test]
+    fn test_remove_degenerate_edges() {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_line_number(true)
+            .init();
+
+        // TODO : create test mesh
+    }
 }
