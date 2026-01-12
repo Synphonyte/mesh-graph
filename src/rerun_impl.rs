@@ -2,16 +2,16 @@ use glam::Vec3;
 use hashbrown::HashMap;
 use itertools::Itertools;
 
-use crate::utils::*;
 use crate::RR;
+use crate::utils::*;
 use crate::{FaceId, HalfedgeId, MeshGraph, Selection, VertexId};
 
 impl MeshGraph {
     pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
         use itertools::Itertools;
 
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         RR.log(
             format!("meshgraph/selection/{name}/points"),
@@ -65,8 +65,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let he = self.halfedges[halfedge];
 
@@ -104,6 +104,10 @@ impl MeshGraph {
             &rerun::Arrows3D::from_vectors(vectors).with_origins(origins),
         )
         .unwrap();
+    }
+
+    pub fn log_faces_rerun(&self, name: &str, faces: &[FaceId]) {
+        self.log_faces_rerun_with_name(format!("meshgraph/face/{name}"), faces);
     }
 
     pub fn log_faces_rerun_with_name(&self, name: String, faces: &[FaceId]) {
@@ -178,37 +182,37 @@ impl MeshGraph {
     }
 
     pub fn log_rerun(&self) {
-        let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
-        RR.log(
-            "meshgraph/mesh",
-            &rerun::Mesh3D::new(
-                buffers
-                    .positions
-                    .into_iter()
-                    .zip(buffers.normals.iter().cloned())
-                    .map(|(pos, norm)| vec3_array(pos - norm * 0.1)),
-            )
-            .with_triangle_indices(
-                buffers
-                    .indices
-                    .chunks(3)
-                    .map(|chunk| rerun::datatypes::UVec3D::new(chunk[0], chunk[1], chunk[2])),
-            )
-            .with_vertex_colors(
-                buffers
-                    .normals
-                    .into_iter()
-                    .map(|v| {
-                        [
-                            (100.0 + v.x * 100.0) as u8,
-                            (100.0 + v.y * 100.0) as u8,
-                            (100.0 + v.z * 100.0) as u8,
-                        ]
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        )
-        .unwrap();
+        // let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
+        // RR.log(
+        //     "meshgraph/mesh",
+        //     &rerun::Mesh3D::new(
+        //         buffers
+        //             .positions
+        //             .into_iter()
+        //             .zip(buffers.normals.iter().cloned())
+        //             .map(|(pos, norm)| vec3_array(pos - norm * 0.1)),
+        //     )
+        //     .with_triangle_indices(
+        //         buffers
+        //             .indices
+        //             .chunks(3)
+        //             .map(|chunk| rerun::datatypes::UVec3D::new(chunk[0], chunk[1], chunk[2])),
+        //     )
+        //     .with_vertex_colors(
+        //         buffers
+        //             .normals
+        //             .into_iter()
+        //             .map(|v| {
+        //                 [
+        //                     (100.0 + v.x * 100.0) as u8,
+        //                     (100.0 + v.y * 100.0) as u8,
+        //                     (100.0 + v.z * 100.0) as u8,
+        //                 ]
+        //             })
+        //             .collect::<Vec<_>>(),
+        //     ),
+        // )
+        // .unwrap();
 
         RR.log(
             "meshgraph/positions",

@@ -1,9 +1,7 @@
-pub fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_line_number(true)
-        .init();
+use glam::Vec3;
+use mesh_graph::MeshGraph;
 
+pub fn main() {
     let mut meshgraph = MeshGraph::new();
 
     let center_v_id = meshgraph.insert_vertex(Vec3::new(0.0, 0.0, 1.0));
@@ -97,11 +95,4 @@ pub fn main() {
         &mut removed_halfedges,
         &mut removed_faces,
     );
-
-    #[cfg(feature = "rerun")]
-    {
-        info!("finished");
-        meshgraph.log_rerun();
-        crate::RR.flush_blocking().unwrap();
-    }
 }

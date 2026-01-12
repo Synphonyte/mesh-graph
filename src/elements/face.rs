@@ -3,7 +3,7 @@ use itertools::Itertools;
 use parry3d::{bounding_volume::Aabb, na::Point3};
 use tracing::{error, instrument};
 
-use crate::{error_none, CircularHalfedgesIterator, MeshGraph};
+use crate::{CircularHalfedgesIterator, MeshGraph, error_none};
 
 use super::{FaceId, HalfedgeId, VertexId};
 
@@ -117,5 +117,31 @@ impl Face {
 
         // Triangle is degenerate if cross product magnitude is very small
         cross.length_squared() < epsilon_sqr
+    }
+
+    #[instrument(skip(mesh_graph))]
+    pub fn halfedge_between(
+        &self,
+        vertex_id1: VertexId,
+        vertex_id2: VertexId,
+        mesh_graph: &MeshGraph,
+    ) -> Option<HalfedgeId> {
+        for he_id in self.halfedges(mesh_graph) {
+            let he = mesh_graph
+                .halfedges
+                .get(he_id)
+                .or_else(error_none!("Halfedge not found"))?;
+
+            if he.end_vertex == vertex_id1 || he.end_vertex == vertex_id2 {
+                let he_start_vertex_id = he
+                    .start_vertex(mesh_graph)
+                    .or_else(error_none!("Start vertex not found"))?;
+                if he_start_vertex_id == vertex_id1 || he_start_vertex_id == vertex_id2 {
+                    return Some(he_id);
+                }
+            }
+        }
+
+        None
     }
 }
