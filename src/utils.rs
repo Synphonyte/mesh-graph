@@ -50,4 +50,14 @@ macro_rules! unwrap_or_return {
     };
 }
 
+pub(crate) fn get_tracing_subscriber() {
+    if let Err(e) = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_line_number(true)
+        .try_init()
+    {
+        tracing::warn!("Tracing subscriber already initialized: {}", e);
+    }
+}
+
 pub(crate) use unwrap_or_return;

@@ -284,7 +284,7 @@ impl MeshGraph {
     pub fn normalize_vertex_normals(&mut self) {
         if let Some(normals) = &mut self.vertex_normals {
             for normal in normals.values_mut() {
-                *normal = normal.normalize();
+                *normal = normal.normalize_or_zero();
             }
         }
     }
