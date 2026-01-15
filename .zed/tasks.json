@@ -67,7 +67,9 @@
 			"--lib",
 			// "--release",
 			"--features",
-			"rerun"
+			"rerun",
+			"--",
+			"--test-threads=1"
 		],
 		// Env overrides for the command, will be appended to the terminal's environment from the settings.
 		"env": { "RUST_LOG": "info", "RUST_BACKTRACE": "1" },

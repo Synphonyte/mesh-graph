@@ -3,7 +3,7 @@ mod vertex_neighborhood;
 
 use tracing::instrument;
 
-use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
+use crate::{error_none, FaceId, HalfedgeId, MeshGraph, VertexId};
 
 impl MeshGraph {
     /// Test if two faces have at least one halfedge in common.
@@ -212,9 +212,11 @@ mod tests {
             .unwrap();
 
         let mirror_mat = Mat4::from_rotation_translation(
-            Quat::from_rotation_x(std::f32::consts::PI),
+            Quat::from_rotation_x(std::f32::consts::PI)
+                .mul_quat(Quat::from_rotation_z(std::f32::consts::PI * 0.5)),
             vec3(0.0, 0.0, 3.0),
         );
+
         let v_c_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_c));
         let v_1_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_1));
         let v_2_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_2));
@@ -222,6 +224,7 @@ mod tests {
         let v_4_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_4));
         let v_5_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_5));
         let v_6_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_6));
+
         let (h_c_v1_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_1_m_id);
         let (h_c_v2_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_2_m_id);
         let (h_c_v3_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_3_m_id);
@@ -255,6 +258,114 @@ mod tests {
 
         // TODO: Call join function on meshgraph
 
+        #[cfg(feature = "rerun")]
+        {
+            meshgraph.log_rerun();
+            RR.flush_blocking().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_vertex_join_non_similar_vertex_count() {
+        let mut meshgraph = MeshGraph::new();
+        let p_c = vec3(0.0, 0.0, 1.0);
+        let p_1 = vec3(0.0, 1.0, 0.0);
+        let p_2 = vec3(-1.0, 0.5, 0.0);
+        let p_3 = vec3(-1.0, -0.5, 0.0);
+        let p_4 = vec3(0.0, -1.0, 0.0);
+        let p_5 = vec3(1.0, -0.5, 0.0);
+        let p_6 = vec3(1.0, 0.5, 0.0);
+
+        let v_c_id = meshgraph.insert_vertex(p_c);
+        let v_1_id = meshgraph.insert_vertex(p_1);
+        let v_2_id = meshgraph.insert_vertex(p_2);
+        let v_3_id = meshgraph.insert_vertex(p_3);
+        let v_4_id = meshgraph.insert_vertex(p_4);
+        let v_5_id = meshgraph.insert_vertex(p_5);
+        let v_6_id = meshgraph.insert_vertex(p_6);
+
+        let (h_c_v1_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_1_id);
+        let (h_c_v2_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_2_id);
+        let (h_c_v3_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_3_id);
+        let (h_c_v4_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_4_id);
+        let (h_c_v5_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_5_id);
+        let (h_c_v6_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_6_id);
+
+        meshgraph
+            .create_face_from_halfedges(h_c_v1_id, h_c_v2_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(h_c_v2_id, h_c_v3_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(h_c_v3_id, h_c_v4_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(h_c_v4_id, h_c_v5_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(h_c_v5_id, h_c_v6_id)
+            .unwrap();
+        meshgraph
+            .create_face_from_halfedges(h_c_v6_id, h_c_v1_id)
+            .unwrap();
+
+        let mirror_mat = Mat4::from_rotation_translation(
+            Quat::from_rotation_x(std::f32::consts::PI)
+                .mul_quat(Quat::from_rotation_z(std::f32::consts::PI * 0.5)),
+            vec3(0.0, 0.0, 3.0),
+        );
+
+        let p_1 = vec3(0.0, 1.0, 0.0);
+        let p_2 = vec3(-1.0, 0.0, 0.0);
+        let p_3 = vec3(-0.5, -1.0, 0.0);
+        let p_4 = vec3(0.5, -1.0, 0.0);
+        let p_5 = vec3(1.0, 0.0, 0.0);
+
+        let v_c_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_c));
+        let v_1_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_1));
+        let v_2_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_2));
+        let v_3_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_3));
+        let v_4_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_4));
+        let v_5_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_5));
+        // let v_6_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_6));
+
+        let (h_c_v1_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_1_m_id);
+        let (h_c_v2_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_2_m_id);
+        let (h_c_v3_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_3_m_id);
+        let (h_c_v4_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_4_m_id);
+        let (h_c_v5_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_5_m_id);
+        // let (h_c_v6_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_6_m_id);
+
+        meshgraph
+            .create_face_from_halfedges(h_c_v1_m_id, h_c_v2_m_id)
+            .unwrap();
+
+        meshgraph
+            .create_face_from_halfedges(h_c_v2_m_id, h_c_v3_m_id)
+            .unwrap();
+
+        meshgraph
+            .create_face_from_halfedges(h_c_v3_m_id, h_c_v4_m_id)
+            .unwrap();
+
+        meshgraph
+            .create_face_from_halfedges(h_c_v4_m_id, h_c_v5_m_id)
+            .unwrap();
+
+        // meshgraph
+        //     .create_face_from_halfedges(h_c_v5_m_id, h_c_v6_m_id)
+        //     .unwrap();
+
+        // meshgraph
+        //     .create_face_from_halfedges(h_c_v6_m_id, h_c_v1_m_id)
+        //     .unwrap();
+
+        meshgraph
+            .create_face_from_halfedges(h_c_v5_m_id, h_c_v1_m_id)
+            .unwrap();
+
+        // TODO: Call join function on meshgraph
         #[cfg(feature = "rerun")]
         {
             meshgraph.log_rerun();
