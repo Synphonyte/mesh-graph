@@ -1,6 +1,6 @@
 use glam::Vec3;
 use itertools::Itertools;
-use parry3d::{bounding_volume::Aabb, na::Point3};
+use parry3d::bounding_volume::Aabb;
 use tracing::{error, instrument};
 
 use crate::{CircularHalfedgesIterator, MeshGraph, error_none};
@@ -57,7 +57,7 @@ impl Face {
     pub fn aabb(&self, mesh_graph: &MeshGraph) -> Aabb {
         Aabb::from_points(
             self.vertex_positions(mesh_graph)
-                .map(|p| Point3::new(p.x, p.y, p.z)),
+                .map(|p| Vec3::new(p.x, p.y, p.z)),
         )
     }
 
@@ -133,10 +133,15 @@ impl Face {
                 .or_else(error_none!("Halfedge not found"))?;
 
             if he.end_vertex == vertex_id1 || he.end_vertex == vertex_id2 {
-                let he_start_vertex_id = he
-                    .start_vertex(mesh_graph)
-                    .or_else(error_none!("Start vertex not found"))?;
-                if he_start_vertex_id == vertex_id1 || he_start_vertex_id == vertex_id2 {
+                let prev_he_id = he
+                    .prev(mesh_graph)
+                    .or_else(error_none!("Prev halfedge not found"))?;
+                let prev_he = mesh_graph
+                    .halfedges
+                    .get(prev_he_id)
+                    .or_else(error_none!("Halfedge not found"))?;
+
+                if prev_he.end_vertex == vertex_id1 || prev_he.end_vertex == vertex_id2 {
                     return Some(he_id);
                 }
             }

@@ -111,6 +111,7 @@ pub struct MeshGraph {
     pub vertex_normals: Option<SecondaryMap<VertexId, Vec3>>,
 
     /// Maps vertex IDs to their corresponding outgoing halfedges (not in any particular order)
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub outgoing_halfedges: SecondaryMap<VertexId, Vec<HalfedgeId>>,
 }
 
@@ -310,5 +311,24 @@ impl MeshGraph {
         }
         self.bvh
             .rebuild(&mut self.bvh_workspace, Default::default());
+    }
+
+    #[instrument(skip_all)]
+    pub fn rebuild_outgoing_halfedges(&mut self) {
+        self.outgoing_halfedges.clear();
+
+        for halfedge in self.halfedges.values() {
+            let Some(twin_id) = halfedge.twin else {
+                error!("Halfedge has no twin");
+                continue;
+            };
+
+            let Some(entry) = self.outgoing_halfedges.entry(halfedge.end_vertex) else {
+                error!("Vertex key invalid");
+                continue;
+            };
+
+            entry.or_default().push(twin_id);
+        }
     }
 }

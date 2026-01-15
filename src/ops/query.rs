@@ -1,6 +1,7 @@
+use glam::Vec3;
 use itertools::Itertools;
 use parry3d::{
-    math::{Isometry, Point, Vector},
+    math::Pose,
     partitioning::Bvh,
     query::{
         PointProjection, PointQuery, PointQueryWithLocation, Ray, RayCast, RayIntersection,
@@ -15,14 +16,11 @@ use crate::{Face, MeshGraph, error_none, utils::unwrap_or_return};
 impl PointQuery for MeshGraph {
     #[inline]
     #[instrument(skip(self))]
-    fn project_local_point(&self, point: &Point<f32>, solid: bool) -> PointProjection {
+    fn project_local_point(&self, point: Vec3, solid: bool) -> PointProjection {
         self.project_local_point_and_get_location(point, solid).0
     }
 
-    fn project_local_point_and_get_feature(
-        &self,
-        _point: &Point<f32>,
-    ) -> (PointProjection, FeatureId) {
+    fn project_local_point_and_get_feature(&self, _point: Vec3) -> (PointProjection, FeatureId) {
         unimplemented!("Not available")
     }
 }
@@ -34,7 +32,7 @@ impl PointQueryWithLocation for MeshGraph {
     #[instrument(skip(self))]
     fn project_local_point_and_get_location(
         &self,
-        point: &Point<f32>,
+        point: Vec3,
         solid: bool,
     ) -> (PointProjection, Self::Location) {
         self.project_local_point_and_get_location_with_max_dist(point, solid, f32::MAX)
@@ -45,7 +43,7 @@ impl PointQueryWithLocation for MeshGraph {
     #[instrument(skip(self))]
     fn project_local_point_and_get_location_with_max_dist(
         &self,
-        point: &Point<f32>,
+        point: Vec3,
         solid: bool,
         max_dist: f32,
     ) -> Option<(PointProjection, Self::Location)> {
@@ -73,11 +71,8 @@ impl PointQueryWithLocation for MeshGraph {
                 .or_else(error_none!("Vertex normal not found"))?;
 
             let dpt = point - proj.point;
-            proj.is_inside = dpt.dot(&Vector::new(
-                pseudo_normal.x,
-                pseudo_normal.y,
-                pseudo_normal.z,
-            )) <= 0.0;
+            proj.is_inside =
+                dpt.dot(Vec3::new(pseudo_normal.x, pseudo_normal.y, pseudo_normal.z)) <= 0.0;
         }
 
         Some((proj, *face))
@@ -112,7 +107,7 @@ impl CompositeShape for MeshGraph {
     fn map_part_at(
         &self,
         shape_id: u32,
-        f: &mut dyn FnMut(Option<&Isometry<f32>>, &dyn Shape, Option<&dyn NormalConstraints>),
+        f: &mut dyn FnMut(Option<&Pose>, &dyn Shape, Option<&dyn NormalConstraints>),
     ) {
         let tri = self.triangle(shape_id);
         let normal_constraints = Default::default(); // self.triangle_normal_constraints(face_id);
@@ -132,11 +127,7 @@ impl TypedCompositeShape for MeshGraph {
     fn map_typed_part_at<T>(
         &self,
         shape_id: u32,
-        mut f: impl FnMut(
-            Option<&Isometry<f32>>,
-            &Self::PartShape,
-            Option<&Self::PartNormalConstraints>,
-        ) -> T,
+        mut f: impl FnMut(Option<&Pose>, &Self::PartShape, Option<&Self::PartNormalConstraints>) -> T,
     ) -> Option<T> {
         let tri = self.triangle(shape_id);
         let pseudo_normals = None; // self.triangle_normal_constraints(face_id);
@@ -147,7 +138,7 @@ impl TypedCompositeShape for MeshGraph {
     fn map_untyped_part_at<T>(
         &self,
         shape_id: u32,
-        mut f: impl FnMut(Option<&Isometry<f32>>, &dyn Shape, Option<&dyn NormalConstraints>) -> T,
+        mut f: impl FnMut(Option<&Pose>, &dyn Shape, Option<&dyn NormalConstraints>) -> T,
     ) -> Option<T> {
         let tri = self.triangle(shape_id);
         let pseudo_normals = Default::default(); // self.triangle_normal_constraints(face_id);
@@ -184,9 +175,9 @@ impl MeshGraph {
         }
 
         Triangle::new(
-            Point::new(pos[0].x, pos[0].y, pos[0].z),
-            Point::new(pos[1].x, pos[1].y, pos[1].z),
-            Point::new(pos[2].x, pos[2].y, pos[2].z),
+            Vec3::new(pos[0].x, pos[0].y, pos[0].z),
+            Vec3::new(pos[1].x, pos[1].y, pos[1].z),
+            Vec3::new(pos[2].x, pos[2].y, pos[2].z),
         )
     }
 

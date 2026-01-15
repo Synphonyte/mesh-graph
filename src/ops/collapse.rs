@@ -4,8 +4,8 @@ use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{
-    error_none, utils::unwrap_or_return, FaceId, HalfedgeId, MeshGraph, Selection, SelectionOps,
-    VertexId,
+    FaceId, HalfedgeId, MeshGraph, Selection, SelectionOps, VertexId, error_none,
+    utils::unwrap_or_return,
 };
 
 impl MeshGraph {
@@ -758,6 +758,7 @@ mod test {
 
         let face8 = mesh_graph.create_face_from_halfedges(he1, he7);
 
+        #[cfg(feature = "rerun")]
         let faces = vec![
             face1,
             face2.unwrap(),

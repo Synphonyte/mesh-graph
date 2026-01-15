@@ -1,8 +1,8 @@
 use hashbrown::HashSet;
 use itertools::Itertools;
-use tracing::{error, info, instrument};
+use tracing::{error, instrument};
 
-use crate::{error_none, FaceId, HalfedgeId, MeshGraph, VertexId};
+use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
 
 #[derive(Default)]
 pub struct VertexNeighborhoodCleanup {
@@ -101,9 +101,7 @@ impl MeshGraph {
         removed_halfedges: &mut Vec<HalfedgeId>,
         removed_faces: &mut Vec<FaceId>,
     ) -> Option<VertexId> {
-        if self.vertices.get(vertex_id).is_none() {
-            return None;
-        }
+        self.vertices.get(vertex_id)?;
 
         self.remove_neighboring_flaps(
             vertex_id,
@@ -121,26 +119,144 @@ impl MeshGraph {
             return Some(inserted_duplicated_vertex);
         }
 
-        if let Some(inserted_duplicated_vertex) = self.remove_degenerate_edges(
-            vertex_id,
-            removed_vertices,
-            removed_halfedges,
-            removed_faces,
-        ) {
-            return Some(inserted_duplicated_vertex);
+        self.remove_degenerate_edges(vertex_id)
+    }
+
+    fn remove_degenerate_edges(&mut self, vertex_id: VertexId) -> Option<VertexId> {
+        let halfedges = self
+            .vertices
+            .get(vertex_id)
+            .or_else(error_none!("Vertex not found"))?
+            .outgoing_halfedges(self)
+            .collect_vec();
+
+        for (he_id1, he_id2) in halfedges.into_iter().tuple_combinations() {
+            if self.halfedges_share_all_vertices(he_id1, he_id2) {
+                let he1 = self.halfedges[he_id1];
+                let twin_id1 = he1.twin.or_else(error_none!("Twin not found"))?;
+                let face_id1 = self
+                    .halfedges
+                    .get(twin_id1)
+                    .or_else(error_none!("Halfedge not found"))?
+                    .face
+                    .or_else(error_none!("Face not found"))?;
+                let face_id2 = self
+                    .halfedges
+                    .get(he_id2)
+                    .or_else(error_none!("Halfedge not found"))?
+                    .face
+                    .or_else(error_none!("Face not found"))?;
+
+                let coincident_face_ids = self.vertices[vertex_id].faces(self).collect_vec();
+                let mut start_idx = 0;
+
+                for (idx, face_id) in coincident_face_ids.iter().enumerate() {
+                    if *face_id == face_id1 {
+                        start_idx = idx;
+                        break;
+                    }
+                }
+
+                let mut end_idx = start_idx;
+                let mut side_one = vec![];
+
+                loop {
+                    let face_id = coincident_face_ids[end_idx];
+
+                    side_one.push(face_id);
+
+                    end_idx += 1;
+                    end_idx %= coincident_face_ids.len();
+
+                    if face_id == face_id2 {
+                        break;
+                    }
+                }
+
+                let mut side_two = vec![];
+
+                while end_idx != start_idx {
+                    let face_id = coincident_face_ids[end_idx];
+
+                    side_two.push(face_id);
+
+                    end_idx += 1;
+                    end_idx %= coincident_face_ids.len();
+                }
+
+                return self.split_regions_at_edge(vertex_id, he1.end_vertex, side_one, side_two);
+            }
         }
 
         None
     }
 
-    fn remove_degenerate_edges(
+    #[instrument(skip(self))]
+    fn split_regions_at_edge(
         &mut self,
         vertex_id: VertexId,
-        removed_vertices: &mut Vec<VertexId>,
-        removed_halfedges: &mut Vec<HalfedgeId>,
-        removed_faces: &mut Vec<FaceId>,
+        other_vertex_id: VertexId,
+        side_one: Vec<FaceId>,
+        side_two: Vec<FaceId>,
     ) -> Option<VertexId> {
-        todo!()
+        if side_one.len() < 2 || side_two.len() < 2 {
+            error!("Not enough halfedges to split");
+            return None;
+        }
+
+        #[cfg(feature = "rerun")]
+        {
+            self.log_vert_rerun("split_regions_at_edge", vertex_id);
+            self.log_faces_rerun("split_regions_at_edge/side_one", &side_one);
+            self.log_faces_rerun("split_regions_at_edge/side_two", &side_two);
+        }
+
+        let new_vertex_id = self.insert_vertex(
+            *self
+                .positions
+                .get(vertex_id)
+                .or_else(error_none!("Vertex position not found"))?,
+        );
+
+        // TODO : Move vertices apart?
+
+        // Updating vertices
+        for face_id in &side_two {
+            let face = self
+                .faces
+                .get(*face_id)
+                .or_else(error_none!("Face not found"))?;
+
+            for he_id in face.halfedges(self).collect_vec() {
+                // already checked in iterator that this he exists
+                let he = &mut self.halfedges[he_id];
+
+                if he.end_vertex == vertex_id {
+                    he.end_vertex = new_vertex_id;
+                }
+            }
+        }
+
+        self.weld_faces_at(
+            vertex_id,
+            other_vertex_id,
+            side_one[side_one.len() - 1],
+            side_one[0],
+        );
+        self.weld_faces_at(
+            new_vertex_id,
+            other_vertex_id,
+            side_two[0],
+            side_two[side_two.len() - 1],
+        );
+
+        self.outgoing_halfedges[vertex_id] =
+            self.vertices[vertex_id].outgoing_halfedges(self).collect();
+        self.outgoing_halfedges[new_vertex_id] = self.vertices[new_vertex_id]
+            .outgoing_halfedges(self)
+            .collect();
+
+        Some(new_vertex_id)
     }
 
     pub fn remove_degenerate_faces(
@@ -198,8 +314,6 @@ impl MeshGraph {
 
                 side_two.pop();
 
-                info!("before");
-
                 let new_vertex_id =
                     self.split_regions_at_vertex(vertex_id, side_one, side_two, removed_halfedges);
 
@@ -215,9 +329,7 @@ impl MeshGraph {
 
                 #[cfg(feature = "rerun")]
                 {
-                    info!("after split regions. logging");
                     self.log_rerun();
-                    crate::RR.flush_blocking().unwrap();
                 }
 
                 return new_vertex_id;
@@ -247,11 +359,6 @@ impl MeshGraph {
             self.log_faces_rerun("split_regions_at_vertex/side_two", &side_two);
         }
 
-        let first_face_id = side_one[0];
-        let last_face_id = side_one[side_one.len() - 1];
-
-        self.weld_faces(vertex_id, last_face_id, first_face_id);
-
         let new_vertex_id = self.insert_vertex(
             *self
                 .positions
@@ -259,7 +366,7 @@ impl MeshGraph {
                 .or_else(error_none!("Vertex position not found"))?,
         );
 
-        // TODO : Move vertices apart
+        // TODO : Move vertices apart?
 
         // Updating start vertex
         for face_id in &side_two {
@@ -271,42 +378,20 @@ impl MeshGraph {
             for he_id in face.halfedges(self).collect_vec() {
                 // already checked in iterator that this he exists
                 let he = &mut self.halfedges[he_id];
-                let twin_id = he.twin.or_else(error_none!("Twin not found"))?;
-
                 if he.end_vertex == vertex_id {
                     he.end_vertex = new_vertex_id;
-
-                    let outgoing_hes = &mut self.outgoing_halfedges[new_vertex_id];
-
-                    if !outgoing_hes.contains(&twin_id) {
-                        outgoing_hes.push(twin_id);
-                    }
-
-                    // we just inserted the new vertex
-                    self.vertices[new_vertex_id].outgoing_halfedge = Some(twin_id);
-                }
-
-                let twin = self
-                    .halfedges
-                    .get_mut(twin_id)
-                    .or_else(error_none!("Twin not found"))?;
-                if twin.end_vertex == vertex_id {
-                    twin.end_vertex = new_vertex_id;
-
-                    let twin_twin_id = twin.twin.or_else(error_none!("Twin not found"))?;
-
-                    let outgoing_hes = &mut self.outgoing_halfedges[new_vertex_id];
-
-                    if !outgoing_hes.contains(&twin_twin_id) {
-                        outgoing_hes.push(twin_twin_id);
-                    }
                 }
             }
         }
 
-        crate::RR.flush_blocking().ok();
-
+        self.weld_faces(vertex_id, side_one[side_one.len() - 1], side_one[0]);
         self.weld_faces(new_vertex_id, side_two[0], side_two[side_two.len() - 1]);
+
+        self.outgoing_halfedges[vertex_id] =
+            self.vertices[vertex_id].outgoing_halfedges(self).collect();
+        self.outgoing_halfedges[new_vertex_id] = self.vertices[new_vertex_id]
+            .outgoing_halfedges(self)
+            .collect();
 
         Some(new_vertex_id)
     }
@@ -321,8 +406,11 @@ impl MeshGraph {
         face_id1: FaceId,
         face_id2: FaceId,
     ) -> Option<()> {
-        self.log_face_rerun("face1", face_id1);
-        self.log_face_rerun("face2", face_id2);
+        // #[cfg(feature = "rerun")]
+        // {
+        //     self.log_face_rerun("face1", face_id1);
+        //     self.log_face_rerun("face2", face_id2);
+        // }
 
         let face1 = self
             .faces
@@ -348,20 +436,52 @@ impl MeshGraph {
         let other_common_vertex_id =
             other_common_vertex_id.or_else(error_none!("No other common vertex found"))?;
 
+        self.weld_faces_at(start_vertex_id, other_common_vertex_id, face_id1, face_id2)
+    }
+
+    #[instrument(skip(self))]
+    fn weld_faces_at(
+        &mut self,
+        start_vertex_id: VertexId,
+        other_common_vertex_id: VertexId,
+        face_id1: FaceId,
+        face_id2: FaceId,
+    ) -> Option<()> {
+        let face1 = self
+            .faces
+            .get(face_id1)
+            .or_else(error_none!("Face not found"))?;
+        let face2 = self
+            .faces
+            .get(face_id2)
+            .or_else(error_none!("Face not found"))?;
+
         let he1_id = face1
             .halfedge_between(start_vertex_id, other_common_vertex_id, self)
             .or_else(error_none!("Halfedge between vertices not found"))?;
-
-        self.log_he_rerun("he1", he1_id);
 
         let he2_id = face2
             .halfedge_between(start_vertex_id, other_common_vertex_id, self)
             .or_else(error_none!("Halfedge between vertices not found"))?;
 
-        self.log_he_rerun("he2", he2_id);
-
         self.halfedges[he1_id].twin = Some(he2_id);
         self.halfedges[he2_id].twin = Some(he1_id);
+
+        let (start_out_he_id, other_out_he_id) =
+            if self.halfedges[he1_id].end_vertex == start_vertex_id {
+                (he2_id, he1_id)
+            } else {
+                (he1_id, he2_id)
+            };
+
+        self.vertices
+            .get_mut(start_vertex_id)
+            .or_else(error_none!("Start vertex not found"))?
+            .outgoing_halfedge = Some(start_out_he_id);
+        self.vertices
+            .get_mut(other_common_vertex_id)
+            .or_else(error_none!("Other vertex not found"))?
+            .outgoing_halfedge = Some(other_out_he_id);
 
         Some(())
     }
@@ -589,8 +709,8 @@ mod tests {
         meshgraph.delete_only_vertex(v1p_id);
         meshgraph.delete_only_vertex(v4p_id);
 
-        // #[cfg(feature = "rerun")]
-        // meshgraph.log_rerun();
+        #[cfg(feature = "rerun")]
+        meshgraph.log_rerun();
 
         let mut removed_vertices = vec![];
         let mut removed_halfedges = vec![];
@@ -605,7 +725,6 @@ mod tests {
 
         #[cfg(feature = "rerun")]
         {
-            info!("finished");
             meshgraph.log_rerun();
             crate::RR.flush_blocking().unwrap();
         }
@@ -672,6 +791,11 @@ mod tests {
         meshgraph.outgoing_halfedges[v1_id].push(he_1p_3_id);
 
         meshgraph.delete_only_vertex(v1p_id);
+
+        #[cfg(feature = "rerun")]
+        meshgraph.log_rerun();
+
+        meshgraph.remove_degenerate_edges(center_v_id);
 
         #[cfg(feature = "rerun")]
         {

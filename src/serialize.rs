@@ -26,6 +26,7 @@ impl From<MeshGraphIntermediate> for MeshGraph {
             faces: value.faces,
             positions: value.positions,
             vertex_normals: value.vertex_normals,
+            outgoing_halfedges: Default::default(),
         };
 
         for (id, face) in &mut mesh_graph.faces {
@@ -36,6 +37,7 @@ impl From<MeshGraphIntermediate> for MeshGraph {
         }
 
         mesh_graph.rebuild_bvh();
+        mesh_graph.rebuild_outgoing_halfedges();
 
         mesh_graph
     }

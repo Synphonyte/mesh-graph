@@ -1,5 +1,5 @@
 use glam::Vec3;
-use tracing::{info, instrument};
+use tracing::instrument;
 
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
 
