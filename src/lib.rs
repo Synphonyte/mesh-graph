@@ -221,9 +221,9 @@ impl MeshGraph {
                 continue;
             }
 
-            let (he_a_id, _) = mesh_graph.insert_or_get_edge(a, b);
-            let (he_b_id, _) = mesh_graph.insert_or_get_edge(b, c);
-            let (he_c_id, _) = mesh_graph.insert_or_get_edge(c, a);
+            let he_a_id = mesh_graph.insert_or_get_edge(a, b).start_to_end_he_id;
+            let he_b_id = mesh_graph.insert_or_get_edge(b, c).start_to_end_he_id;
+            let he_c_id = mesh_graph.insert_or_get_edge(c, a).start_to_end_he_id;
 
             let _face_id = mesh_graph.insert_face(he_a_id, he_b_id, he_c_id);
 

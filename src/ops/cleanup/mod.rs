@@ -1,9 +1,10 @@
 mod edge_boundary;
+mod merge;
 mod vertex_neighborhood;
 
 use tracing::instrument;
 
-use crate::{error_none, FaceId, HalfedgeId, MeshGraph, VertexId};
+use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
 
 impl MeshGraph {
     /// Test if two faces have at least one halfedge in common.
@@ -167,7 +168,7 @@ mod tests {
     use glam::*;
 
     #[test]
-    fn test_vertex_join() {
+    fn test_vertex_join_equal_count() {
         let mut meshgraph = MeshGraph::new();
         let p_c = vec3(0.0, 0.0, 1.0);
         let p_1 = vec3(0.0, 1.0, 0.0);
@@ -185,12 +186,24 @@ mod tests {
         let v_5_id = meshgraph.insert_vertex(p_5);
         let v_6_id = meshgraph.insert_vertex(p_6);
 
-        let (h_c_v1_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_1_id);
-        let (h_c_v2_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_2_id);
-        let (h_c_v3_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_3_id);
-        let (h_c_v4_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_4_id);
-        let (h_c_v5_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_5_id);
-        let (h_c_v6_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_6_id);
+        let h_c_v1_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_1_id)
+            .start_to_end_he_id;
+        let h_c_v2_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_2_id)
+            .start_to_end_he_id;
+        let h_c_v3_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_3_id)
+            .start_to_end_he_id;
+        let h_c_v4_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_4_id)
+            .start_to_end_he_id;
+        let h_c_v5_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_5_id)
+            .start_to_end_he_id;
+        let h_c_v6_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_6_id)
+            .start_to_end_he_id;
 
         meshgraph
             .create_face_from_halfedges(h_c_v1_id, h_c_v2_id)
@@ -225,12 +238,24 @@ mod tests {
         let v_5_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_5));
         let v_6_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_6));
 
-        let (h_c_v1_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_1_m_id);
-        let (h_c_v2_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_2_m_id);
-        let (h_c_v3_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_3_m_id);
-        let (h_c_v4_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_4_m_id);
-        let (h_c_v5_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_5_m_id);
-        let (h_c_v6_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_6_m_id);
+        let h_c_v1_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_1_m_id)
+            .start_to_end_he_id;
+        let h_c_v2_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_2_m_id)
+            .start_to_end_he_id;
+        let h_c_v3_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_3_m_id)
+            .start_to_end_he_id;
+        let h_c_v4_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_4_m_id)
+            .start_to_end_he_id;
+        let h_c_v5_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_5_m_id)
+            .start_to_end_he_id;
+        let h_c_v6_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_6_m_id)
+            .start_to_end_he_id;
 
         meshgraph
             .create_face_from_halfedges(h_c_v1_m_id, h_c_v2_m_id)
@@ -256,7 +281,10 @@ mod tests {
             .create_face_from_halfedges(h_c_v6_m_id, h_c_v1_m_id)
             .unwrap();
 
-        // TODO: Call join function on meshgraph
+        #[cfg(feature = "rerun")]
+        meshgraph.log_rerun();
+
+        meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id);
 
         #[cfg(feature = "rerun")]
         {
@@ -284,12 +312,24 @@ mod tests {
         let v_5_id = meshgraph.insert_vertex(p_5);
         let v_6_id = meshgraph.insert_vertex(p_6);
 
-        let (h_c_v1_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_1_id);
-        let (h_c_v2_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_2_id);
-        let (h_c_v3_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_3_id);
-        let (h_c_v4_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_4_id);
-        let (h_c_v5_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_5_id);
-        let (h_c_v6_id, _) = meshgraph.insert_or_get_edge(v_c_id, v_6_id);
+        let h_c_v1_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_1_id)
+            .start_to_end_he_id;
+        let h_c_v2_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_2_id)
+            .start_to_end_he_id;
+        let h_c_v3_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_3_id)
+            .start_to_end_he_id;
+        let h_c_v4_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_4_id)
+            .start_to_end_he_id;
+        let h_c_v5_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_5_id)
+            .start_to_end_he_id;
+        let h_c_v6_id = meshgraph
+            .insert_or_get_edge(v_c_id, v_6_id)
+            .start_to_end_he_id;
 
         meshgraph
             .create_face_from_halfedges(h_c_v1_id, h_c_v2_id)
@@ -330,12 +370,22 @@ mod tests {
         let v_5_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_5));
         // let v_6_m_id = meshgraph.insert_vertex(mirror_mat.project_point3(p_6));
 
-        let (h_c_v1_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_1_m_id);
-        let (h_c_v2_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_2_m_id);
-        let (h_c_v3_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_3_m_id);
-        let (h_c_v4_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_4_m_id);
-        let (h_c_v5_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_5_m_id);
-        // let (h_c_v6_m_id, _) = meshgraph.insert_or_get_edge(v_c_m_id, v_6_m_id);
+        let h_c_v1_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_1_m_id)
+            .start_to_end_he_id;
+        let h_c_v2_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_2_m_id)
+            .start_to_end_he_id;
+        let h_c_v3_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_3_m_id)
+            .start_to_end_he_id;
+        let h_c_v4_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_4_m_id)
+            .start_to_end_he_id;
+        let h_c_v5_m_id = meshgraph
+            .insert_or_get_edge(v_c_m_id, v_5_m_id)
+            .start_to_end_he_id;
+        // let h_c_v6_m_id = meshgraph.insert_or_get_edge(v_c_m_id, v_6_m_id).start_to_end_he_id;
 
         meshgraph
             .create_face_from_halfedges(h_c_v1_m_id, h_c_v2_m_id)

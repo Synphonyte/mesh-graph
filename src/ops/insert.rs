@@ -19,40 +19,42 @@ impl MeshGraph {
     /// Inserts a pair of halfedges and connects them to the given vertices (from and to the halfedge) and each other as twins.
     /// If the edge already exists or partially exists,
     /// it returns the existing edge while creating any missing halfedges.
-    ///
-    /// Returns the pair of halfedge ids `(he1, he2)` where `he1` is the halfedge connecting `start_vertex` to `end_vertex`
-    /// and `he2` is the twin halfedge connecting `end_vertex` to `start_vertex`.
     pub fn insert_or_get_edge(
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-    ) -> (HalfedgeId, HalfedgeId) {
-        let (he1_id, he2_id) = self
+    ) -> InsertOrGetEdge {
+        let ret = self
             .insert_or_get_edge_inner(start_vertex_id, end_vertex_id)
             .unwrap_or_else(|| {
-                let he1_id = self.insert_halfedge(start_vertex_id, end_vertex_id);
-                let he2_id = self.insert_halfedge(end_vertex_id, start_vertex_id);
+                let start_to_end_he_id = self.insert_halfedge(start_vertex_id, end_vertex_id);
+                let twin_he_id = self.insert_halfedge(end_vertex_id, start_vertex_id);
 
-                (he1_id, he2_id)
+                InsertOrGetEdge {
+                    start_to_end_he_id,
+                    twin_he_id,
+                    new_start_to_end: true,
+                    new_twin: true,
+                }
             });
 
         // insert_or_get_edge_inner ensures that both halfedges exist.
-        self.halfedges[he1_id].twin = Some(he2_id);
-        self.halfedges[he2_id].twin = Some(he1_id);
+        self.halfedges[ret.start_to_end_he_id].twin = Some(ret.twin_he_id);
+        self.halfedges[ret.twin_he_id].twin = Some(ret.start_to_end_he_id);
 
         if let Some(start_v) = self.vertices.get_mut(start_vertex_id) {
-            start_v.outgoing_halfedge = Some(he1_id);
+            start_v.outgoing_halfedge = Some(ret.start_to_end_he_id);
         } else {
             error!("Vertex not found");
         }
 
         if let Some(end_v) = self.vertices.get_mut(end_vertex_id) {
-            end_v.outgoing_halfedge = Some(he2_id);
+            end_v.outgoing_halfedge = Some(ret.twin_he_id);
         } else {
             error!("Vertex not found");
         }
 
-        (he1_id, he2_id)
+        ret
     }
 
     fn halfedge_from_to(
@@ -78,11 +80,13 @@ impl MeshGraph {
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-    ) -> Option<(HalfedgeId, HalfedgeId)> {
-        let mut h1_id = self.halfedge_from_to(start_vertex_id, end_vertex_id);
-        let mut h2_id = self.halfedge_from_to(end_vertex_id, start_vertex_id);
+    ) -> Option<InsertOrGetEdge> {
+        let mut he1_id = self.halfedge_from_to(start_vertex_id, end_vertex_id);
+        let mut he2_id = self.halfedge_from_to(end_vertex_id, start_vertex_id);
+        let mut new1 = false;
+        let mut new2 = false;
 
-        match (h1_id, h2_id) {
+        match (he1_id, he2_id) {
             (Some(h1_id), Some(h2_id)) => {
                 let h1 = self
                     .halfedges
@@ -99,10 +103,12 @@ impl MeshGraph {
                 }
             }
             (Some(_h1_id), None) => {
-                h2_id = Some(self.insert_halfedge(end_vertex_id, start_vertex_id));
+                he2_id = Some(self.insert_halfedge(end_vertex_id, start_vertex_id));
+                new2 = true;
             }
             (None, Some(_h2_id)) => {
-                h1_id = Some(self.insert_halfedge(start_vertex_id, end_vertex_id));
+                he1_id = Some(self.insert_halfedge(start_vertex_id, end_vertex_id));
+                new1 = true;
             }
             (None, None) => {
                 // the outer method will handle this case
@@ -111,10 +117,15 @@ impl MeshGraph {
         }
 
         // we just made sure that h1_id and h2_id are Some(_)
-        let h1_id = h1_id.unwrap();
-        let h2_id = h2_id.unwrap();
+        let start_to_end_he_id = he1_id.unwrap();
+        let twin_he_id = he2_id.unwrap();
 
-        Some((h1_id, h2_id))
+        Some(InsertOrGetEdge {
+            start_to_end_he_id,
+            twin_he_id,
+            new_start_to_end: new1,
+            new_twin: new2,
+        })
     }
 
     /// Inserts a halfedge into the mesh graph. It only connects the halfedge to the given end vertex but not the reverse.
@@ -134,7 +145,7 @@ impl MeshGraph {
         self.outgoing_halfedges
             .entry(start_vertex)
             .expect("we just insterted into halfedges above")
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(he_id);
 
         he_id
@@ -169,5 +180,31 @@ impl MeshGraph {
         }
 
         face_id
+    }
+}
+
+/// Return value of `insert_or_get_edge`
+pub struct InsertOrGetEdge {
+    /// Id of the halfedge from start vertex to end vertex
+    pub start_to_end_he_id: HalfedgeId,
+    /// Id of the halfedge from end vertex to start vertex
+    pub twin_he_id: HalfedgeId,
+    /// Whether the halfedge from start vertex to end vertex was newly created
+    pub new_start_to_end: bool,
+    /// Whether the halfedge from end vertex to start vertex was newly created
+    pub new_twin: bool,
+}
+
+impl InsertOrGetEdge {
+    /// Return the ids of the newly created halfedges
+    pub fn created_he_ids(&self) -> Vec<HalfedgeId> {
+        let mut he_ids = vec![];
+        if self.new_start_to_end {
+            he_ids.push(self.start_to_end_he_id);
+        }
+        if self.new_twin {
+            he_ids.push(self.twin_he_id);
+        }
+        he_ids
     }
 }

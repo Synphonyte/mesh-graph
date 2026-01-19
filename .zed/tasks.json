@@ -11,7 +11,9 @@
 			"--lib",
 			// "--release",
 			"--features",
-			"rerun"
+			"rerun",
+			"--",
+			"--test-threads=1"
 		],
 		// Env overrides for the command, will be appended to the terminal's environment from the settings.
 		"env": { "RUST_LOG": "info", "RUST_BACKTRACE": "1" },
@@ -63,7 +65,7 @@
 		"command": "cargo",
 		"args": [
 			"test",
-			"ops::cleanup::tests",
+			"test_vertex_join_equal_count",
 			"--lib",
 			// "--release",
 			"--features",
