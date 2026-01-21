@@ -65,7 +65,7 @@
 		"command": "cargo",
 		"args": [
 			"test",
-			"test_vertex_join_equal_count",
+			"test_vertex_join_different_count",
 			"--lib",
 			// "--release",
 			"--features",

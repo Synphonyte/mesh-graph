@@ -199,10 +199,12 @@ mod tests {
             let corner_vertex_id = corner_vertex_ids[cv_i];
             let vertex_id = outer_vertex_ids[cv_i];
             let next_vertext_id = outer_vertex_ids[(cv_i + 1) % outer_vertex_ids.len()];
-            let (halfedge_vertex_to_corner_id, _) =
-                meshgraph.insert_or_get_edge(vertex_id, corner_vertex_id);
-            let (halfedge_vertex_to_next_vertex_id, _) =
-                meshgraph.insert_or_get_edge(vertex_id, next_vertext_id);
+            let halfedge_vertex_to_corner_id = meshgraph
+                .insert_or_get_edge(vertex_id, corner_vertex_id)
+                .start_to_end_he_id;
+            let halfedge_vertex_to_next_vertex_id = meshgraph
+                .insert_or_get_edge(vertex_id, next_vertext_id)
+                .start_to_end_he_id;
 
             meshgraph
                 .create_face_from_halfedges(
@@ -211,13 +213,16 @@ mod tests {
                 )
                 .unwrap();
 
-            let (halfedge_corner_to_next_vertex_id, _) =
-                meshgraph.insert_or_get_edge(corner_vertex_id, next_vertext_id);
+            let halfedge_corner_to_next_vertex_id = meshgraph
+                .insert_or_get_edge(corner_vertex_id, next_vertext_id)
+                .start_to_end_he_id;
 
-            let (halfedge_next_vertex_to_next_corner_vertex_id, _) = meshgraph.insert_or_get_edge(
-                next_vertext_id,
-                corner_vertex_ids[(cv_i + 1) % corner_vertex_ids.len()],
-            );
+            let halfedge_next_vertex_to_next_corner_vertex_id = meshgraph
+                .insert_or_get_edge(
+                    next_vertext_id,
+                    corner_vertex_ids[(cv_i + 1) % corner_vertex_ids.len()],
+                )
+                .start_to_end_he_id;
 
             meshgraph
                 .create_face_from_halfedges(
@@ -247,7 +252,7 @@ mod tests {
         matrix: Mat4,
         scalar: f32,
         steps: usize,
-    ) {
+    ) -> VertexId {
         let (center, points) = center_and_points.split_first().unwrap();
         let center_id = meshgraph.insert_vertex(*center);
 
@@ -256,7 +261,9 @@ mod tests {
 
         for point in points {
             let vertex_id = meshgraph.insert_vertex(*point);
-            let (halfedge_id, _) = meshgraph.insert_or_get_edge(center_id, vertex_id);
+            let halfedge_id = meshgraph
+                .insert_or_get_edge(center_id, vertex_id)
+                .start_to_end_he_id;
 
             vertex_ids.push(vertex_id);
             halfedge_ids.push(halfedge_id);
@@ -277,11 +284,14 @@ mod tests {
                 *pos = matrix.project_point3(*pos);
             };
         }
+
+        center_id
     }
 
     #[test]
     fn test_vertex_join_equal_count() {
         get_tracing_subscriber();
+
         let mut meshgraph = MeshGraph::new();
         let p_c = vec3(0.0, 0.0, 1.0);
         let p_1 = vec3(0.0, 1.0, 0.0);
@@ -292,7 +302,7 @@ mod tests {
         let p_6 = vec3(1.0, 0.5, 0.0);
 
         let points = vec![p_c, p_1, p_2, p_3, p_4, p_5, p_6];
-        extend_with(&mut meshgraph, &points.clone(), Mat4::default(), 5.0, 3);
+        let v_c_id = extend_with(&mut meshgraph, &points.clone(), Mat4::default(), 2.0, 1);
 
         #[cfg(feature = "rerun")]
         {
@@ -307,22 +317,29 @@ mod tests {
             vec3(0.0, 0.0, 3.0),
         );
 
-        extend_with(&mut meshgraph, &points, mirror_mat, 3.0, 2);
+        let v_c_m_id = extend_with(&mut meshgraph, &points, mirror_mat, 2.0, 1);
 
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
 
-        meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id);
+        let result = meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id);
 
         #[cfg(feature = "rerun")]
         {
             meshgraph.log_rerun();
             RR.flush_blocking().unwrap();
         }
+
+        assert_eq!(result.removed_faces.len(), 12);
+        assert_eq!(result.removed_halfedges.len(), 24);
+        assert_eq!(result.removed_vertices.len(), 2);
+
+        assert_eq!(result.added_faces.len(), 24);
+        assert_eq!(result.added_halfedges.len(), 24);
     }
 
     #[test]
-    fn test_vertex_join_non_similar_vertex_count() {
+    fn test_vertex_join_different_count() {
         let mut meshgraph = MeshGraph::new();
         let p_c = vec3(0.0, 0.0, 1.0);
         let p_1 = vec3(0.0, 1.0, 0.0);
@@ -332,12 +349,12 @@ mod tests {
         let p_5 = vec3(1.0, -0.5, 0.0);
         let p_6 = vec3(1.0, 0.5, 0.0);
 
-        extend_with(
+        let v_c_id = extend_with(
             &mut meshgraph,
             &[p_c, p_1, p_2, p_3, p_4, p_5, p_6],
             Mat4::default(),
-            3.0,
-            3,
+            2.0,
+            1,
         );
 
         #[cfg(feature = "rerun")]
@@ -358,19 +375,27 @@ mod tests {
         let p_4 = vec3(0.5, -1.0, 0.0);
         let p_5 = vec3(1.0, 0.0, 0.0);
 
-        extend_with(
+        let v_c_m_id = extend_with(
             &mut meshgraph,
             &[p_c, p_1, p_2, p_3, p_4, p_5],
             mirror_mat,
-            3.0,
+            2.0,
             1,
         );
 
-        // TODO: Call join function on meshgraph
+        let result = meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id);
+
         #[cfg(feature = "rerun")]
         {
             meshgraph.log_rerun();
             RR.flush_blocking().unwrap();
         }
+
+        assert_eq!(result.removed_faces.len(), 12);
+        assert_eq!(result.removed_halfedges.len(), 24);
+        assert_eq!(result.removed_vertices.len(), 2);
+
+        assert_eq!(result.added_faces.len(), 24);
+        assert_eq!(result.added_halfedges.len(), 24);
     }
 }

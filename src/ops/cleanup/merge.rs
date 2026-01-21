@@ -4,7 +4,7 @@ use glam::Vec3;
 use hashbrown::HashSet;
 use itertools::Itertools;
 use slotmap::SecondaryMap;
-use tracing::error;
+use tracing::{error, instrument};
 
 use crate::{
     FaceId, HalfedgeId, MeshGraph, VertexId, error_none, ops::create::CreateFace,
@@ -28,6 +28,7 @@ impl MeshGraph {
     ///
     /// See [Freestyle: Sculpting meshes with self-adaptive topology DOI 10.1016/j.cag.2011.03.033](https://inria.hal.science/inria-00606516v1/document)
     /// Chapters 3.2 and 5.1
+    #[instrument(skip(self))]
     pub fn merge_vertices_one_rings(
         &mut self,
         vertex_id1: VertexId,
@@ -98,6 +99,12 @@ impl MeshGraph {
             result
         );
 
+        #[cfg(feature = "rerun")]
+        {
+            self.log_vert_rerun("start_v_1", one_ring_v_ids1[orig_start_idx1]);
+            self.log_vert_rerun("start_v_2", one_ring_v_ids2[orig_start_idx2]);
+        }
+
         let mut range_pairs_to_connect = vec![];
 
         let len1 = one_ring_v_ids1.len();
@@ -113,9 +120,15 @@ impl MeshGraph {
         let mut v_id2;
 
         // TODO : condition
-        while start_idx1 != orig_start_idx1 && end_idx1 != orig_start_idx1 {
+        while end_idx1 != orig_start_idx1 {
             v_id1 = one_ring_v_ids1[end_idx1];
             v_id2 = one_ring_v_ids2[end_idx2];
+
+            #[cfg(feature = "rerun")]
+            {
+                self.log_vert_rerun("v_1", v_id1);
+                self.log_vert_rerun("v_2", v_id2);
+            }
 
             let mut shared = false;
 
@@ -168,7 +181,15 @@ impl MeshGraph {
         let diff2 = (start_idx2 as i32 - end_idx2 as i32).unsigned_abs() as usize;
         let diff2 = diff2.min(len2 - diff2);
 
-        if diff1 > 1 || diff2 > 1 {
+        if range_pairs_to_connect.is_empty() {
+            range_pairs_to_connect.push(ConnectPair::new(
+                orig_start_idx1..=(orig_start_idx1 + len1 - 1).rem_euclid(len1),
+                len1,
+                orig_start_idx2..=(orig_start_idx2 + len2 - 1).rem_euclid(len2),
+                len2,
+                !common_v_ids.is_empty(),
+            ));
+        } else if diff1 > 1 || diff2 > 1 || range_pairs_to_connect.is_empty() {
             range_pairs_to_connect.push(ConnectPair::new(
                 start_idx1..=end_idx1,
                 len1,
@@ -178,10 +199,22 @@ impl MeshGraph {
             ));
         }
 
+        tracing::info!("Range pairs to connect: {:#?}", range_pairs_to_connect);
+
         for range_pair_to_connect in range_pairs_to_connect {
             let pairings = range_pair_to_connect.compute_pairings();
 
+            if pairings.len() < 2 {
+                // TODO : implement
+                continue;
+            }
+
+            tracing::info!("Pairings: {:#?}", pairings);
+
             let mut planned_faces = Vec::with_capacity(pairings.len() * 3);
+
+            let mut prev_single_v_id = None;
+            let mut prev_other_v_id = None;
 
             if range_pair_to_connect.closed {
                 // First and last vertices are identical => connect them with the first separated pair of vertices with a triangle.
@@ -200,14 +233,18 @@ impl MeshGraph {
                     one_ring_v_ids1[end1_idx],
                     one_ring_v_ids2[*range_pair_to_connect.ranges[1].end() - 1],
                 ));
+            } else {
+                let last_pairing = pairings.last().unwrap();
+
+                let (s, o) = last_pairing.last_pair([&one_ring_v_ids1, &one_ring_v_ids2]);
+
+                prev_single_v_id = Some(s);
+                prev_other_v_id = Some(o);
             }
 
-            let mut prev_single_idx = None;
-            let mut prev_other_idx = None;
-
             for pairing in pairings {
-                if let Some(prev_single_idx) = prev_single_idx
-                    && let Some(prev_other_idx) = prev_other_idx
+                if let Some(prev_single_idx) = prev_single_v_id
+                    && let Some(prev_other_idx) = prev_other_v_id
                 {
                     // add the quad between the previous and current pairings
                     let (single_v_id, other_v_id) =
@@ -224,16 +261,17 @@ impl MeshGraph {
                 // add the faces of the current pairing
                 planned_faces.extend(pairing.fill_faces([&one_ring_v_ids1, &one_ring_v_ids2]));
 
-                let last = planned_faces.last().unwrap();
+                let (single_v_id, other_v_id) =
+                    pairing.last_pair([&one_ring_v_ids1, &one_ring_v_ids2]);
 
-                prev_single_idx = Some(last.first());
-                prev_other_idx = Some(last.second());
+                prev_single_v_id = Some(single_v_id);
+                prev_other_v_id = Some(other_v_id);
             }
 
-            // TODO : close loop when not closed?
+            tracing::info!("Planned Faces: {:#?}", planned_faces);
 
             for mut planned_face in planned_faces {
-                planned_face.make_ccw(&mut vertex_normals, self);
+                planned_face.make_ccw(&vertex_normals, self);
 
                 let inserted = unwrap_or_return!(
                     planned_face.insert_into_meshgraph(self),
@@ -296,6 +334,7 @@ impl MeshGraph {
 }
 
 /// Two ranges of elements that need to be connected by faces.
+#[derive(Debug)]
 struct ConnectPair {
     /// Wether the first and last indices in the two ranges reference the same vertex, thus forming a closed polygon.
     closed: bool,
@@ -378,6 +417,7 @@ impl ConnectPair {
 }
 
 /// Pairs one element from one range with one or more elements from the other range.
+#[derive(Debug)]
 struct Pairing {
     /// The index of the range in which each single element is paired to one or more elements in the other range.
     /// Can only be `0` or `1`.
@@ -398,9 +438,14 @@ impl Pairing {
         (single_v_id, other_v_id)
     }
 
-    fn fill_faces(&self, v_ids1: [&[VertexId]; 2]) -> Vec<PlannedFace> {
-        // TODO : make sure everything is CCW
+    fn last_pair(&self, v_ids: [&[VertexId]; 2]) -> (VertexId, VertexId) {
+        let single_v_id = v_ids[self.single_range_idx][self.single_idx_in_range];
+        let other_v_id = v_ids[1 - self.single_range_idx][*self.other_range.end()];
 
+        (single_v_id, other_v_id)
+    }
+
+    fn fill_faces(&self, v_ids1: [&[VertexId]; 2]) -> Vec<PlannedFace> {
         let single_v_id = v_ids1[self.single_range_idx][self.single_idx_in_range];
         let mut faces = Vec::new();
 
@@ -409,7 +454,7 @@ impl Pairing {
 
         let mut prev_other_v_id = v_ids1[other_range_idx][others.next().unwrap()];
 
-        for other_idx in self.other_range.clone() {
+        for other_idx in others {
             let other_v_id = v_ids1[other_range_idx][other_idx];
 
             faces.push(PlannedFace::new(single_v_id, other_v_id, prev_other_v_id));
@@ -421,6 +466,7 @@ impl Pairing {
     }
 }
 
+#[derive(Debug)]
 struct PlannedFace([VertexId; 3]);
 
 impl PlannedFace {

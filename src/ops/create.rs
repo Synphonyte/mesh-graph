@@ -80,6 +80,7 @@ impl MeshGraph {
         v_id2: VertexId,
         v_id3: VertexId,
     ) -> Option<CreateFace> {
+        tracing::info!("Creating face from vertices {v_id1:?}, {v_id2:?}, {v_id3:?}");
         let inserted_a = self.insert_or_get_edge(v_id1, v_id2);
         let inserted_b = self.insert_or_get_edge(v_id2, v_id3);
         let inserted_c = self.insert_or_get_edge(v_id3, v_id1);
@@ -93,6 +94,8 @@ impl MeshGraph {
         let mut halfedge_ids = inserted_a.created_he_ids();
         halfedge_ids.extend(inserted_b.created_he_ids());
         halfedge_ids.extend(inserted_c.created_he_ids());
+
+        self.log_face_rerun("create_face_from_verteix", face_id);
 
         Some(CreateFace {
             face_id,
