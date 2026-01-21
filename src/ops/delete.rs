@@ -135,4 +135,61 @@ impl MeshGraph {
             self.halfedges.remove(he_id);
         }
     }
+
+    pub fn delete_only_halfedge_and_twin(&mut self, he_id: HalfedgeId) {
+        if let Some(he) = self.halfedges.get(he_id) {
+            if let Some(start_v_id) = he.start_vertex(self)
+                && let Some(hes) = self.outgoing_halfedges.get_mut(start_v_id)
+            {
+                hes.retain(|out_he_id| *out_he_id != he_id);
+            }
+
+            if let Some(twin_he_id) = he.twin {
+                self.delete_only_halfedge(twin_he_id);
+            }
+
+            self.halfedges.remove(he_id);
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use glam::{Mat4, vec3};
+
+    use crate::{utils::{extend_with, get_tracing_subscriber}, *};
+
+    #[test]
+    fn test_delete_face() {
+        get_tracing_subscriber();
+        let mut meshgraph = MeshGraph::new();
+        let p_c = vec3(0.0, 0.0, 0.0);
+        let p_1 = vec3(0.0, 1.0, 0.0);
+        let p_2 = vec3(-1.0, 0.5, 0.0);
+        let p_3 = vec3(-1.0, -0.5, 0.0);
+        let p_4 = vec3(0.0, -1.0, 0.0);
+        let p_5 = vec3(1.0, -0.5, 0.0);
+        let p_6 = vec3(1.0, 0.5, 0.0);
+
+        let points = vec![p_c, p_1, p_2, p_3, p_4, p_5, p_6];
+        let vertex_ids = extend_with(&mut meshgraph, &points.clone(), Mat4::default(), 5.0, 0);
+
+        #[cfg(feature = "rerun")]
+        {
+            meshgraph.log_rerun();
+            RR.flush_blocking().unwrap();
+        }
+
+        let face_count = meshgraph.faces.len();
+        let face_id = meshgraph.vertices[vertex_ids[6]].faces(&meshgraph).next().unwrap();
+        meshgraph.delete_face(face_id);
+        #[cfg(feature = "rerun")]
+        {
+            meshgraph.log_rerun();
+            RR.flush_blocking().unwrap();
+        }
+
+        assert_eq!(meshgraph.faces.len(), face_count - 1);
+    }
 }

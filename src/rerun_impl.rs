@@ -2,16 +2,16 @@ use glam::Vec3;
 use hashbrown::HashMap;
 use itertools::Itertools;
 
-use crate::RR;
 use crate::utils::*;
+use crate::RR;
 use crate::{FaceId, HalfedgeId, MeshGraph, Selection, VertexId};
 
 impl MeshGraph {
     pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
         use itertools::Itertools;
 
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         RR.log(
             format!("meshgraph/selection/{name}/points"),
@@ -65,8 +65,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::RR;
         use crate::utils::*;
+        use crate::RR;
 
         let he = self.halfedges[halfedge];
 
@@ -241,7 +241,6 @@ impl MeshGraph {
 
             for he_id in face.halfedges(self) {
                 let he = self.halfedges[he_id];
-
                 let start = pos[&he.start_vertex(self).unwrap()];
                 let end = pos[&he.end_vertex];
 
