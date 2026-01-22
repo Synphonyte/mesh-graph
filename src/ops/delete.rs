@@ -15,7 +15,6 @@ impl MeshGraph {
     pub fn delete_face(&mut self, face_id: FaceId) -> (Vec<VertexId>, Vec<HalfedgeId>) {
         let mut vertices = vec![];
 
-        tracing::info!("deleting face");
         let halfedges = self
             .halfedges
             .iter()

@@ -61,11 +61,11 @@
 		// "tags": []
 	},
 	{
-		"label": "Test cleanup operations",
+		"label": "Test cleanup merge",
 		"command": "cargo",
 		"args": [
 			"test",
-			"test_vertex_merge_common_one_ring",
+			"ops::cleanup::merge",
 			"--lib",
 			// "--release",
 			"--features",
