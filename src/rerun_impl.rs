@@ -2,16 +2,16 @@ use glam::Vec3;
 use hashbrown::HashMap;
 use itertools::Itertools;
 
-use crate::utils::*;
 use crate::RR;
+use crate::utils::*;
 use crate::{FaceId, HalfedgeId, MeshGraph, Selection, VertexId};
 
 impl MeshGraph {
     pub fn log_selection_rerun(&self, name: &str, selection: &Selection) {
         use itertools::Itertools;
 
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         RR.log(
             format!("meshgraph/selection/{name}/points"),
@@ -65,8 +65,8 @@ impl MeshGraph {
     }
 
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
-        use crate::utils::*;
         use crate::RR;
+        use crate::utils::*;
 
         let he = self.halfedges[halfedge];
 
@@ -214,15 +214,23 @@ impl MeshGraph {
         // )
         // .unwrap();
 
+        let (vert_labels, vert_pos): (Vec<_>, Vec<_>) = self
+            .positions
+            .iter()
+            .map(|(id, pos)| (v_label(id), vec3_array(pos)))
+            .unzip();
+
         RR.log(
             "meshgraph/positions",
-            &rerun::Points3D::new(self.positions.values().map(vec3_array))
-                .with_radii(self.positions.iter().map(|_| 0.01)),
+            &rerun::Points3D::new(vert_pos)
+                .with_radii(self.positions.iter().map(|_| 0.01))
+                .with_labels(vert_labels),
         )
         .unwrap();
 
         let mut origins = Vec::with_capacity(self.faces.len() * 3);
         let mut vectors = Vec::with_capacity(self.faces.len() * 3);
+        let mut labels = Vec::with_capacity(self.faces.len() * 3);
 
         let mut he_to_pos = HashMap::<HalfedgeId, (Vec3, Vec3)>::default();
 
@@ -248,6 +256,7 @@ impl MeshGraph {
 
                 origins.push(vec3_array(start));
                 vectors.push(vec3_array(end - start));
+                labels.push(he_label(he_id));
             }
         }
 
@@ -275,17 +284,21 @@ impl MeshGraph {
 
                 origins.push(vec3_array(start));
                 vectors.push(vec3_array(end - start));
+                labels.push(he_label(he_id));
             }
         }
 
         RR.log(
             "meshgraph/halfedges",
-            &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
+            &rerun::Arrows3D::from_vectors(&vectors)
+                .with_origins(&origins)
+                .with_labels(labels.clone()),
         )
         .unwrap();
 
         origins.clear();
         vectors.clear();
+        labels.clear();
 
         for (he_id, he) in &self.halfedges {
             let twin = he.twin.unwrap();
@@ -336,6 +349,7 @@ impl MeshGraph {
 
         origins.clear();
         vectors.clear();
+        labels.clear();
 
         for face in self.faces.values() {
             let start = face.center(self);
@@ -345,16 +359,20 @@ impl MeshGraph {
 
             origins.push(vec3_array(start));
             vectors.push(vec3_array(end - start));
+            labels.push(face_label(face.id));
         }
 
         RR.log(
             "meshgraph/face_halfedges",
-            &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
+            &rerun::Arrows3D::from_vectors(&vectors)
+                .with_origins(&origins)
+                .with_labels(labels.clone()),
         )
         .unwrap();
 
         origins.clear();
         vectors.clear();
+        labels.clear();
 
         for (he_id, he) in &self.halfedges {
             if let Some(face_id) = he.face {
@@ -396,4 +414,22 @@ impl MeshGraph {
         )
         .unwrap();
     }
+}
+
+fn he_label(he_id: HalfedgeId) -> String {
+    let label = format!("{he_id:?}");
+
+    label["HalfedgeId(".len()..(label.len() - 1)].to_string()
+}
+
+fn v_label(v_id: VertexId) -> String {
+    let label = format!("{v_id:?}");
+
+    label["VertexId(".len()..(label.len() - 1)].to_string()
+}
+
+fn face_label(face_id: FaceId) -> String {
+    let label = format!("{face_id:?}");
+
+    label["FaceId(".len()..(label.len() - 1)].to_string()
 }

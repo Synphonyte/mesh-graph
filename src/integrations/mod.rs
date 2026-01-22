@@ -6,6 +6,8 @@ use crate::MeshGraph;
 
 #[cfg(feature = "bevy")]
 pub mod bevy;
+#[cfg(feature = "gltf")]
+pub mod gltf;
 
 /// Classical indexed mesh representation
 #[derive(Clone, Debug)]

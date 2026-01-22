@@ -21,9 +21,9 @@ pub fn quat_array(q: impl Borrow<Quat>) -> [f32; 4] {
 
 #[macro_export]
 macro_rules! error_none {
-    ($msg:literal) => {
+    ($msg:literal $(, $args:expr)*) => {
         || {
-            tracing::error!($msg);
+            tracing::error!($msg $(, $args)*);
             None
         }
     };

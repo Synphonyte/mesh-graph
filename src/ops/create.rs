@@ -4,6 +4,7 @@ use tracing::instrument;
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
 
 impl MeshGraph {
+    #[instrument(skip(self))]
     pub fn create_face_from_positions(&mut self, a: Vec3, b: Vec3, c: Vec3) -> CreateFace {
         let a_id = self.insert_vertex(a);
         let b_id = self.insert_vertex(b);
@@ -74,6 +75,7 @@ impl MeshGraph {
     }
 
     /// Creates a face from three vertices.
+    #[instrument(skip(self))]
     pub fn create_face_from_vertices(
         &mut self,
         v_id1: VertexId,
@@ -94,8 +96,6 @@ impl MeshGraph {
         let mut halfedge_ids = inserted_a.created_he_ids();
         halfedge_ids.extend(inserted_b.created_he_ids());
         halfedge_ids.extend(inserted_c.created_he_ids());
-
-        self.log_face_rerun("create_face_from_verteix", face_id);
 
         Some(CreateFace {
             face_id,

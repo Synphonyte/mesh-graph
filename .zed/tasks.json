@@ -65,11 +65,11 @@
 		"command": "cargo",
 		"args": [
 			"test",
-			"test_vertex_join_different_count",
+			"test_vertex_merge_common_one_ring",
 			"--lib",
 			// "--release",
 			"--features",
-			"rerun",
+			"rerun,gltf",
 			"--",
 			"--test-threads=1"
 		],

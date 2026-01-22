@@ -15,6 +15,7 @@ impl MeshGraph {
     pub fn delete_face(&mut self, face_id: FaceId) -> (Vec<VertexId>, Vec<HalfedgeId>) {
         let mut vertices = vec![];
 
+        tracing::info!("deleting face");
         let halfedges = self
             .halfedges
             .iter()
@@ -86,12 +87,14 @@ impl MeshGraph {
                 "Start vertex not found",
                 (vec![], vec![])
             );
-            if let Some(v) = self.vertices.get(start_v_id) {
-                self.vertices[start_v_id].outgoing_halfedge = v
-                    .outgoing_halfedges(self)
-                    .into_iter()
+            if let Some(v) = self.vertices.get_mut(start_v_id) {
+                v.outgoing_halfedge = self.outgoing_halfedges[start_v_id]
+                    .iter()
+                    .copied()
                     .find(|id| !deleted_halfedges.contains(id))
-                    .or_else(error_none!("No new outgoing halfedge found"));
+                    .or_else(error_none!(
+                        "No new outgoing halfedge found for vertex {start_v_id:?}"
+                    ));
             }
         }
 
@@ -153,12 +156,14 @@ impl MeshGraph {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use glam::{Mat4, vec3};
 
-    use crate::{utils::{extend_with, get_tracing_subscriber}, *};
+    use crate::{
+        utils::{extend_with, get_tracing_subscriber},
+        *,
+    };
 
     #[test]
     fn test_delete_face() {
@@ -182,7 +187,10 @@ mod tests {
         }
 
         let face_count = meshgraph.faces.len();
-        let face_id = meshgraph.vertices[vertex_ids[6]].faces(&meshgraph).next().unwrap();
+        let face_id = meshgraph.vertices[vertex_ids[6]]
+            .faces(&meshgraph)
+            .next()
+            .unwrap();
         meshgraph.delete_face(face_id);
         #[cfg(feature = "rerun")]
         {

@@ -19,6 +19,7 @@ impl MeshGraph {
     /// Inserts a pair of halfedges and connects them to the given vertices (from and to the halfedge) and each other as twins.
     /// If the edge already exists or partially exists,
     /// it returns the existing edge while creating any missing halfedges.
+    #[instrument(skip(self))]
     pub fn insert_or_get_edge(
         &mut self,
         start_vertex_id: VertexId,

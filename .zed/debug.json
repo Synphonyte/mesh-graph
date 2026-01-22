@@ -8,7 +8,7 @@
 		"adapter": "CodeLLDB",
 		"build": {
 			"command": "cargo",
-			"args": ["build", "--bin", "vertex-neighborhood"]
+			"args": ["build", "--bin", "vertex-neighborhood", "--features", "gltf"]
 		},
 		// sourceLanguages is required for CodeLLDB (not GDB) when using Rust
 		"sourceLanguages": ["rust"]
