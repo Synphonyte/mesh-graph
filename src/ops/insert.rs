@@ -58,7 +58,8 @@ impl MeshGraph {
         ret
     }
 
-    fn halfedge_from_to(
+    /// Returns the halfedge from the start vertex to the end vertex, if it exists. `None` otherwise.
+    pub fn halfedge_from_to(
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,

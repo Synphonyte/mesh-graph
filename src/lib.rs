@@ -175,6 +175,7 @@ impl MeshGraph {
 
     /// Create a triangle mesh graph from vertex positions and face indices.
     /// Every chunk of three indices represents a triangle.
+    #[instrument]
     pub fn indexed_triangles(vertex_positions: &[Vec3], face_indices: &[usize]) -> Self {
         let mut mesh_graph = Self {
             bvh: Bvh::new(),
@@ -226,14 +227,6 @@ impl MeshGraph {
             let he_c_id = mesh_graph.insert_or_get_edge(c, a).start_to_end_he_id;
 
             let _face_id = mesh_graph.insert_face(he_a_id, he_b_id, he_c_id);
-
-            // #[cfg(feature = "rerun")]
-            // {
-            //     mesh_graph.log_hes_rerun(
-            //         "indexed_triangles/halfedges",
-            //         &mesh_graph.halfedges.keys().collect::<Vec<_>>(),
-            //     );
-            // }
         }
 
         mesh_graph.make_all_outgoing_halfedges_boundary_if_possible();

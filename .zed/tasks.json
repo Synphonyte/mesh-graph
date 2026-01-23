@@ -65,7 +65,7 @@
 		"command": "cargo",
 		"args": [
 			"test",
-			"ops::cleanup::merge",
+			"test_vertex_merge_common_single_he_flip",
 			"--lib",
 			// "--release",
 			"--features",

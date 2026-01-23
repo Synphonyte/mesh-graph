@@ -182,38 +182,6 @@ impl MeshGraph {
     }
 
     pub fn log_rerun(&self) {
-        // let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
-        // RR.log(
-        //     "meshgraph/mesh",
-        //     &rerun::Mesh3D::new(
-        //         buffers
-        //             .positions
-        //             .into_iter()
-        //             .zip(buffers.normals.iter().cloned())
-        //             .map(|(pos, norm)| vec3_array(pos - norm * 0.1)),
-        //     )
-        //     .with_triangle_indices(
-        //         buffers
-        //             .indices
-        //             .chunks(3)
-        //             .map(|chunk| rerun::datatypes::UVec3D::new(chunk[0], chunk[1], chunk[2])),
-        //     )
-        //     .with_vertex_colors(
-        //         buffers
-        //             .normals
-        //             .into_iter()
-        //             .map(|v| {
-        //                 [
-        //                     (100.0 + v.x * 100.0) as u8,
-        //                     (100.0 + v.y * 100.0) as u8,
-        //                     (100.0 + v.z * 100.0) as u8,
-        //                 ]
-        //             })
-        //             .collect::<Vec<_>>(),
-        //     ),
-        // )
-        // .unwrap();
-
         let (vert_labels, vert_pos): (Vec<_>, Vec<_>) = self
             .positions
             .iter()
@@ -233,23 +201,42 @@ impl MeshGraph {
         let mut labels = Vec::with_capacity(self.faces.len() * 3);
 
         let mut he_to_pos = HashMap::<HalfedgeId, (Vec3, Vec3)>::default();
+        let mut face_to_center = HashMap::<FaceId, Vec3>::default();
 
         for face in self.faces.values() {
-            use itertools::Itertools;
+            let mut pos = HashMap::new();
 
-            let pos = face.vertices(self).map(|v| self.positions[v]).collect_vec();
+            let mut center = Vec3::ZERO;
 
-            let center = pos.iter().copied().reduce(|a, b| a + b).unwrap() / pos.len() as f32;
+            for he in self.halfedges.values() {
+                if he.face != Some(face.id) {
+                    continue;
+                }
 
-            let pos = face
-                .vertices(self)
-                .zip(pos)
-                .map(|(v, p)| (v, center * 0.1 + p * 0.9))
-                .collect::<HashMap<_, _>>();
+                let end_pos = self.positions[he.end_vertex];
+                pos.insert(he.end_vertex, end_pos);
 
-            for he_id in face.halfedges(self) {
-                let he = self.halfedges[he_id];
-                let start = pos[&he.start_vertex(self).unwrap()];
+                center += end_pos;
+            }
+
+            center /= pos.len().max(1) as f32;
+
+            face_to_center.insert(face.id, center);
+
+            for p in pos.values_mut() {
+                *p = center * 0.1 + *p * 0.9;
+            }
+
+            for (he_id, he) in self.halfedges.iter() {
+                if he.face != Some(face.id) {
+                    continue;
+                }
+
+                let start_v_id = he.start_vertex(self).unwrap();
+                let start = pos
+                    .get(&start_v_id)
+                    .copied()
+                    .unwrap_or_else(|| self.positions[start_v_id]);
                 let end = pos[&he.end_vertex];
 
                 he_to_pos.insert(he_id, (start, end));
@@ -314,7 +301,7 @@ impl MeshGraph {
         }
 
         RR.log(
-            "meshgraph/twins",
+            "meshgraph/halfedges/twins",
             &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
         )
         .unwrap();
@@ -327,7 +314,7 @@ impl MeshGraph {
                 let start = self.positions[v_id];
 
                 RR.log(
-                    "meshgraph/the_vertex",
+                    "meshgraph/vertices",
                     &rerun::Points3D::new([vec3_array(start)]),
                 )
                 .unwrap();
@@ -342,7 +329,7 @@ impl MeshGraph {
         }
 
         RR.log(
-            "meshgraph/outgoing_halfedges",
+            "meshgraph/vertices/outgoing_halfedges",
             &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
         )
         .unwrap();
@@ -352,7 +339,7 @@ impl MeshGraph {
         labels.clear();
 
         for face in self.faces.values() {
-            let start = face.center(self);
+            let start = face_to_center[&face.id];
 
             let (he_start, he_end) = he_to_pos[&face.halfedge];
             let end = he_start * 0.6 + he_end * 0.4;
@@ -379,7 +366,7 @@ impl MeshGraph {
                 let (he_start, he_end) = he_to_pos[&he_id];
                 let start = he_start * 0.4 + he_end * 0.6;
 
-                let end = self.faces[face_id].center(self);
+                let end = face_to_center[&face_id];
 
                 origins.push(vec3_array(start));
                 vectors.push(vec3_array((end - start) * 0.9));
@@ -387,7 +374,7 @@ impl MeshGraph {
         }
 
         RR.log(
-            "meshgraph/halfedge_faces",
+            "meshgraph/halfedges/faces",
             &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
         )
         .unwrap();
@@ -409,8 +396,40 @@ impl MeshGraph {
         }
 
         RR.log(
-            "meshgraph/halfedge_next",
+            "meshgraph/halfedges/next",
             &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
+        )
+        .unwrap();
+
+        let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
+        RR.log(
+            "meshgraph/mesh",
+            &rerun::Mesh3D::new(
+                buffers
+                    .positions
+                    .into_iter()
+                    .zip(buffers.normals.iter().cloned())
+                    .map(|(pos, norm)| vec3_array(pos - norm * 0.1)),
+            )
+            .with_triangle_indices(
+                buffers
+                    .indices
+                    .chunks(3)
+                    .map(|chunk| rerun::datatypes::UVec3D::new(chunk[0], chunk[1], chunk[2])),
+            )
+            .with_vertex_colors(
+                buffers
+                    .normals
+                    .into_iter()
+                    .map(|v| {
+                        [
+                            (100.0 + v.x * 100.0) as u8,
+                            (100.0 + v.y * 100.0) as u8,
+                            (100.0 + v.z * 100.0) as u8,
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         )
         .unwrap();
     }

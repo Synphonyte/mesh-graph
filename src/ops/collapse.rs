@@ -419,7 +419,6 @@ impl MeshGraph {
 
         self.halfedges.remove(halfedge_id);
         self.halfedges.remove(twin_id);
-        removed_halfedges.push(twin_id);
 
         self.positions[start_vert_id] = center_pos;
 
@@ -685,6 +684,7 @@ mod test {
     use super::*;
 
     #[test]
+    #[allow(unused_variables)]
     fn test_collapse_edge() {
         let mut mesh_graph = MeshGraph::new();
 

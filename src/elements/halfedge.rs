@@ -137,4 +137,16 @@ impl Halfedge {
             false
         }
     }
+
+    /// Returns the face vertex opposite to this halfedge.
+    /// Same as `self.next.end_vertex` (pseudo-code).
+    pub fn opposite_vertex(&self, mesh_graph: &MeshGraph) -> Option<VertexId> {
+        let next_id = self.next.or_else(error_none!("No next halfedge"))?;
+        let next_he = mesh_graph
+            .halfedges
+            .get(next_id)
+            .or_else(error_none!("Next halfedge not found"))?;
+
+        Some(next_he.end_vertex)
+    }
 }

@@ -1,8 +1,9 @@
 #[cfg(feature = "rerun")]
 use std::borrow::Borrow;
 
+use glam::Vec3;
 #[cfg(feature = "rerun")]
-use glam::{Quat, Vec2, Vec3};
+use glam::{Quat, Vec2};
 
 #[cfg(feature = "rerun")]
 pub fn vec3_array(v: impl Borrow<Vec3>) -> [f32; 3] {

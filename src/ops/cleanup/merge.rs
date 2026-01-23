@@ -33,6 +33,7 @@ impl MeshGraph {
         &mut self,
         vertex_id1: VertexId,
         vertex_id2: VertexId,
+        flip_threshold_sqr: f32,
     ) -> MergeVerticesOneRing {
         let mut result = MergeVerticesOneRing::default();
 
@@ -55,13 +56,21 @@ impl MeshGraph {
             return result;
         }
 
-        let range_pairs_to_connect =
-            self.compute_range_pairs_to_connect(&one_ring_v_ids1, &one_ring_v_ids2);
+        let range_pairs_to_connect = self.compute_range_pairs_to_connect(
+            &one_ring_v_ids1,
+            &one_ring_v_ids2,
+            flip_threshold_sqr,
+            &mut result,
+        );
 
         tracing::info!("Range pairs to connect: {:#?}", range_pairs_to_connect);
 
+        if range_pairs_to_connect.is_empty() {
+            return result;
+        }
+
         let planned_faces =
-            self.plan_new_faces(range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
+            self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
 
         let mut vertex_normals = SecondaryMap::new();
 
@@ -74,8 +83,6 @@ impl MeshGraph {
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
-
-        tracing::info!("Planned Faces: {:#?}", planned_faces);
 
         for mut planned_face in planned_faces {
             planned_face.make_ccw(&vertex_normals, self);
@@ -125,9 +132,47 @@ impl MeshGraph {
         }
     }
 
+    fn flip_and_collapse_single_shared_edge_if_smaller(
+        &mut self,
+        single_shared_he_id: HalfedgeId,
+        flip_threshold_sqr: f32,
+        result: &mut MergeVerticesOneRing,
+    ) -> bool {
+        let he = self.halfedges[single_shared_he_id];
+
+        let twin_id = unwrap_or_return!(he.twin, "Twin not found", false);
+        let twin = unwrap_or_return!(self.halfedges.get(twin_id), "Twin not found", false);
+
+        let other_v_id1 =
+            unwrap_or_return!(he.opposite_vertex(self), "Opposite vertex not found", false);
+        let other_v_id2 = unwrap_or_return!(
+            twin.opposite_vertex(self),
+            "Opposite vertex not found",
+            false
+        );
+
+        let pos1 = *unwrap_or_return!(self.positions.get(other_v_id1), "Position not found", false);
+        let pos2 = *unwrap_or_return!(self.positions.get(other_v_id2), "Position not found", false);
+
+        if pos1.distance_squared(pos2) <= flip_threshold_sqr {
+            self.flip_edge(single_shared_he_id);
+
+            let (removed_verts, removed_hes, removed_faces) =
+                self.collapse_edge(single_shared_he_id);
+
+            result.removed_vertices.extend(removed_verts);
+            result.removed_halfedges.extend(removed_hes);
+            result.removed_faces.extend(removed_faces);
+
+            true
+        } else {
+            false
+        }
+    }
+
     fn plan_new_faces(
         &self,
-        range_pairs_to_connect: Vec<ConnectPair>,
+        range_pairs_to_connect: &[ConnectPair],
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
     ) -> Vec<PlannedFace> {
@@ -157,9 +202,9 @@ impl MeshGraph {
 
                 let end1_idx = *range_pair_to_connect.ranges[0].end() % len1;
                 planned_faces.push(PlannedFace::new(
-                    one_ring_v_ids1[(end1_idx - 1).rem_euclid(len1)],
+                    one_ring_v_ids1[(end1_idx + len1 - 1) % len1],
                     one_ring_v_ids1[end1_idx],
-                    one_ring_v_ids2[(*range_pair_to_connect.ranges[1].end() - 1).rem_euclid(len2)],
+                    one_ring_v_ids2[(*range_pair_to_connect.ranges[1].end() + len2 - 1) % len2],
                 ));
             } else {
                 let last_pairing = pairings.last().unwrap();
@@ -201,9 +246,11 @@ impl MeshGraph {
     }
 
     fn compute_range_pairs_to_connect(
-        &self,
+        &mut self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
+        flip_threshold_sqr: f32,
+        result: &mut MergeVerticesOneRing,
     ) -> Vec<ConnectPair> {
         let mut range_pairs_to_connect = vec![];
 
@@ -211,6 +258,20 @@ impl MeshGraph {
         let one_ring_set2 = HashSet::<VertexId>::from_iter(one_ring_v_ids2.iter().copied());
         let common_v_ids =
             HashSet::<VertexId>::from_iter(one_ring_set1.intersection(&one_ring_set2).copied());
+
+        if common_v_ids.len() == 2 {
+            let (first_v_id, second_v_id) = common_v_ids.iter().copied().collect_tuple().unwrap();
+
+            if let Some(he_id) = self.halfedge_from_to(first_v_id, second_v_id)
+                && self.flip_and_collapse_single_shared_edge_if_smaller(
+                    he_id,
+                    flip_threshold_sqr,
+                    result,
+                )
+            {
+                return range_pairs_to_connect;
+            }
+        }
 
         let (orig_start_idx1, orig_start_idx2) = unwrap_or_return!(
             self.find_start_indices(one_ring_v_ids1, one_ring_v_ids2, &common_v_ids),
@@ -609,7 +670,7 @@ mod tests {
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
 
-        let result = meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id);
+        let result = meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id, 1.0);
 
         #[cfg(feature = "rerun")]
         {
@@ -644,12 +705,6 @@ mod tests {
             1,
         )[0];
 
-        #[cfg(feature = "rerun")]
-        {
-            meshgraph.log_rerun();
-            RR.flush_blocking().unwrap();
-        }
-
         let mirror_mat = Mat4::from_rotation_translation(
             Quat::from_rotation_x(std::f32::consts::PI)
                 .mul_quat(Quat::from_rotation_z(std::f32::consts::PI * 0.5)),
@@ -670,7 +725,10 @@ mod tests {
             1,
         )[0];
 
-        let result = meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id);
+        #[cfg(feature = "rerun")]
+        meshgraph.log_rerun();
+
+        let result = meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id, 1.0);
 
         #[cfg(feature = "rerun")]
         {
@@ -719,10 +777,13 @@ mod tests {
             panic!("No bottom vertex found");
         }
 
-        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id);
+        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
 
         #[cfg(feature = "rerun")]
-        meshgraph.log_rerun();
+        {
+            meshgraph.log_rerun();
+            RR.flush_blocking().unwrap();
+        }
 
         assert_eq!(result.removed_faces.len(), 21);
         assert_eq!(result.removed_halfedges.len(), 46);
@@ -765,10 +826,13 @@ mod tests {
             panic!("No bottom vertex found");
         }
 
-        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id);
+        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
 
         #[cfg(feature = "rerun")]
-        meshgraph.log_rerun();
+        {
+            meshgraph.log_rerun();
+            RR.flush_blocking().unwrap();
+        }
 
         assert_eq!(result.removed_faces.len(), 10);
         assert_eq!(result.removed_halfedges.len(), 26);
@@ -780,7 +844,7 @@ mod tests {
 
     #[cfg(feature = "gltf")]
     #[test]
-    fn test_vertex_merge_common_except_one_two() {
+    fn test_vertex_merge_common_except_two() {
         use crate::integrations::gltf;
 
         get_tracing_subscriber();
@@ -812,10 +876,13 @@ mod tests {
             panic!("No bottom vertex found");
         }
 
-        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id);
+        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
 
-        // #[cfg(feature = "rerun")]
-        // meshgraph.log_rerun();
+        #[cfg(feature = "rerun")]
+        {
+            meshgraph.log_rerun();
+            RR.flush_blocking().unwrap();
+        }
 
         assert_eq!(result.removed_faces.len(), 11);
         assert_eq!(result.removed_halfedges.len(), 28);
@@ -823,5 +890,103 @@ mod tests {
 
         assert_eq!(result.added_faces.len(), 3);
         assert_eq!(result.added_halfedges.len(), 4);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn test_vertex_merge_common_single_he_flip() {
+        use crate::integrations::gltf;
+
+        get_tracing_subscriber();
+
+        let mut meshgraph = gltf::load("src/ops/cleanup/test/merge_common_single_he.glb").unwrap();
+
+        #[cfg(feature = "rerun")]
+        meshgraph.log_rerun();
+
+        let mut v_top_id = VertexId::default();
+        let mut v_bottom_id = VertexId::default();
+
+        for (v_id, pos) in &meshgraph.positions {
+            if pos.x == 0.0 && pos.y == 0.0 {
+                if pos.z > 0.0 {
+                    v_top_id = v_id;
+                } else {
+                    v_bottom_id = v_id;
+                }
+            }
+        }
+
+        if v_top_id == VertexId::default() {
+            panic!("No top vertex found");
+        }
+
+        if v_bottom_id == VertexId::default() {
+            panic!("No bottom vertex found");
+        }
+
+        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
+
+        #[cfg(feature = "rerun")]
+        {
+            meshgraph.log_rerun();
+            RR.flush_blocking().unwrap();
+        }
+
+        assert_eq!(result.removed_faces.len(), 2);
+        assert_eq!(result.removed_halfedges.len(), 6);
+        assert_eq!(result.removed_vertices.len(), 1);
+
+        assert_eq!(result.added_faces.len(), 0);
+        assert_eq!(result.added_halfedges.len(), 0);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn test_vertex_merge_common_single_he_noflip() {
+        use crate::integrations::gltf;
+
+        get_tracing_subscriber();
+
+        let mut meshgraph = gltf::load("src/ops/cleanup/test/merge_common_single_he.glb").unwrap();
+
+        #[cfg(feature = "rerun")]
+        meshgraph.log_rerun();
+
+        let mut v_top_id = VertexId::default();
+        let mut v_bottom_id = VertexId::default();
+
+        for (v_id, pos) in &meshgraph.positions {
+            if pos.x == 0.0 && pos.y == 0.0 {
+                if pos.z > 0.0 {
+                    v_top_id = v_id;
+                } else {
+                    v_bottom_id = v_id;
+                }
+            }
+        }
+
+        if v_top_id == VertexId::default() {
+            panic!("No top vertex found");
+        }
+
+        if v_bottom_id == VertexId::default() {
+            panic!("No bottom vertex found");
+        }
+
+        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 0.01);
+
+        #[cfg(feature = "rerun")]
+        {
+            meshgraph.log_rerun();
+            RR.flush_blocking().unwrap();
+        }
+
+        assert_eq!(result.removed_faces.len(), 12);
+        assert_eq!(result.removed_halfedges.len(), 26);
+        assert_eq!(result.removed_vertices.len(), 2);
+
+        assert_eq!(result.added_faces.len(), 8);
+        assert_eq!(result.added_halfedges.len(), 14);
     }
 }
