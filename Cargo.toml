@@ -18,7 +18,7 @@ bevy = { version = "0.18", default-features = false, features = [
 ], optional = true }
 cfg-if = { version = "1", optional = true }
 derive_more = { version = "2", features = ["deref", "deref_mut"] }
-glam = "0.30"
+glam = "0.31"
 gltf = { version = "1.4", optional = true }
 hashbrown = "0.16"
 itertools = "0.14"
