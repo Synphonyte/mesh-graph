@@ -9,6 +9,7 @@ pub struct VertexNeighborhoodCleanup {
     pub removed_vertices: Vec<VertexId>,
     pub removed_halfedges: Vec<HalfedgeId>,
     pub removed_faces: Vec<FaceId>,
+    /// Contains original vertex (first), new vertex (second) if a split was performed. Empty otherwise.
     pub split_vertices: Vec<VertexId>,
 }
 
@@ -36,6 +37,9 @@ impl MeshGraph {
                 step_removed_halfedges,
                 step_removed_faces,
             ) = self.make_vertex_neighborhood_manifold_step(vertices[0]);
+            tracing::info!(
+                "make manifold {step_inserted_duplicated_vertex:?} {step_removed_vertices:?} {step_removed_halfedges:?} {step_removed_faces:?}"
+            );
 
             if let Some(inserted_vertex) = step_inserted_duplicated_vertex {
                 vertices.push(inserted_vertex);
@@ -101,7 +105,11 @@ impl MeshGraph {
         removed_halfedges: &mut Vec<HalfedgeId>,
         removed_faces: &mut Vec<FaceId>,
     ) -> Option<VertexId> {
+        tracing::info!("make_vertex_neighborhood_manifold_inner");
+
         self.vertices.get(vertex_id)?;
+
+        tracing::info!("after vertices");
 
         self.remove_neighboring_flaps(
             vertex_id,
@@ -109,6 +117,8 @@ impl MeshGraph {
             removed_halfedges,
             removed_faces,
         );
+
+        tracing::info!("after flaps");
 
         if let Some(inserted_duplicated_vertex) = self.remove_degenerate_faces(
             vertex_id,
@@ -118,6 +128,8 @@ impl MeshGraph {
         ) {
             return Some(inserted_duplicated_vertex);
         }
+
+        tracing::info!("after faces");
 
         self.remove_degenerate_edges(vertex_id)
     }
@@ -500,6 +512,12 @@ impl MeshGraph {
             .faces(self)
             .collect_vec();
 
+        tracing::info!("remove_neighboring_flaps: {faces:?}");
+
+        if faces.len() < 2 {
+            return Some(());
+        }
+
         let mut face_tuples = faces.into_iter().circular_tuple_windows().collect_vec();
 
         let mut first = true;
@@ -509,6 +527,8 @@ impl MeshGraph {
             {
                 self.log_rerun();
             }
+
+            tracing::info!("({face_id1:?}, {face_id2:?}) ; tuples: {face_tuples:?}");
 
             if self.faces_share_all_vertices(face_id1, face_id2) {
                 #[cfg(feature = "rerun")]

@@ -7,7 +7,8 @@ use slotmap::SecondaryMap;
 use tracing::{error, instrument};
 
 use crate::{
-    FaceId, HalfedgeId, MeshGraph, Vertex, VertexId, error_none, ops::create::CreateFace,
+    FaceId, HalfedgeId, MeshGraph, Vertex, VertexId, error_none,
+    ops::{collapse::CollapseEdge, create::CreateFace},
     utils::unwrap_or_return,
 };
 
@@ -19,6 +20,7 @@ pub struct MergeVerticesOneRing {
 
     pub added_halfedges: Vec<HalfedgeId>,
     pub added_faces: Vec<FaceId>,
+    pub added_vertices: Vec<VertexId>,
 }
 
 impl MeshGraph {
@@ -34,6 +36,8 @@ impl MeshGraph {
         vertex_id1: VertexId,
         vertex_id2: VertexId,
         flip_threshold_sqr: f32,
+        marked_halfedges: &mut HashSet<HalfedgeId>,
+        marked_vertices: &mut HashSet<VertexId>,
     ) -> MergeVerticesOneRing {
         let mut result = MergeVerticesOneRing::default();
 
@@ -56,14 +60,17 @@ impl MeshGraph {
             return result;
         }
 
+        let one_ring_set1 = HashSet::<VertexId>::from_iter(one_ring_v_ids1.iter().copied());
+        let one_ring_set2 = HashSet::<VertexId>::from_iter(one_ring_v_ids2.iter().copied());
+
         let range_pairs_to_connect = self.compute_range_pairs_to_connect(
             &one_ring_v_ids1,
             &one_ring_v_ids2,
+            &one_ring_set1,
+            &one_ring_set2,
             flip_threshold_sqr,
             &mut result,
         );
-
-        tracing::info!("Range pairs to connect: {:#?}", range_pairs_to_connect);
 
         if range_pairs_to_connect.is_empty() {
             return result;
@@ -72,20 +79,13 @@ impl MeshGraph {
         let planned_faces =
             self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
 
-        let mut vertex_normals = SecondaryMap::new();
-
-        self.delete_neighbour_faces_and_estimate_vertex_normals(
-            &vertex1,
-            &vertex2,
-            &mut vertex_normals,
-            &mut result,
-        );
+        self.delete_neighbour_faces(&vertex1, &vertex2, &mut result);
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
 
         for mut planned_face in planned_faces {
-            planned_face.make_ccw(&vertex_normals, self);
+            planned_face.make_ccw(self);
 
             let inserted = unwrap_or_return!(
                 planned_face.insert_into_meshgraph(self),
@@ -93,37 +93,91 @@ impl MeshGraph {
                 result
             );
 
-            result.added_faces.push(inserted.face_id);
+            for he_id in inserted.halfedge_ids.iter().copied() {
+                // just inserted => must exist
+                let he = self.halfedges[he_id];
+                let start_v_id =
+                    unwrap_or_return!(he.start_vertex(self), "Couldn't find start vertex", result);
+                let end_v_id = he.end_vertex;
+
+                if one_ring_set1.contains(&start_v_id) && one_ring_set2.contains(&end_v_id)
+                    || one_ring_set2.contains(&start_v_id) && one_ring_set1.contains(&end_v_id)
+                {
+                    marked_halfedges.insert(he_id);
+                }
+            }
+
             result.added_halfedges.extend(inserted.halfedge_ids);
+            result.added_faces.push(inserted.face_id);
         }
+
+        // self.smooth_one_rings_vertices(one_ring_v_ids1.iter().chain(&one_ring_v_ids2).copied());
+
+        for vertex_id in one_ring_v_ids1.iter().chain(&one_ring_v_ids2).copied() {
+            if !self.vertices.contains_key(vertex_id) {
+                continue;
+            }
+
+            let cleanup = self.make_vertex_neighborhood_manifold(vertex_id);
+
+            if !cleanup.split_vertices.is_empty() {
+                result.added_vertices.push(cleanup.split_vertices[1]);
+                marked_vertices.extend(cleanup.split_vertices);
+            }
+            result.removed_vertices.extend(cleanup.removed_vertices);
+            result.removed_halfedges.extend(cleanup.removed_halfedges);
+            result.removed_faces.extend(cleanup.removed_faces);
+        }
+        tracing::info!("after after");
 
         result
     }
 
-    fn delete_neighbour_faces_and_estimate_vertex_normals(
+    #[instrument(skip_all)]
+    fn smooth_one_rings_vertices(&mut self, one_rings: impl Iterator<Item = VertexId>) {
+        let mut new_positions = SecondaryMap::new();
+
+        for vertex_id in one_rings {
+            let Some(vertex) = self.vertices.get(vertex_id) else {
+                continue;
+            };
+
+            let mut pos = *unwrap_or_return!(
+                self.positions.get(vertex_id),
+                "Position not found for id {vertex_id:?}"
+            );
+
+            let mut count = 1.0;
+            for neighbor_v_id in vertex.neighbours(self) {
+                let neighbor_pos = *unwrap_or_return!(
+                    self.positions.get(neighbor_v_id),
+                    "Neighbor position not found for id {neighbor_v_id:?}"
+                );
+
+                pos += neighbor_pos;
+                count += 1.0;
+            }
+
+            pos /= count;
+
+            new_positions.insert(vertex_id, pos);
+        }
+
+        for (vertex_id, pos) in new_positions {
+            self.positions.insert(vertex_id, pos);
+        }
+    }
+
+    fn delete_neighbour_faces(
         &mut self,
         vertex1: &Vertex,
         vertex2: &Vertex,
-        vertex_normals: &mut SecondaryMap<VertexId, Vec3>,
         result: &mut MergeVerticesOneRing,
     ) {
         let face_ids1 = vertex1.faces(self).collect_vec();
         let face_ids2 = vertex2.faces(self).collect_vec();
 
         for face_id in face_ids1.into_iter().chain(face_ids2) {
-            let face = unwrap_or_return!(self.faces.get(face_id), "Face not found");
-            for v_id in face.vertices(self) {
-                if let Some(normals) = &self.vertex_normals {
-                    vertex_normals.insert(
-                        v_id,
-                        *unwrap_or_return!(normals.get(v_id), "Normal not found"),
-                    );
-                } else {
-                    let normal = unwrap_or_return!(face.normal(self), "Normal not found");
-                    vertex_normals.insert(v_id, normal);
-                }
-            }
-
             let (del_v, del_he) = self.delete_face(face_id);
 
             result.removed_faces.push(face_id);
@@ -157,11 +211,18 @@ impl MeshGraph {
         if pos1.distance_squared(pos2) <= flip_threshold_sqr {
             self.flip_edge(single_shared_he_id);
 
-            let (removed_verts, removed_hes, removed_faces) =
-                self.collapse_edge(single_shared_he_id);
+            let CollapseEdge {
+                removed_vertices,
+                removed_halfedges,
+                removed_faces,
+                split_vertices,
+            } = self.collapse_edge(single_shared_he_id);
 
-            result.removed_vertices.extend(removed_verts);
-            result.removed_halfedges.extend(removed_hes);
+            if !split_vertices.is_empty() {
+                result.added_vertices.push(split_vertices[1]);
+            }
+            result.removed_vertices.extend(removed_vertices);
+            result.removed_halfedges.extend(removed_halfedges);
             result.removed_faces.extend(removed_faces);
 
             true
@@ -183,8 +244,6 @@ impl MeshGraph {
 
         for range_pair_to_connect in range_pairs_to_connect {
             let pairings = range_pair_to_connect.compute_pairings();
-
-            tracing::info!("Pairings: {:#?}", pairings);
 
             let mut prev_single_v_id = None;
             let mut prev_other_v_id = None;
@@ -249,15 +308,15 @@ impl MeshGraph {
         &mut self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
+        one_ring_set1: &HashSet<VertexId>,
+        one_ring_set2: &HashSet<VertexId>,
         flip_threshold_sqr: f32,
         result: &mut MergeVerticesOneRing,
     ) -> Vec<ConnectPair> {
         let mut range_pairs_to_connect = vec![];
 
-        let one_ring_set1 = HashSet::<VertexId>::from_iter(one_ring_v_ids1.iter().copied());
-        let one_ring_set2 = HashSet::<VertexId>::from_iter(one_ring_v_ids2.iter().copied());
         let common_v_ids =
-            HashSet::<VertexId>::from_iter(one_ring_set1.intersection(&one_ring_set2).copied());
+            HashSet::<VertexId>::from_iter(one_ring_set1.intersection(one_ring_set2).copied());
 
         if common_v_ids.len() == 2 {
             let (first_v_id, second_v_id) = common_v_ids.iter().copied().collect_tuple().unwrap();
@@ -353,8 +412,6 @@ impl MeshGraph {
                 if start_idx1 == orig_start_idx1 {
                     break;
                 }
-
-                tracing::info!("Index 1: Start {start_idx1}, End {end_idx1}");
             } else {
                 end_idx1 = (end_idx1 + 1) % len1;
                 end_idx2 = (end_idx2 + 1) % len2;
@@ -594,31 +651,26 @@ impl PlannedFace {
         PlannedFace([v_id1, v_id2, v_id3])
     }
 
-    fn make_ccw(
-        &mut self,
-        vertex_normals: &SecondaryMap<VertexId, Vec3>,
-        mesh_graph: &MeshGraph,
-    ) -> Option<()> {
-        let face_normal = vertex_normals[self.0[0]];
+    fn make_ccw(&mut self, mesh_graph: &mut MeshGraph) -> Option<()> {
+        if mesh_graph.halfedge_from_to(self.0[0], self.0[1]).is_some() {
+            let [first, second] = mesh_graph.boundary_vertex_order(self.0[0], self.0[1]);
 
-        let positions = self
-            .0
-            .iter()
-            .filter_map(|&id| mesh_graph.positions.get(id).copied())
-            .collect_array::<3>()?;
+            self.0[0] = first;
+            self.0[1] = second;
+        } else if mesh_graph.halfedge_from_to(self.0[1], self.0[2]).is_some() {
+            let [first, second] = mesh_graph.boundary_vertex_order(self.0[1], self.0[2]);
 
-        let a = positions[1] - positions[0];
-        let b = positions[2] - positions[0];
-        let current_normal = a.cross(b);
+            self.0[1] = first;
+            self.0[2] = second;
+        } else if mesh_graph.halfedge_from_to(self.0[2], self.0[0]).is_some() {
+            let [first, second] = mesh_graph.boundary_vertex_order(self.0[2], self.0[0]);
 
-        let (first, second) = if face_normal.dot(current_normal) < 0.0 {
-            (self.0[1], self.0[0])
+            self.0[2] = first;
+            self.0[0] = second;
         } else {
-            (self.0[0], self.0[1])
-        };
-
-        self.0[0] = first;
-        self.0[1] = second;
+            error!("no edge of this face already exists");
+            return None;
+        }
 
         Some(())
     }
@@ -635,6 +687,7 @@ mod tests {
         *,
     };
     use glam::*;
+    use hashbrown::HashSet;
 
     #[test]
     fn test_vertex_merge_equal_count() {
@@ -670,7 +723,16 @@ mod tests {
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
 
-        let result = meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id, 1.0);
+        let mut marked_halfedges = HashSet::new();
+        let mut marked_vertices = HashSet::new();
+
+        let result = meshgraph.merge_vertices_one_rings(
+            v_c_id,
+            v_c_m_id,
+            1.0,
+            &mut marked_halfedges,
+            &mut marked_vertices,
+        );
 
         #[cfg(feature = "rerun")]
         {
@@ -684,6 +746,9 @@ mod tests {
 
         assert_eq!(result.added_faces.len(), 12);
         assert_eq!(result.added_halfedges.len(), 24);
+
+        assert_eq!(marked_halfedges.len(), 24);
+        assert_eq!(marked_vertices.len(), 0);
     }
 
     #[test]
@@ -728,7 +793,16 @@ mod tests {
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
 
-        let result = meshgraph.merge_vertices_one_rings(v_c_id, v_c_m_id, 1.0);
+        let mut marked_halfedges = HashSet::new();
+        let mut marked_vertices = HashSet::new();
+
+        let result = meshgraph.merge_vertices_one_rings(
+            v_c_id,
+            v_c_m_id,
+            1.0,
+            &mut marked_halfedges,
+            &mut marked_vertices,
+        );
 
         #[cfg(feature = "rerun")]
         {
@@ -742,6 +816,9 @@ mod tests {
 
         assert_eq!(result.added_faces.len(), 11);
         assert_eq!(result.added_halfedges.len(), 22);
+
+        assert_eq!(marked_halfedges.len(), 22);
+        assert_eq!(marked_vertices.len(), 0);
     }
 
     #[cfg(feature = "gltf")]
@@ -751,7 +828,7 @@ mod tests {
 
         get_tracing_subscriber();
 
-        let mut meshgraph = gltf::load("src/ops/cleanup/test/merge_common_one_ring.glb").unwrap();
+        let mut meshgraph = gltf::load("src/ops/test/merge_common_one_ring.glb").unwrap();
 
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
@@ -777,7 +854,16 @@ mod tests {
             panic!("No bottom vertex found");
         }
 
-        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
+        let mut marked_halfedges = HashSet::new();
+        let mut marked_vertices = HashSet::new();
+
+        let result = meshgraph.merge_vertices_one_rings(
+            v_top_id,
+            v_bottom_id,
+            1.0,
+            &mut marked_halfedges,
+            &mut marked_vertices,
+        );
 
         #[cfg(feature = "rerun")]
         {
@@ -791,6 +877,9 @@ mod tests {
 
         assert_eq!(result.added_faces.len(), 13);
         assert_eq!(result.added_halfedges.len(), 22);
+
+        assert_eq!(marked_halfedges.len(), 22);
+        assert_eq!(marked_vertices.len(), 0);
     }
 
     #[cfg(feature = "gltf")]
@@ -800,7 +889,7 @@ mod tests {
 
         get_tracing_subscriber();
 
-        let mut meshgraph = gltf::load("src/ops/cleanup/test/merge_common_except_one.glb").unwrap();
+        let mut meshgraph = gltf::load("src/ops/test/merge_common_except_one.glb").unwrap();
 
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
@@ -826,7 +915,16 @@ mod tests {
             panic!("No bottom vertex found");
         }
 
-        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
+        let mut marked_halfedges = HashSet::new();
+        let mut marked_vertices = HashSet::new();
+
+        let result = meshgraph.merge_vertices_one_rings(
+            v_top_id,
+            v_bottom_id,
+            1.0,
+            &mut marked_halfedges,
+            &mut marked_vertices,
+        );
 
         #[cfg(feature = "rerun")]
         {
@@ -840,6 +938,9 @@ mod tests {
 
         assert_eq!(result.added_faces.len(), 2);
         assert_eq!(result.added_halfedges.len(), 2);
+
+        assert_eq!(marked_halfedges.len(), 2);
+        assert_eq!(marked_vertices.len(), 0);
     }
 
     #[cfg(feature = "gltf")]
@@ -849,8 +950,7 @@ mod tests {
 
         get_tracing_subscriber();
 
-        let mut meshgraph =
-            gltf::load("src/ops/cleanup/test/merge_common_except_one_two.glb").unwrap();
+        let mut meshgraph = gltf::load("src/ops/test/merge_common_except_one_two.glb").unwrap();
 
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
@@ -876,7 +976,16 @@ mod tests {
             panic!("No bottom vertex found");
         }
 
-        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
+        let mut marked_halfedges = HashSet::new();
+        let mut marked_vertices = HashSet::new();
+
+        let result = meshgraph.merge_vertices_one_rings(
+            v_top_id,
+            v_bottom_id,
+            1.0,
+            &mut marked_halfedges,
+            &mut marked_vertices,
+        );
 
         #[cfg(feature = "rerun")]
         {
@@ -890,6 +999,9 @@ mod tests {
 
         assert_eq!(result.added_faces.len(), 3);
         assert_eq!(result.added_halfedges.len(), 4);
+
+        assert_eq!(marked_halfedges.len(), 4);
+        assert_eq!(marked_vertices.len(), 0);
     }
 
     #[cfg(feature = "gltf")]
@@ -899,7 +1011,7 @@ mod tests {
 
         get_tracing_subscriber();
 
-        let mut meshgraph = gltf::load("src/ops/cleanup/test/merge_common_single_he.glb").unwrap();
+        let mut meshgraph = gltf::load("src/ops/test/merge_common_single_he.glb").unwrap();
 
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
@@ -925,7 +1037,16 @@ mod tests {
             panic!("No bottom vertex found");
         }
 
-        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
+        let mut marked_halfedges = HashSet::new();
+        let mut marked_vertices = HashSet::new();
+
+        let result = meshgraph.merge_vertices_one_rings(
+            v_top_id,
+            v_bottom_id,
+            1.0,
+            &mut marked_halfedges,
+            &mut marked_vertices,
+        );
 
         #[cfg(feature = "rerun")]
         {
@@ -939,6 +1060,9 @@ mod tests {
 
         assert_eq!(result.added_faces.len(), 0);
         assert_eq!(result.added_halfedges.len(), 0);
+
+        assert_eq!(marked_halfedges.len(), 0);
+        assert_eq!(marked_vertices.len(), 0);
     }
 
     #[cfg(feature = "gltf")]
@@ -948,7 +1072,7 @@ mod tests {
 
         get_tracing_subscriber();
 
-        let mut meshgraph = gltf::load("src/ops/cleanup/test/merge_common_single_he.glb").unwrap();
+        let mut meshgraph = gltf::load("src/ops/test/merge_common_single_he.glb").unwrap();
 
         #[cfg(feature = "rerun")]
         meshgraph.log_rerun();
@@ -974,7 +1098,16 @@ mod tests {
             panic!("No bottom vertex found");
         }
 
-        let result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 0.01);
+        let mut marked_halfedges = HashSet::new();
+        let mut marked_vertices = HashSet::new();
+
+        let result = meshgraph.merge_vertices_one_rings(
+            v_top_id,
+            v_bottom_id,
+            0.01,
+            &mut marked_halfedges,
+            &mut marked_vertices,
+        );
 
         #[cfg(feature = "rerun")]
         {
@@ -988,5 +1121,8 @@ mod tests {
 
         assert_eq!(result.added_faces.len(), 8);
         assert_eq!(result.added_halfedges.len(), 14);
+
+        assert_eq!(marked_halfedges.len(), 14);
+        assert_eq!(marked_vertices.len(), 0);
     }
 }

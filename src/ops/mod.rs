@@ -7,6 +7,7 @@ mod collapse;
 mod create;
 mod delete;
 mod insert;
+mod merge;
 mod query;
 mod subdivide;
 
@@ -14,17 +15,15 @@ impl MeshGraph {
     /// Flips this edge so that it represents the other diagonal described by the quad formed by the two incident triangles.
     ///
     /// ```text
-    ///      .                    .
-    ///     ( )                  ( )
-    ///     ╱'╲                  ╱'╲
-    ///    ╱   ╲                ╱ ║ ╲
-    ///  .╱     ╲.            .╱  ║  ╲.
-    /// ( )═════( )    =>    ( )  ║  ( )
-    ///  '╲     ╱'            '╲  ║  ╱'
-    ///    ╲   ╱                ╲ ║ ╱
-    ///     ╲.╱                  ╲.╱
-    ///     ( )                  ( )
-    ///      '                    '
+    ///     *                    *
+    ///    / \                  / \
+    ///   /   \                / ‖ \
+    ///  /     \              /  ‖  \
+    /// * ===== *     =>     *   ‖   *
+    ///  \     /              \  ‖  /
+    ///   \   /                \ ‖ /
+    ///    \ /                  \ /
+    ///     *                    *
     /// ```
     #[instrument(skip(self))]
     pub fn flip_edge(&mut self, halfedge_id: HalfedgeId) {

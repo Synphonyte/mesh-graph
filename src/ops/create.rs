@@ -1,7 +1,7 @@
 use glam::Vec3;
 use tracing::instrument;
 
-use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
+use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none, utils::unwrap_or_return};
 
 impl MeshGraph {
     #[instrument(skip(self))]
@@ -82,7 +82,6 @@ impl MeshGraph {
         v_id2: VertexId,
         v_id3: VertexId,
     ) -> Option<CreateFace> {
-        tracing::info!("Creating face from vertices {v_id1:?}, {v_id2:?}, {v_id3:?}");
         let inserted_a = self.insert_or_get_edge(v_id1, v_id2);
         let inserted_b = self.insert_or_get_edge(v_id2, v_id3);
         let inserted_c = self.insert_or_get_edge(v_id3, v_id1);
@@ -206,6 +205,28 @@ impl MeshGraph {
         }
 
         None
+    }
+
+    /// Returns the vertex order of the boundary halfedge between two vertices.
+    /// Useful when adding faces on boundaries.
+    ///
+    /// If the edge is not boundary, it always returns `[v_id2, v_id1]`.
+    #[instrument(skip(self))]
+    pub fn boundary_vertex_order(&mut self, v_id1: VertexId, v_id2: VertexId) -> [VertexId; 2] {
+        let he_id = unwrap_or_return!(
+            self.halfedge_from_to(v_id1, v_id2),
+            "Couldn't find halfedge between {v_id1:?} and {v_id2:?}",
+            [v_id1, v_id2]
+        );
+
+        // already checked that the halfedge exists in `halfedge_from_to()`
+        let he = self.halfedges[he_id];
+
+        if he.is_boundary() {
+            [v_id1, v_id2]
+        } else {
+            [v_id2, v_id1]
+        }
     }
 }
 

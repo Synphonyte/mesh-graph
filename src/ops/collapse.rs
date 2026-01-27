@@ -18,6 +18,7 @@ impl MeshGraph {
         &mut self,
         min_length_squared: f32,
         selection: &mut Selection,
+        marked_vertices: &mut HashSet<VertexId>,
     ) {
         let mut dedup_halfedges = HashSet::new();
 
@@ -49,7 +50,8 @@ impl MeshGraph {
             let mut min_he_id = None;
 
             for (&he_id, &len) in &halfedges_to_collapse {
-                if len < min_len && self.can_collapse_edge(he_id, min_length_squared) {
+                if len < min_len {
+                    //&& self.can_collapse_edge(he_id, min_length_squared) {
                     min_len = len;
                     min_he_id = Some(he_id);
                 }
@@ -61,9 +63,20 @@ impl MeshGraph {
             }
             let min_he_id = min_he_id.unwrap();
 
-            let start_vertex = self.halfedges[min_he_id].start_vertex(self);
+            let start_vertex_id = unwrap_or_return!(
+                self.halfedges[min_he_id].start_vertex(self),
+                "Start vertex not found"
+            );
 
-            let (verts, halfedges, faces) = self.collapse_edge(min_he_id);
+            let collapse_edge_result = self.collapse_edge(min_he_id);
+
+            let vertex_neighborhoods_to_check = if collapse_edge_result.split_vertices.is_empty() {
+                vec![start_vertex_id]
+            } else {
+                marked_vertices.extend(collapse_edge_result.split_vertices.iter().copied());
+
+                collapse_edge_result.split_vertices
+            };
 
             #[cfg(feature = "rerun")]
             {
@@ -81,57 +94,53 @@ impl MeshGraph {
 
             halfedges_to_collapse.remove(&min_he_id);
 
-            for vert in verts {
+            for vert in collapse_edge_result.removed_vertices {
                 selection.remove(vert);
             }
-            for halfedge in halfedges {
+            for halfedge in collapse_edge_result.removed_halfedges {
                 selection.remove(halfedge);
                 halfedges_to_collapse.remove(&halfedge);
             }
-            for face in faces {
+            for face in collapse_edge_result.removed_faces {
                 selection.remove(face);
             }
 
-            if let Some(start_vertex) = start_vertex {
+            for vertex_id in vertex_neighborhoods_to_check {
                 let outgoing_halfedges = self
                     .vertices
-                    .get(start_vertex)
+                    .get(vertex_id)
                     .or_else(error_none!("Vertex for start vertex not found"))
                     .map(|vertex| vertex.outgoing_halfedges(self).collect::<Vec<_>>())
                     .unwrap_or_default();
 
                 for halfedge_id in outgoing_halfedges {
-                    if let Some(halfedge) = self.halfedges.get(halfedge_id) {
-                        let len = halfedge.length_squared(self);
-
-                        if len < min_length_squared {
-                            halfedges_to_collapse.insert(halfedge_id, len);
-                        } else {
-                            halfedges_to_collapse.remove(&halfedge_id);
-                        }
-
-                        if let Some(twin) = halfedge.twin {
-                            halfedges_to_collapse.remove(&twin);
-                        }
-
-                        if let Some(face_id) = halfedge.face {
-                            if let Some(face) = self.faces.get(face_id) {
-                                self.bvh.insert_or_update_partially(
-                                    face.aabb(self),
-                                    face.index,
-                                    0.0,
-                                );
-                            } else {
-                                error!("Face not found. BVH will not be updated.");
-                            }
-                        }
-                        selection.insert(halfedge_id);
-                    } else {
+                    let Some(halfedge) = self.halfedges.get(halfedge_id) else {
                         error!("Halfedge not found");
+                        continue;
+                    };
+
+                    let len = halfedge.length_squared(self);
+
+                    if len < min_length_squared {
+                        halfedges_to_collapse.insert(halfedge_id, len);
+                    } else {
+                        halfedges_to_collapse.remove(&halfedge_id);
                     }
+
+                    if let Some(twin) = halfedge.twin {
+                        halfedges_to_collapse.remove(&twin);
+                    }
+
+                    if let Some(face_id) = halfedge.face {
+                        if let Some(face) = self.faces.get(face_id) {
+                            self.bvh
+                                .insert_or_update_partially(face.aabb(self), face.index, 0.0);
+                        } else {
+                            error!("Face not found. BVH will not be updated.");
+                        }
+                    }
+                    selection.insert(halfedge_id);
                 }
-            } else {
-                error!("Start vertex not found")
             }
 
             #[cfg(feature = "rerun")]
@@ -318,10 +327,9 @@ impl MeshGraph {
     ///
     /// Returns the vertices, halfedges and faces that were removed.
     #[instrument(skip(self))]
-    pub fn collapse_edge(
-        &mut self,
-        halfedge_id: HalfedgeId,
-    ) -> (Vec<VertexId>, Vec<HalfedgeId>, Vec<FaceId>) {
+    pub fn collapse_edge(&mut self, halfedge_id: HalfedgeId) -> CollapseEdge {
+        let mut result = CollapseEdge::default();
+
         #[cfg(feature = "rerun")]
         {
             self.log_he_rerun("collapse/he", halfedge_id);
@@ -329,21 +337,14 @@ impl MeshGraph {
 
         // TODO : consider border vertices
 
-        let mut removed_vertices = Vec::new();
-        let mut removed_halfedges = Vec::new();
-        let mut removed_faces = Vec::new();
-
         let he = *unwrap_or_return!(
             self.halfedges.get(halfedge_id),
             "Halfedge not found",
-            (removed_vertices, removed_halfedges, removed_faces)
+            result
         );
 
-        let start_vert_id = unwrap_or_return!(
-            he.start_vertex(self),
-            "Start vertex not found",
-            (removed_vertices, removed_halfedges, removed_faces)
-        );
+        let start_vert_id =
+            unwrap_or_return!(he.start_vertex(self), "Start vertex not found", result);
         let end_vert_id = he.end_vertex;
 
         #[cfg(feature = "rerun")]
@@ -365,12 +366,12 @@ impl MeshGraph {
         let start_pos = *unwrap_or_return!(
             self.positions.get(start_vert_id),
             "Start position not found",
-            (removed_vertices, removed_halfedges, removed_faces)
+            result
         );
         let end_pos = *unwrap_or_return!(
             self.positions.get(end_vert_id),
             "End position not found",
-            (removed_vertices, removed_halfedges, removed_faces)
+            result
         );
 
         let center_pos = (start_pos + end_pos) * 0.5;
@@ -379,35 +380,27 @@ impl MeshGraph {
             let (face_id, halfedges) = unwrap_or_return!(
                 self.remove_halfedge_face(halfedge_id),
                 "Could not remove face",
-                (removed_vertices, removed_halfedges, removed_faces)
+                result
             );
-            removed_faces.push(face_id);
-            removed_halfedges.extend(halfedges);
+            result.removed_faces.push(face_id);
+            result.removed_halfedges.extend(halfedges);
         }
-        removed_halfedges.push(halfedge_id);
+        result.removed_halfedges.push(halfedge_id);
 
-        let twin_id = unwrap_or_return!(
-            he.twin,
-            "Twin missing",
-            (removed_vertices, removed_halfedges, removed_faces)
-        );
-        let twin = unwrap_or_return!(
-            self.halfedges.get(twin_id),
-            "Halfedge not found",
-            (removed_vertices, removed_halfedges, removed_faces)
-        );
+        let twin_id = unwrap_or_return!(he.twin, "Twin missing", result);
+        let twin = unwrap_or_return!(self.halfedges.get(twin_id), "Halfedge not found", result);
 
         if !twin.is_boundary() {
             let (face_id, halfedges) = unwrap_or_return!(
                 self.remove_halfedge_face(twin_id),
                 "Failed to remove halfedge face",
-                (removed_vertices, removed_halfedges, removed_faces)
+                result
             );
 
-            removed_faces.push(face_id);
-            removed_halfedges.extend(halfedges);
+            result.removed_faces.push(face_id);
+            result.removed_halfedges.extend(halfedges);
         }
-        removed_halfedges.push(twin_id);
+        result.removed_halfedges.push(twin_id);
 
         for end_incoming_he in end_incoming_halfedges {
             if let Some(end_incoming_he_mut) = self.halfedges.get_mut(end_incoming_he) {
@@ -435,152 +428,16 @@ impl MeshGraph {
             );
         }
 
-        removed_vertices.push(end_vert_id);
+        result.removed_vertices.push(end_vert_id);
 
-        // Remove flaps (= faces that share all their vertices)
-        let mut face_tuples: Vec<_> = unwrap_or_return!(
-            self.vertices.get(start_vert_id),
-            "Start vertex not found",
-            (removed_vertices, removed_halfedges, removed_faces)
-        )
-        .faces(self)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .circular_tuple_windows()
-        .collect();
+        let cleanup = self.make_vertex_neighborhood_manifold(start_vert_id);
 
-        let mut first = true;
+        result.split_vertices = cleanup.split_vertices;
+        result.removed_vertices.extend(cleanup.removed_vertices);
+        result.removed_halfedges.extend(cleanup.removed_halfedges);
+        result.removed_faces.extend(cleanup.removed_faces);
 
-        while let Some((face_id1, face_id2)) = face_tuples.pop() {
-            #[cfg(feature = "rerun")]
-            {
-                self.log_rerun();
-            }
-
-            if self.faces_share_all_vertices(face_id1, face_id2) {
-                #[cfg(feature = "rerun")]
-                {
-                    if self.vertices[start_vert_id].faces(self).count() == 1 {
-                        self.log_vert_rerun("cleanup_delete", start_vert_id);
-                    }
-
-                    self.log_face_rerun("cleanup_delete/1", face_id1);
-                    self.log_face_rerun("cleanup_delete/2", face_id2);
-                }
-
-                let mut halfedges_of_faces = HashSet::new();
-                // face existence already checked by `self.faces_share_all_vertices`
-                halfedges_of_faces.extend(self.faces[face_id1].halfedges(self));
-                halfedges_of_faces.extend(self.faces[face_id2].halfedges(self));
-
-                let (vs, hes) = self.delete_face(face_id1);
-                for he_id in &hes {
-                    halfedges_of_faces.remove(he_id);
-                }
-                removed_vertices.extend(vs);
-                removed_halfedges.extend(hes);
-                removed_faces.push(face_id1);
-
-                let (vs, hes) = self.delete_face(face_id2);
-                for he_id in &hes {
-                    halfedges_of_faces.remove(he_id);
-                }
-                removed_vertices.extend(vs);
-                removed_halfedges.extend(hes);
-                removed_faces.push(face_id2);
-
-                // the twin edges of the neighboring faces of the deleted faces are still there
-                // we need to remove them and re-connect (twin) their twin edges
-                debug_assert_eq!(halfedges_of_faces.len(), 2);
-                let mut halfedges_of_faces = halfedges_of_faces.into_iter();
-                let he_id1 = halfedges_of_faces.next().unwrap();
-                let he_id2 = halfedges_of_faces.next().unwrap();
-
-                let he1 = unwrap_or_return!(
-                    self.halfedges.get(he_id1),
-                    "Halfedge 1 missing",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                );
-                let twin_id1 = unwrap_or_return!(
-                    he1.twin,
-                    "Twin 1 missing",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                );
-                let he2 = unwrap_or_return!(
-                    self.halfedges.get(he_id2),
-                    "Halfedge 2 missing",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                );
-                let twin_id2 = unwrap_or_return!(
-                    he2.twin,
-                    "Twin 2 missing",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                );
-
-                {
-                    let twin1 = unwrap_or_return!(
-                        self.halfedges.get_mut(twin_id1),
-                        "Twin 1 missing",
-                        (removed_vertices, removed_halfedges, removed_faces)
-                    );
-                    twin1.twin = Some(twin_id2);
-                }
-
-                {
-                    let twin2 = unwrap_or_return!(
-                        self.halfedges.get_mut(twin_id2),
-                        "Twin 2 missing",
-                        (removed_vertices, removed_halfedges, removed_faces)
-                    );
-                    twin2.twin = Some(twin_id1);
-                }
-
-                self.halfedges.remove(he_id1);
-                self.halfedges.remove(he_id2);
-                removed_halfedges.push(he_id1);
-                removed_halfedges.push(he_id2);
-
-                let new_outgoing_he_id = if self.halfedges[twin_id1].end_vertex == start_vert_id {
-                    twin_id2
-                } else {
-                    twin_id1
-                };
-
-                // Also update both vertices of the deleted halfedges
-                unwrap_or_return!(
-                    self.vertices.get_mut(start_vert_id),
-                    "Start vertex not found",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                )
-                .outgoing_halfedge = Some(new_outgoing_he_id);
-
-                let new_outgoing_he = unwrap_or_return!(
-                    self.halfedges.get(new_outgoing_he_id),
-                    "New outgoing halfedge not found",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                );
-                unwrap_or_return!(
-                    self.vertices.get_mut(new_outgoing_he.end_vertex),
-                    "End vertex not found",
-                    (removed_vertices, removed_halfedges, removed_faces)
-                )
-                .outgoing_halfedge = new_outgoing_he
-                    .twin
-                    .or_else(error_none!("New outgoing twin missing"));
-
-                // the next tuple contains one of the removed faces, so re remove it
-                face_tuples.pop();
-
-                // tuples wrap around so we need to remove the first element if the last element was removed
-                if first {
-                    face_tuples.remove(0);
-                }
-            }
-
-            first = false;
-        }
-
-        (removed_vertices, removed_halfedges, removed_faces)
+        result
     }
 
     /// Remove a halfedge face and re-connecting the adjacent halfedges.
@@ -791,12 +648,16 @@ mod test {
             .nth(2)
             .unwrap();
 
-        let (removed_vertex_ids, removed_halfedge_ids, removed_face_ids) =
-            mesh_graph.collapse_edge(edge_to_collapse);
+        let CollapseEdge {
+            removed_vertices,
+            removed_halfedges,
+            removed_faces,
+            split_vertices,
+        } = mesh_graph.collapse_edge(edge_to_collapse);
 
-        assert_eq!(removed_vertex_ids.len(), 1);
-        assert_eq!(removed_halfedge_ids.len(), 7);
-        assert_eq!(removed_face_ids.len(), 2);
+        assert_eq!(removed_vertices.len(), 1);
+        assert_eq!(removed_halfedges.len(), 7);
+        assert_eq!(removed_faces.len(), 2);
 
         assert_eq!(mesh_graph.vertices.len(), 7);
         assert_eq!(mesh_graph.halfedges.len(), 24);
@@ -808,10 +669,19 @@ mod test {
                 "test_edge_collapse".into(),
                 &faces
                     .into_iter()
-                    .filter(|face| !removed_face_ids.contains(face))
+                    .filter(|face| !removed_faces.contains(face))
                     .collect_vec(),
             );
             crate::RR.flush_blocking().unwrap();
         }
     }
+}
+
+#[derive(Default, Debug)]
+pub struct CollapseEdge {
+    pub removed_vertices: Vec<VertexId>,
+    pub removed_halfedges: Vec<HalfedgeId>,
+    pub removed_faces: Vec<FaceId>,
+
+    pub split_vertices: Vec<VertexId>,
 }

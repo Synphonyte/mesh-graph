@@ -21,5 +21,5 @@ pub fn main() {
         }
     }
 
-    let _result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id);
+    let _result = meshgraph.merge_vertices_one_rings(v_top_id, v_bottom_id, 1.0);
 }

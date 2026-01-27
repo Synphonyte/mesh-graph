@@ -1,5 +1,4 @@
 mod edge_boundary;
-mod merge;
 mod vertex_neighborhood;
 
 use tracing::instrument;
