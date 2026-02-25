@@ -25,13 +25,18 @@ impl Face {
     /// Returns the three halfedges that form this face
     #[instrument(skip(mesh_graph))]
     pub fn halfedges<'a>(&self, mesh_graph: &'a MeshGraph) -> CircularHalfedgesIterator<'a> {
-        CircularHalfedgesIterator::new(Some(self.halfedge), mesh_graph, |he, mesh_graph| {
-            mesh_graph
-                .halfedges
-                .get(he)
-                .or_else(error_none!("Halfedge not found"))?
-                .next
-        })
+        CircularHalfedgesIterator::new(
+            Some(self.halfedge),
+            mesh_graph,
+            |he, mesh_graph| {
+                mesh_graph
+                    .halfedges
+                    .get(he)
+                    .or_else(error_none!("Halfedge not found"))?
+                    .next
+            },
+            3,
+        )
     }
 
     /// Returns the three corner vertices of this face.
@@ -83,9 +88,15 @@ impl Face {
             return None;
         }
 
+        Some(Self::normal_from_positions(&positions))
+    }
+
+    #[inline]
+    pub fn normal_from_positions(positions: &[Vec3]) -> Vec3 {
         let a = positions[1] - positions[0];
         let b = positions[2] - positions[0];
-        Some(a.cross(b).normalize())
+
+        a.cross(b).normalize()
     }
 
     /// Wether this triangle is degenerate.

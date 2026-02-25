@@ -1,37 +1,26 @@
-use glam::Vec3;
 use tracing::{error, instrument};
 
-use crate::{Face, FaceId, Halfedge, HalfedgeId, MeshGraph, Vertex, VertexId, error_none};
+use crate::{Halfedge, HalfedgeId, MeshGraph, VertexId, error_none};
 
 impl MeshGraph {
-    /// Inserts a vertex and it's position into the mesh graph.
-    /// It doesn't do any connections.
-    pub fn insert_vertex(&mut self, position: Vec3) -> VertexId {
-        let vertex = Vertex::default();
-        let vertex_id = self.vertices.insert(vertex);
-        self.positions.insert(vertex_id, position);
-
-        self.outgoing_halfedges.insert(vertex_id, vec![]);
-
-        vertex_id
-    }
-
     /// Inserts a pair of halfedges and connects them to the given vertices (from and to the halfedge) and each other as twins.
     /// If the edge already exists or partially exists,
     /// it returns the existing edge while creating any missing halfedges.
+    ///
+    /// See also [`add_edge`].
     #[instrument(skip(self))]
-    pub fn insert_or_get_edge(
+    pub fn add_or_get_edge(
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-    ) -> InsertOrGetEdge {
+    ) -> AddOrGetEdge {
         let ret = self
-            .insert_or_get_edge_inner(start_vertex_id, end_vertex_id)
+            .add_or_get_edge_inner(start_vertex_id, end_vertex_id)
             .unwrap_or_else(|| {
-                let start_to_end_he_id = self.insert_halfedge(start_vertex_id, end_vertex_id);
-                let twin_he_id = self.insert_halfedge(end_vertex_id, start_vertex_id);
+                let start_to_end_he_id = self.add_halfedge(start_vertex_id, end_vertex_id);
+                let twin_he_id = self.add_halfedge(end_vertex_id, start_vertex_id);
 
-                InsertOrGetEdge {
+                AddOrGetEdge {
                     start_to_end_he_id,
                     twin_he_id,
                     new_start_to_end: true,
@@ -58,31 +47,11 @@ impl MeshGraph {
         ret
     }
 
-    /// Returns the halfedge from the start vertex to the end vertex, if it exists. `None` otherwise.
-    pub fn halfedge_from_to(
+    fn add_or_get_edge_inner(
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-    ) -> Option<HalfedgeId> {
-        self.outgoing_halfedges
-            .entry(start_vertex_id)
-            .or_else(error_none!("Start vertex not found"))?
-            .or_insert_with(Vec::new)
-            .iter()
-            .copied()
-            .find(|he_id| {
-                self.halfedges
-                    .get(*he_id)
-                    .or_else(error_none!("Halfedge not found"))
-                    .is_some_and(|he| he.end_vertex == end_vertex_id)
-            })
-    }
-
-    fn insert_or_get_edge_inner(
-        &mut self,
-        start_vertex_id: VertexId,
-        end_vertex_id: VertexId,
-    ) -> Option<InsertOrGetEdge> {
+    ) -> Option<AddOrGetEdge> {
         let mut he1_id = self.halfedge_from_to(start_vertex_id, end_vertex_id);
         let mut he2_id = self.halfedge_from_to(end_vertex_id, start_vertex_id);
         let mut new1 = false;
@@ -105,11 +74,11 @@ impl MeshGraph {
                 }
             }
             (Some(_h1_id), None) => {
-                he2_id = Some(self.insert_halfedge(end_vertex_id, start_vertex_id));
+                he2_id = Some(self.add_halfedge(end_vertex_id, start_vertex_id));
                 new2 = true;
             }
             (None, Some(_h2_id)) => {
-                he1_id = Some(self.insert_halfedge(start_vertex_id, end_vertex_id));
+                he1_id = Some(self.add_halfedge(start_vertex_id, end_vertex_id));
                 new1 = true;
             }
             (None, None) => {
@@ -122,7 +91,7 @@ impl MeshGraph {
         let start_to_end_he_id = he1_id.unwrap();
         let twin_he_id = he2_id.unwrap();
 
-        Some(InsertOrGetEdge {
+        Some(AddOrGetEdge {
             start_to_end_he_id,
             twin_he_id,
             new_start_to_end: new1,
@@ -130,12 +99,31 @@ impl MeshGraph {
         })
     }
 
+    /// Inserts a pair of halfedges and connects them to the given vertices (from and to the halfedge) and each other as twins.
+    /// This creates two halfedges wether the vertices already have an edge between them or not.
+    ///
+    /// If you don't want this, consider using [`add_or_get_edge`] instead.
+    pub fn add_edge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> AddEdge {
+        let start_to_end_he_id = self.add_halfedge(start_vertex, end_vertex);
+        let twin_he_id = self.add_halfedge(end_vertex, start_vertex);
+
+        // Just inserted above
+        self.halfedges[start_to_end_he_id].twin = Some(twin_he_id);
+        self.halfedges[twin_he_id].twin = Some(start_to_end_he_id);
+
+        AddEdge {
+            start_to_end_he_id,
+            twin_he_id,
+        }
+    }
+
     /// Inserts a halfedge into the mesh graph. It only connects the halfedge to the given end vertex but not the reverse.
     /// It also doesn't do any other connections.
-    /// It inserts into `self.outgoing_halfedges`.
+    ///
+    /// It does insert into `self.outgoing_halfedges`.
     ///
     /// Use [`insert_or_get_edge`] instead of this when you can to lower the chance of creating an invalid graph.
-    pub fn insert_halfedge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> HalfedgeId {
+    pub fn add_halfedge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> HalfedgeId {
         let halfedge = Halfedge {
             end_vertex,
             next: None,
@@ -152,41 +140,10 @@ impl MeshGraph {
 
         he_id
     }
-
-    /// Inserts a face into the mesh graph. It connects the halfedges to the face and the face to the first halfedge.
-    /// Additionally it connects the halfedges' `next` loop around the face.
-    #[instrument(skip(self))]
-    pub fn insert_face(
-        &mut self,
-        he1_id: HalfedgeId,
-        he2_id: HalfedgeId,
-        he3_id: HalfedgeId,
-    ) -> FaceId {
-        let face_id = self.faces.insert_with_key(|id| Face {
-            halfedge: he1_id,
-            index: self.next_index,
-            id,
-        });
-
-        self.index_to_face_id.insert(self.next_index, face_id);
-
-        self.next_index += 1;
-
-        for (he_id, next_he_id) in [(he1_id, he2_id), (he2_id, he3_id), (he3_id, he1_id)] {
-            if let Some(halfedge) = self.halfedges.get_mut(he_id) {
-                halfedge.face = Some(face_id);
-                halfedge.next = Some(next_he_id);
-            } else {
-                error!("Halfedge not found");
-            }
-        }
-
-        face_id
-    }
 }
 
-/// Return value of `insert_or_get_edge`
-pub struct InsertOrGetEdge {
+/// Return value of `add_or_get_edge`
+pub struct AddOrGetEdge {
     /// Id of the halfedge from start vertex to end vertex
     pub start_to_end_he_id: HalfedgeId,
     /// Id of the halfedge from end vertex to start vertex
@@ -197,7 +154,7 @@ pub struct InsertOrGetEdge {
     pub new_twin: bool,
 }
 
-impl InsertOrGetEdge {
+impl AddOrGetEdge {
     /// Return the ids of the newly created halfedges
     pub fn created_he_ids(&self) -> Vec<HalfedgeId> {
         let mut he_ids = vec![];
@@ -209,4 +166,12 @@ impl InsertOrGetEdge {
         }
         he_ids
     }
+}
+
+/// Return value of `add_edge`
+pub struct AddEdge {
+    /// Id of the halfedge from start vertex to end vertex
+    pub start_to_end_he_id: HalfedgeId,
+    /// Id of the halfedge from end vertex to start vertex
+    pub twin_he_id: HalfedgeId,
 }

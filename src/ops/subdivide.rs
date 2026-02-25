@@ -1,5 +1,5 @@
-use hashbrown::{HashMap, HashSet};
-use tracing::{error, instrument};
+use hashbrown::HashSet;
+use tracing::instrument;
 
 use crate::{
     HalfedgeId, MeshGraph, Selection, SelectionOps, VertexId, error_none, utils::unwrap_or_return,
@@ -9,6 +9,128 @@ use crate::{
 use crate::utils::vec3_array;
 
 impl MeshGraph {
+    /// Subdivide all edges until all of them are <= max_length.
+    /// Please note that you have to provide the squared value of max_length.
+    ///
+    /// This will schedule necessary updates to the QBVH but you have to call
+    /// `refit_bvh()` after the operation.
+    #[instrument(skip(self))]
+    pub fn subdivide_until_edges_below_max_length(
+        &mut self,
+        max_length_squared: f32,
+        marked_halfedge_ids: &mut HashSet<HalfedgeId>,
+        marked_vertex_ids: &mut HashSet<VertexId>,
+    ) {
+        let mut halfedges_to_subdivide = self.halfedges_map(|len_sqr| len_sqr > max_length_squared);
+
+        while !halfedges_to_subdivide.is_empty() {
+            let mut max_len = 0.0;
+            let mut max_he_id = HalfedgeId::default();
+
+            #[cfg(feature = "rerun")]
+            self.log_hes_rerun(
+                "subdivide/selection",
+                &halfedges_to_subdivide
+                    .iter()
+                    .map(|(he, _)| *he)
+                    .collect::<Vec<_>>(),
+            );
+
+            for (&he, &len) in &halfedges_to_subdivide {
+                if len > max_len {
+                    max_len = len;
+                    max_he_id = he;
+                }
+            }
+
+            halfedges_to_subdivide.remove(&max_he_id);
+
+            let mut affected_faces = Selection::default();
+
+            // already checked
+            let max_he = self.halfedges[max_he_id];
+            if let Some(face_id) = max_he.face {
+                affected_faces.insert(face_id);
+            }
+
+            if let Some(twin_id) = max_he.twin.or_else(error_none!("Twin missing"))
+                && let Some(twin_he) = self
+                    .halfedges
+                    .get(twin_id)
+                    .or_else(error_none!("Halfedge not found"))
+                && let Some(twin_face_id) = twin_he.face
+            {
+                affected_faces.insert(twin_face_id);
+            }
+
+            let subdivide_edge_result =
+                unwrap_or_return!(self.subdivide_edge(max_he_id), "Couldn't subdivide edge");
+
+            if marked_halfedge_ids.contains(&max_he_id) {
+                marked_halfedge_ids.extend(subdivide_edge_result.added_halfedges.iter().copied());
+                marked_vertex_ids.insert(subdivide_edge_result.added_vertex);
+            }
+
+            // #[cfg(feature = "rerun")]
+            // {
+            //     crate::RR
+            //         .log("meshgraph/subdivide", &rerun::Clear::recursive())
+            //         .unwrap();
+            //     crate::RR
+            //         .log("meshgraph/halfedge/subdivide", &rerun::Clear::recursive())
+            //         .unwrap();
+            //     crate::RR
+            //         .log("meshgraph/face/subdivide", &rerun::Clear::recursive())
+            //         .unwrap();
+            //     self.log_rerun();
+            // }
+
+            for new_he_id in subdivide_edge_result.added_halfedges {
+                // newly inserted in `self.subdivide_edge`
+                let new_he = self.halfedges[new_he_id];
+
+                if let Some(face_id) = new_he.face {
+                    affected_faces.insert(face_id);
+                }
+
+                let new_twin_id = unwrap_or_return!(new_he.twin, "New twin missing");
+                let new_twin =
+                    unwrap_or_return!(self.halfedges.get(new_twin_id), "New twin not found");
+
+                if let Some(face_id) = new_twin.face {
+                    affected_faces.insert(face_id);
+                    #[cfg(feature = "rerun")]
+                    self.log_face_rerun("subdivide/selected_new", face_id);
+                }
+            }
+
+            let mut new_hes_to_check = HashSet::new();
+
+            for he_id in affected_faces.resolve_to_halfedges(self) {
+                let he = unwrap_or_return!(self.halfedges.get(he_id), "Halfedge not found");
+                let twin_id = unwrap_or_return!(he.twin, "Twin missing");
+
+                new_hes_to_check.insert(he_id.min(twin_id));
+            }
+
+            for he_id in new_hes_to_check {
+                let he = self.halfedges[he_id]; // checked above
+
+                let len_sqr = he.length_squared(self);
+
+                if len_sqr > max_length_squared {
+                    #[cfg(feature = "rerun")]
+                    self.log_he_rerun("/subdivide/new_edge", he_id);
+
+                    halfedges_to_subdivide.insert(he_id, len_sqr);
+                }
+            }
+        }
+
+        #[cfg(feature = "rerun")]
+        self.log_rerun();
+    }
+
     /// Subdivides an edge by computing it's center vertex. This also subdivides any adjacent triangles and
     /// makes sure everything is properly reconnected. Works only on triangle meshes.
     ///
@@ -56,7 +178,7 @@ impl MeshGraph {
                 .unwrap();
         }
 
-        let center_v = self.insert_vertex(center_pos);
+        let center_v = self.add_vertex(center_pos);
         if let Some(normals) = &mut self.vertex_normals {
             let start_normal = normals
                 .get(start_v)
@@ -64,10 +186,10 @@ impl MeshGraph {
             let end_normal = normals
                 .get(end_v)
                 .or_else(error_none!("End normal not found"))?;
-            normals[center_v] = (start_normal + end_normal).normalize();
+            normals.insert(center_v, (start_normal + end_normal).normalize());
         }
 
-        let new_he = self.insert_halfedge(center_v, end_v);
+        let new_he = self.add_halfedge(center_v, end_v);
         // inserted just above
         self.vertices[center_v].outgoing_halfedge = Some(new_he);
 
@@ -77,7 +199,7 @@ impl MeshGraph {
             added_halfedges.push(new_face_he);
         }
 
-        let new_twin = self.insert_halfedge(center_v, start_v);
+        let new_twin = self.add_halfedge(center_v, start_v);
 
         if let Some(new_face_he) = self.subdivide_face(twin_id, new_twin, center_v) {
             added_halfedges.push(new_face_he);
@@ -135,16 +257,16 @@ impl MeshGraph {
             .or_else(error_none!("Last halfedge not found"))?;
 
         // rewire existing face
-        let new_he = self.insert_halfedge(center_v, self.halfedges[next_he].end_vertex);
+        let new_he = self.add_halfedge(center_v, self.halfedges[next_he].end_vertex);
 
         self.halfedges[existing_halfedge_id].next = Some(new_he);
         self.halfedges[new_he].next = Some(last_he);
         self.halfedges[new_he].face = Some(face_id);
 
-        let new_twin = self.insert_halfedge(self.halfedges[next_he].end_vertex, center_v);
+        let new_twin = self.add_halfedge(self.halfedges[next_he].end_vertex, center_v);
 
         // insert new face
-        let new_face_id = self.insert_face(new_halfedge_id, next_he, new_twin);
+        let new_face_id = self.add_face(new_halfedge_id, next_he, new_twin);
 
         self.halfedges[new_twin].twin = Some(new_he);
         self.halfedges[new_he].twin = Some(new_twin);
@@ -167,157 +289,6 @@ impl MeshGraph {
         }
 
         Some(new_he)
-    }
-
-    /// Subdivide all edges in the selection until all of them are <= max_length.
-    /// Please note that you have to provide the squared value of max_length.
-    /// All new edges created during this process are added to the selection.
-    ///
-    /// This will schedule necessary updates to the QBVH but you have to call
-    /// `refit()` and maybe `rebalance()` after the operation.
-    #[instrument(skip(self))]
-    pub fn subdivide_until_edges_below_max_length(
-        &mut self,
-        max_length_squared: f32,
-        selection: &mut Selection,
-        marked_halfedge_ids: &mut HashSet<HalfedgeId>,
-        marked_vertex_ids: &mut HashSet<VertexId>,
-    ) {
-        let mut dedup_halfedges = HashSet::new();
-
-        for he_id in selection.resolve_to_halfedges(self) {
-            let he = unwrap_or_return!(self.halfedges.get(he_id), "Halfedge not found");
-            let twin_already_in = he
-                .twin
-                .map(|twin| dedup_halfedges.contains(&twin))
-                .unwrap_or_else(|| {
-                    error!("Twin missing");
-                    false
-                });
-
-            if !twin_already_in {
-                dedup_halfedges.insert(he_id);
-            }
-        }
-
-        let mut halfedges_to_subdivide = dedup_halfedges
-            .into_iter()
-            .filter_map(|he| {
-                // already checked above
-                let len = self.halfedges[he].length_squared(self);
-                (len > max_length_squared).then_some((he, len))
-            })
-            .collect::<HashMap<_, _>>();
-
-        while !halfedges_to_subdivide.is_empty() {
-            let mut max_len = 0.0;
-            let mut max_he_id = HalfedgeId::default();
-
-            #[cfg(feature = "rerun")]
-            self.log_hes_rerun(
-                "subdivide/selection",
-                &halfedges_to_subdivide
-                    .iter()
-                    .map(|(he, _)| *he)
-                    .collect::<Vec<_>>(),
-            );
-
-            for (&he, &len) in &halfedges_to_subdivide {
-                if len > max_len {
-                    max_len = len;
-                    max_he_id = he;
-                }
-            }
-
-            halfedges_to_subdivide.remove(&max_he_id);
-
-            let mut affected_faces = Selection::default();
-
-            // already checked
-            let max_he = self.halfedges[max_he_id];
-            if let Some(face_id) = max_he.face {
-                selection.insert(face_id);
-                affected_faces.insert(face_id);
-
-                #[cfg(feature = "rerun")]
-                self.log_face_rerun("subdivide/selected_new", face_id);
-            }
-
-            if let Some(twin_id) = max_he.twin.or_else(error_none!("Twin missing"))
-                && let Some(twin_he) = self
-                    .halfedges
-                    .get(twin_id)
-                    .or_else(error_none!("Halfedge not found"))
-                && let Some(twin_face_id) = twin_he.face
-            {
-                selection.insert(twin_face_id);
-                affected_faces.insert(twin_face_id);
-
-                #[cfg(feature = "rerun")]
-                self.log_face_rerun("subdivide/selected_new", twin_face_id);
-            }
-
-            let subdivide_edge_result =
-                unwrap_or_return!(self.subdivide_edge(max_he_id), "Couldn't subdivide edge");
-
-            if marked_halfedge_ids.contains(&max_he_id) {
-                marked_halfedge_ids.extend(subdivide_edge_result.added_halfedges.iter().copied());
-                marked_vertex_ids.insert(subdivide_edge_result.added_vertex);
-            }
-
-            #[cfg(feature = "rerun")]
-            {
-                crate::RR
-                    .log("meshgraph/subdivide", &rerun::Clear::recursive())
-                    .unwrap();
-                crate::RR
-                    .log("meshgraph/halfedge/subdivide", &rerun::Clear::recursive())
-                    .unwrap();
-                crate::RR
-                    .log("meshgraph/face/subdivide", &rerun::Clear::recursive())
-                    .unwrap();
-                self.log_rerun();
-            }
-
-            for new_he_id in subdivide_edge_result.added_halfedges {
-                // newly inserted in `self.subdivide_edge`
-                let new_he = self.halfedges[new_he_id];
-
-                if let Some(face_id) = new_he.face {
-                    selection.insert(face_id);
-                    affected_faces.insert(face_id);
-                    #[cfg(feature = "rerun")]
-                    self.log_face_rerun("subdivide/selected_new", face_id);
-                }
-
-                let new_twin_id = unwrap_or_return!(new_he.twin, "New twin missing");
-                let new_twin =
-                    unwrap_or_return!(self.halfedges.get(new_twin_id), "New twin not found");
-                if let Some(face_id) = new_twin.face {
-                    selection.insert(face_id);
-                    affected_faces.insert(face_id);
-                    #[cfg(feature = "rerun")]
-                    self.log_face_rerun("subdivide/selected_new", face_id);
-                }
-            }
-
-            for he_id in affected_faces.resolve_to_halfedges(self) {
-                let he = unwrap_or_return!(self.halfedges.get(he_id), "Halfedge not found");
-                let twin = unwrap_or_return!(he.twin, "Twin missing");
-
-                if halfedges_to_subdivide.contains_key(&twin) {
-                    continue;
-                }
-
-                let len_sqr = he.length_squared(self);
-
-                if len_sqr > max_length_squared {
-                    #[cfg(feature = "rerun")]
-                    self.log_he_rerun("/subdivide/new_edge", he_id);
-                    halfedges_to_subdivide.insert(he_id, len_sqr);
-                }
-            }
-        }
     }
 }
 

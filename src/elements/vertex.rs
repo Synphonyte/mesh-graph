@@ -43,13 +43,18 @@ impl Vertex {
         &self,
         mesh_graph: &'a MeshGraph,
     ) -> CircularHalfedgesIterator<'a> {
-        CircularHalfedgesIterator::new(self.outgoing_halfedge, mesh_graph, |he, mesh_graph| {
-            mesh_graph
-                .halfedges
-                .get(he)
-                .or_else(error_none!("Halfedge is None"))?
-                .cw_rotated_neighbour(mesh_graph)
-        })
+        CircularHalfedgesIterator::new(
+            self.outgoing_halfedge,
+            mesh_graph,
+            |he, mesh_graph| {
+                mesh_graph
+                    .halfedges
+                    .get(he)
+                    .or_else(error_none!("Halfedge is None"))?
+                    .cw_rotated_neighbour(mesh_graph)
+            },
+            100_000,
+        )
     }
 
     /// Returns all halfedges that point towards this vertex

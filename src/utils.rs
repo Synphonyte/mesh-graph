@@ -1,6 +1,7 @@
 #[cfg(feature = "rerun")]
 use std::borrow::Borrow;
 
+#[cfg(any(test, feature = "rerun"))]
 use glam::Vec3;
 #[cfg(feature = "rerun")]
 use glam::{Quat, Vec2};
@@ -93,7 +94,7 @@ fn extend_outer_corners(
 
         point_3.z = 0.0; // allow expansion only in x-y-plane
 
-        let vertex_id = meshgraph.insert_vertex(point_3);
+        let vertex_id = meshgraph.add_vertex(point_3);
         corner_vertex_ids.push(vertex_id);
     }
 
@@ -102,32 +103,32 @@ fn extend_outer_corners(
         let vertex_id = outer_vertex_ids[cv_i];
         let next_vertext_id = outer_vertex_ids[(cv_i + 1) % outer_vertex_ids.len()];
         let halfedge_vertex_to_corner_id = meshgraph
-            .insert_or_get_edge(vertex_id, corner_vertex_id)
+            .add_or_get_edge(vertex_id, corner_vertex_id)
             .start_to_end_he_id;
         let halfedge_vertex_to_next_vertex_id = meshgraph
-            .insert_or_get_edge(vertex_id, next_vertext_id)
+            .add_or_get_edge(vertex_id, next_vertext_id)
             .start_to_end_he_id;
 
         meshgraph
-            .create_face_from_halfedges(
+            .add_face_from_halfedges(
                 halfedge_vertex_to_corner_id,
                 halfedge_vertex_to_next_vertex_id,
             )
             .unwrap();
 
         let halfedge_corner_to_next_vertex_id = meshgraph
-            .insert_or_get_edge(corner_vertex_id, next_vertext_id)
+            .add_or_get_edge(corner_vertex_id, next_vertext_id)
             .start_to_end_he_id;
 
         let halfedge_next_vertex_to_next_corner_vertex_id = meshgraph
-            .insert_or_get_edge(
+            .add_or_get_edge(
                 next_vertext_id,
                 corner_vertex_ids[(cv_i + 1) % corner_vertex_ids.len()],
             )
             .start_to_end_he_id;
 
         meshgraph
-            .create_face_from_halfedges(
+            .add_face_from_halfedges(
                 halfedge_corner_to_next_vertex_id,
                 halfedge_next_vertex_to_next_corner_vertex_id,
             )
@@ -157,15 +158,15 @@ pub(crate) fn extend_with(
     steps: usize,
 ) -> Vec<crate::VertexId> {
     let (center, points) = center_and_points.split_first().unwrap();
-    let center_id = meshgraph.insert_vertex(*center);
+    let center_id = meshgraph.add_vertex(*center);
 
     let mut vertex_ids = Vec::new();
     let mut halfedge_ids = Vec::new();
 
     for point in points {
-        let vertex_id = meshgraph.insert_vertex(*point);
+        let vertex_id = meshgraph.add_vertex(*point);
         let halfedge_id = meshgraph
-            .insert_or_get_edge(center_id, vertex_id)
+            .add_or_get_edge(center_id, vertex_id)
             .start_to_end_he_id;
 
         vertex_ids.push(vertex_id);
@@ -174,7 +175,7 @@ pub(crate) fn extend_with(
 
     for i in 0..points.len() {
         meshgraph
-            .create_face_from_halfedges(halfedge_ids[i], halfedge_ids[(i + 1) % points.len()])
+            .add_face_from_halfedges(halfedge_ids[i], halfedge_ids[(i + 1) % points.len()])
             .unwrap();
     }
 

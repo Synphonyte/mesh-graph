@@ -30,6 +30,7 @@ impl From<MeshGraph> for VertexIndexBuffers {
         let vertex_normals = mesh_graph.vertex_normals.as_ref().unwrap();
 
         let mut vertex_id_to_index = SecondaryMap::default();
+
         let mut positions = vec![];
         let mut normals = vec![];
         let mut indices = vec![];

@@ -64,6 +64,36 @@ impl MeshGraph {
         .unwrap();
     }
 
+    pub fn log_verts_rerun(&self, name: &str, vertices: &[VertexId]) {
+        RR.log(
+            format!("meshgraph/vertex/{name}"),
+            &rerun::Points3D::new(
+                vertices
+                    .iter()
+                    .map(|&v_id| vec3_array(self.positions[v_id])),
+            ),
+        )
+        .unwrap();
+    }
+
+    pub fn log_verts_w_labels_rerun(
+        &self,
+        name: &str,
+        vertices: &[VertexId],
+        labels: &[impl AsRef<str>],
+    ) {
+        RR.log(
+            format!("meshgraph/vertex/{name}"),
+            &rerun::Points3D::new(
+                vertices
+                    .iter()
+                    .map(|&v_id| vec3_array(self.positions[v_id])),
+            )
+            .with_labels(labels.iter().map(|l| l.as_ref())),
+        )
+        .unwrap();
+    }
+
     pub fn log_he_rerun(&self, name: &str, halfedge: HalfedgeId) {
         use crate::RR;
         use crate::utils::*;
@@ -198,7 +228,7 @@ impl MeshGraph {
 
         let mut origins = Vec::with_capacity(self.faces.len() * 3);
         let mut vectors = Vec::with_capacity(self.faces.len() * 3);
-        let mut labels = Vec::with_capacity(self.faces.len() * 3);
+        let mut labels = Vec::<String>::with_capacity(self.faces.len() * 3);
 
         let mut he_to_pos = HashMap::<HalfedgeId, (Vec3, Vec3)>::default();
         let mut face_to_center = HashMap::<FaceId, Vec3>::default();
@@ -255,9 +285,12 @@ impl MeshGraph {
                 let start = self.positions[start_vertex];
                 let end = self.positions[end_vertex];
 
-                let offset = if let Some(normals) = self.vertex_normals.as_ref() {
-                    normals[start_vertex]
-                        .lerp(normals[end_vertex], 0.5)
+                let offset = if let Some(normals) = self.vertex_normals.as_ref()
+                    && let Some(start_normal) = normals.get(start_vertex)
+                    && let Some(end_normal) = normals.get(end_vertex)
+                {
+                    start_normal
+                        .lerp(*end_normal, 0.5)
                         .cross(end - start)
                         .normalize()
                         * 0.1
@@ -322,6 +355,34 @@ impl MeshGraph {
                 let (start_he, end_he) = he_to_pos[he];
 
                 let end = start_he.lerp(end_he, 0.05);
+
+                origins.push(vec3_array(start));
+                vectors.push(vec3_array(end - start));
+            }
+        }
+
+        RR.log(
+            "meshgraph/vertices/outgoing_halfedge",
+            &rerun::Arrows3D::from_vectors(&vectors).with_origins(&origins),
+        )
+        .unwrap();
+
+        origins.clear();
+        vectors.clear();
+        labels.clear();
+
+        for v_id in self.vertices.keys() {
+            for he in self
+                .outgoing_halfedges
+                .get(v_id)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let start = self.positions[v_id];
+
+                let (start_he, end_he) = he_to_pos[&he];
+
+                let end = start_he.lerp(end_he, 0.1);
 
                 origins.push(vec3_array(start));
                 vectors.push(vec3_array(end - start));

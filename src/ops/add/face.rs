@@ -1,20 +1,20 @@
 use glam::Vec3;
-use tracing::instrument;
+use tracing::{error, instrument};
 
-use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none, utils::unwrap_or_return};
+use crate::{Face, FaceId, HalfedgeId, MeshGraph, VertexId, error_none};
 
 impl MeshGraph {
     #[instrument(skip(self))]
-    pub fn create_face_from_positions(&mut self, a: Vec3, b: Vec3, c: Vec3) -> CreateFace {
-        let a_id = self.insert_vertex(a);
-        let b_id = self.insert_vertex(b);
-        let c_id = self.insert_vertex(c);
+    pub fn add_face_from_positions(&mut self, a: Vec3, b: Vec3, c: Vec3) -> AddFace {
+        let a_id = self.add_vertex(a);
+        let b_id = self.add_vertex(b);
+        let c_id = self.add_vertex(c);
 
-        let inserted_a = self.insert_or_get_edge(a_id, b_id);
-        let inserted_b = self.insert_or_get_edge(b_id, c_id);
-        let inserted_c = self.insert_or_get_edge(c_id, a_id);
+        let inserted_a = self.add_or_get_edge(a_id, b_id);
+        let inserted_b = self.add_or_get_edge(b_id, c_id);
+        let inserted_c = self.add_or_get_edge(c_id, a_id);
 
-        let face_id = self.insert_face(
+        let face_id = self.add_face(
             inserted_a.start_to_end_he_id,
             inserted_b.start_to_end_he_id,
             inserted_c.start_to_end_he_id,
@@ -24,7 +24,7 @@ impl MeshGraph {
         halfedge_ids.extend(inserted_b.created_he_ids());
         halfedge_ids.extend(inserted_c.created_he_ids());
 
-        CreateFace {
+        AddFace {
             face_id,
             halfedge_ids,
             vertex_ids: vec![a_id, b_id, c_id],
@@ -33,32 +33,32 @@ impl MeshGraph {
 
     /// Returns `None` when an edge already has two faces
     #[instrument(skip(self))]
-    pub fn create_face_from_halfedge_and_position(
+    pub fn add_face_from_halfedge_and_position(
         &mut self,
         he_id: HalfedgeId,
         opposite_vertex_pos: Vec3,
-    ) -> Option<CreateFace> {
-        let vertex_id = self.insert_vertex(opposite_vertex_pos);
-        self.create_face_from_halfedge_and_vertex(he_id, vertex_id)
+    ) -> Option<AddFace> {
+        let vertex_id = self.add_vertex(opposite_vertex_pos);
+        self.add_face_from_halfedge_and_vertex(he_id, vertex_id)
     }
 
     /// Returns `None` when the edge described by `he_id` already has two faces
     #[instrument(skip(self))]
-    pub fn create_face_from_halfedge_and_vertex(
+    pub fn add_face_from_halfedge_and_vertex(
         &mut self,
         he_id: HalfedgeId,
         vertex_id: VertexId,
-    ) -> Option<CreateFace> {
+    ) -> Option<AddFace> {
         let he_a_id = self.boundary_he(he_id)?;
 
         let he_a = self.halfedges[he_a_id];
         let start_vertex_id_he_a = he_a.start_vertex(self)?;
         let end_vertex_id_he_a = he_a.end_vertex;
 
-        let inserted_b = self.insert_or_get_edge(end_vertex_id_he_a, vertex_id);
-        let inserted_c = self.insert_or_get_edge(vertex_id, start_vertex_id_he_a);
+        let inserted_b = self.add_or_get_edge(end_vertex_id_he_a, vertex_id);
+        let inserted_c = self.add_or_get_edge(vertex_id, start_vertex_id_he_a);
 
-        let face_id = self.insert_face(
+        let face_id = self.add_face(
             he_a_id,
             inserted_b.start_to_end_he_id,
             inserted_c.start_to_end_he_id,
@@ -67,7 +67,7 @@ impl MeshGraph {
         let mut halfedge_ids = inserted_b.created_he_ids();
         halfedge_ids.extend(inserted_c.created_he_ids());
 
-        Some(CreateFace {
+        Some(AddFace {
             face_id,
             halfedge_ids,
             vertex_ids: vec![],
@@ -76,17 +76,17 @@ impl MeshGraph {
 
     /// Creates a face from three vertices.
     #[instrument(skip(self))]
-    pub fn create_face_from_vertices(
+    pub fn add_face_from_vertices(
         &mut self,
         v_id1: VertexId,
         v_id2: VertexId,
         v_id3: VertexId,
-    ) -> Option<CreateFace> {
-        let inserted_a = self.insert_or_get_edge(v_id1, v_id2);
-        let inserted_b = self.insert_or_get_edge(v_id2, v_id3);
-        let inserted_c = self.insert_or_get_edge(v_id3, v_id1);
+    ) -> AddFace {
+        let inserted_a = self.add_or_get_edge(v_id1, v_id2);
+        let inserted_b = self.add_or_get_edge(v_id2, v_id3);
+        let inserted_c = self.add_or_get_edge(v_id3, v_id1);
 
-        let face_id = self.insert_face(
+        let face_id = self.add_face(
             inserted_a.start_to_end_he_id,
             inserted_b.start_to_end_he_id,
             inserted_c.start_to_end_he_id,
@@ -96,20 +96,20 @@ impl MeshGraph {
         halfedge_ids.extend(inserted_b.created_he_ids());
         halfedge_ids.extend(inserted_c.created_he_ids());
 
-        Some(CreateFace {
+        AddFace {
             face_id,
             halfedge_ids,
             vertex_ids: vec![],
-        })
+        }
     }
 
     /// Creates a face from two halfedges.
     #[instrument(skip(self))]
-    pub fn create_face_from_halfedges(
+    pub fn add_face_from_halfedges(
         &mut self,
         he_id1: HalfedgeId,
         he_id2: HalfedgeId,
-    ) -> Option<CreateFace> {
+    ) -> Option<AddFace> {
         let he_id1 = self.boundary_he(he_id1)?;
         let he_id2 = self.boundary_he(he_id2)?;
 
@@ -131,49 +131,49 @@ impl MeshGraph {
             .or_else(error_none!("Start vertex should be available"))?;
 
         if he1_start_vertex == he2.end_vertex {
-            let inserted = self.insert_or_get_edge(he1.end_vertex, he2_start_vertex);
+            let inserted = self.add_or_get_edge(he1.end_vertex, he2_start_vertex);
 
-            let face_id = self.insert_face(inserted.start_to_end_he_id, he_id2, he_id1);
+            let face_id = self.add_face(inserted.start_to_end_he_id, he_id2, he_id1);
 
-            Some(CreateFace {
+            Some(AddFace {
                 face_id,
                 halfedge_ids: inserted.created_he_ids(),
                 vertex_ids: vec![],
             })
         } else if he1_start_vertex == he2_start_vertex {
-            let inserted = self.insert_or_get_edge(he1.end_vertex, he2.end_vertex);
+            let inserted = self.add_or_get_edge(he1.end_vertex, he2.end_vertex);
 
-            let face_id = self.insert_face(
+            let face_id = self.add_face(
                 inserted.start_to_end_he_id,
                 he2.twin.or_else(error_none!("Twin not set"))?,
                 he_id1,
             );
 
-            Some(CreateFace {
+            Some(AddFace {
                 face_id,
                 halfedge_ids: inserted.created_he_ids(),
                 vertex_ids: vec![],
             })
         } else if he1.end_vertex == he2.end_vertex {
-            let inserted = self.insert_or_get_edge(he2_start_vertex, he1_start_vertex);
+            let inserted = self.add_or_get_edge(he2_start_vertex, he1_start_vertex);
 
-            let face_id = self.insert_face(
+            let face_id = self.add_face(
                 inserted.start_to_end_he_id,
                 he_id1,
                 he2.twin.or_else(error_none!("Twin not set"))?,
             );
 
-            Some(CreateFace {
+            Some(AddFace {
                 face_id,
                 halfedge_ids: inserted.created_he_ids(),
                 vertex_ids: vec![],
             })
         } else {
-            let inserted = self.insert_or_get_edge(he2.end_vertex, he1_start_vertex);
+            let inserted = self.add_or_get_edge(he2.end_vertex, he1_start_vertex);
 
-            let face_id = self.insert_face(inserted.start_to_end_he_id, he_id1, he_id2);
+            let face_id = self.add_face(inserted.start_to_end_he_id, he_id1, he_id2);
 
-            Some(CreateFace {
+            Some(AddFace {
                 face_id,
                 halfedge_ids: inserted.created_he_ids(),
                 vertex_ids: vec![],
@@ -181,57 +181,44 @@ impl MeshGraph {
         }
     }
 
-    /// Return the halfedge or it's twin depending on which one is boundary, or `None` if both are not boundary.
+    /// Inserts a face into the mesh graph. It connects the halfedges to the face and the face to the first halfedge.
+    /// Additionally it connects the halfedges' `next` loop around the face.
     #[instrument(skip(self))]
-    pub fn boundary_he(&self, he_id: HalfedgeId) -> Option<HalfedgeId> {
-        let he = *self
-            .halfedges
-            .get(he_id)
-            .or_else(error_none!("Halfedge not found"))?;
+    pub fn add_face(
+        &mut self,
+        he1_id: HalfedgeId,
+        he2_id: HalfedgeId,
+        he3_id: HalfedgeId,
+    ) -> FaceId {
+        let face_id = self.faces.insert_with_key(|id| Face {
+            halfedge: he1_id,
+            index: self.next_index,
+            id,
+        });
 
-        if he.is_boundary() {
-            return Some(he_id);
+        self.index_to_face_id.insert(self.next_index, face_id);
+
+        self.next_index += 1;
+
+        for (he_id, next_he_id) in [(he1_id, he2_id), (he2_id, he3_id), (he3_id, he1_id)] {
+            if let Some(halfedge) = self.halfedges.get_mut(he_id) {
+                halfedge.face = Some(face_id);
+                halfedge.next = Some(next_he_id);
+            } else {
+                error!("Halfedge not found");
+            }
         }
 
-        let twin_id = he.twin.or_else(error_none!("Twin missing"))?;
+        let face = self.faces[face_id]; // just inserted above
+        self.bvh
+            .insert_or_update_partially(face.aabb(self), face.index, 0.0);
 
-        let twin_he = self
-            .halfedges
-            .get(twin_id)
-            .or_else(error_none!("Twin not found"))?;
-
-        if twin_he.is_boundary() {
-            return Some(twin_id);
-        }
-
-        None
-    }
-
-    /// Returns the vertex order of the boundary halfedge between two vertices.
-    /// Useful when adding faces on boundaries.
-    ///
-    /// If the edge is not boundary, it always returns `[v_id2, v_id1]`.
-    #[instrument(skip(self))]
-    pub fn boundary_vertex_order(&mut self, v_id1: VertexId, v_id2: VertexId) -> [VertexId; 2] {
-        let he_id = unwrap_or_return!(
-            self.halfedge_from_to(v_id1, v_id2),
-            "Couldn't find halfedge between {v_id1:?} and {v_id2:?}",
-            [v_id1, v_id2]
-        );
-
-        // already checked that the halfedge exists in `halfedge_from_to()`
-        let he = self.halfedges[he_id];
-
-        if he.is_boundary() {
-            [v_id1, v_id2]
-        } else {
-            [v_id2, v_id1]
-        }
+        face_id
     }
 }
 
-/// Return value of several `create_face...` methods
-pub struct CreateFace {
+/// Return value of several `add_face...` methods
+pub struct AddFace {
     /// Id of the created face
     pub face_id: FaceId,
     /// During the process of creating the face all new created halfedges
@@ -244,9 +231,9 @@ pub struct CreateFace {
 mod test {
     use super::*;
 
-    fn create_face(mesh_graph: &mut MeshGraph) -> FaceId {
+    fn add_face(mesh_graph: &mut MeshGraph) -> FaceId {
         mesh_graph
-            .create_face_from_positions(
+            .add_face_from_positions(
                 Vec3::new(0.0, 0.0, 0.0),
                 Vec3::new(1.0, 0.0, 0.0),
                 Vec3::new(0.0, 1.0, 0.0),
@@ -270,7 +257,7 @@ mod test {
         }
 
         mesh_graph
-            .create_face_from_halfedge_and_position(associated_he_id, pos)
+            .add_face_from_halfedge_and_position(associated_he_id, pos)
             .map(|f| f.face_id)
     }
 
@@ -296,13 +283,13 @@ mod test {
         }
 
         mesh_graph
-            .create_face_from_halfedges(he_id_1, he_id_2)
+            .add_face_from_halfedges(he_id_1, he_id_2)
             .map(|f| f.face_id)
     }
 
     macro_rules! init_fill_face {
         ($f1:ident, $f2:ident, $f3:ident, $mg:ident) => {
-            let $f1 = create_face(&mut $mg);
+            let $f1 = add_face(&mut $mg);
 
             let $f2 = add_face_to_edge(&mut $mg, $f1, Vec3::new(1.0, 1.0, 0.0), false);
             let $f3 = add_face_to_edge(&mut $mg, $f2.unwrap(), Vec3::new(0.5, 0.5, 1.0), false);
@@ -316,7 +303,6 @@ mod test {
                 $(
                     $mg.log_face_rerun(&format!("{:?}", $face), $face);
                 )*
-                crate::RR.flush_blocking().unwrap();
             }
         };
     }
@@ -363,7 +349,7 @@ mod test {
     #[test]
     fn test_create_face() {
         let mut mesh_graph = MeshGraph::new();
-        let face1 = create_face(&mut mesh_graph);
+        let face1 = add_face(&mut mesh_graph);
 
         assert_eq!(mesh_graph.vertices.len(), 3);
         assert_eq!(mesh_graph.positions.len(), 3);
@@ -379,7 +365,7 @@ mod test {
     #[test]
     fn test_add_face_to_edge() {
         let mut mesh_graph = MeshGraph::new();
-        let face1 = create_face(&mut mesh_graph);
+        let face1 = add_face(&mut mesh_graph);
 
         let face2 = add_face_to_edge(&mut mesh_graph, face1, Vec3::new(1.0, 1.0, 0.0), false);
 
@@ -398,7 +384,7 @@ mod test {
     #[test]
     fn test_add_face_to_twin_edge() {
         let mut mesh_graph = MeshGraph::new();
-        let face1 = create_face(&mut mesh_graph);
+        let face1 = add_face(&mut mesh_graph);
 
         let face2 = add_face_to_edge(&mut mesh_graph, face1, Vec3::new(1.0, 1.0, 0.0), true);
 

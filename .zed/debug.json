@@ -4,11 +4,17 @@
 // see: https://zed.dev/docs/debugger
 [
 	{
-		"label": "Test & Debug vertex_neighborhood",
+		"label": "Test & Debug vn.rs",
 		"adapter": "CodeLLDB",
 		"build": {
 			"command": "cargo",
-			"args": ["build", "--bin", "vertex-neighborhood", "--features", "gltf"]
+			"args": [
+				"build",
+				"--bin",
+				"vertex-neighborhood",
+				"--features",
+				"gltf,rerun,tracing-subscriber"
+			]
 		},
 		// sourceLanguages is required for CodeLLDB (not GDB) when using Rust
 		"sourceLanguages": ["rust"]

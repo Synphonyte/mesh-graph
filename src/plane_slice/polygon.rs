@@ -98,6 +98,37 @@ impl Polygon2 {
             )
             .unwrap();
     }
+
+    pub fn min_max(&self) -> (Vec2, Vec2) {
+        let mut min = Vec2::MAX;
+        let mut max = Vec2::MIN;
+
+        for vertex in &self.vertices {
+            min = min.min(*vertex);
+            max = max.max(*vertex);
+        }
+
+        (min, max)
+    }
+
+    /// Wether a point is inside the polygon.
+    ///
+    /// Assumes that the polygon is closed.
+    pub fn contains_point(&self, point: Vec2) -> bool {
+        // Use ray casting algorithm in 2D. Taken from https://wrfranklin.org/Research/Short_Notes/pnpoly.html
+
+        let mut inside = false;
+
+        for (a, b) in self.vertices.iter().tuple_windows() {
+            if ((a.y > point.y) != (b.y > point.y))
+                && (point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x)
+            {
+                inside = !inside;
+            }
+        }
+
+        inside
+    }
 }
 
 impl Polygon3 {

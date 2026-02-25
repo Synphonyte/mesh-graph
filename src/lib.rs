@@ -44,6 +44,7 @@
 //!
 //! <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/all.svg" alt="Connectivity" style="max-width: 50em" />
 
+mod access;
 mod elements;
 pub mod integrations;
 mod iter;
@@ -59,6 +60,7 @@ pub mod utils;
 
 pub use elements::*;
 pub use iter::*;
+pub use ops::*;
 pub use plane_slice::*;
 pub use selection::*;
 
@@ -68,6 +70,8 @@ use parry3d::partitioning::{Bvh, BvhWorkspace};
 use glam::Vec3;
 use slotmap::{SecondaryMap, SlotMap};
 use tracing::{error, instrument};
+
+use crate::utils::unwrap_or_return;
 
 #[cfg(feature = "rerun")]
 lazy_static::lazy_static! {
@@ -195,7 +199,7 @@ impl MeshGraph {
         let mut vertex_ids = Vec::with_capacity(vertex_positions.len());
 
         for pos in vertex_positions {
-            vertex_ids.push(mesh_graph.insert_vertex(*pos));
+            vertex_ids.push(mesh_graph.add_vertex(*pos));
         }
 
         for chunk in face_indices.chunks_exact(3) {
@@ -222,17 +226,38 @@ impl MeshGraph {
                 continue;
             }
 
-            let he_a_id = mesh_graph.insert_or_get_edge(a, b).start_to_end_he_id;
-            let he_b_id = mesh_graph.insert_or_get_edge(b, c).start_to_end_he_id;
-            let he_c_id = mesh_graph.insert_or_get_edge(c, a).start_to_end_he_id;
+            let he_a_id = mesh_graph.add_or_get_edge(a, b).start_to_end_he_id;
+            let he_b_id = mesh_graph.add_or_get_edge(b, c).start_to_end_he_id;
+            let he_c_id = mesh_graph.add_or_get_edge(c, a).start_to_end_he_id;
 
-            let _face_id = mesh_graph.insert_face(he_a_id, he_b_id, he_c_id);
+            let _face_id = mesh_graph.add_face(he_a_id, he_b_id, he_c_id);
         }
 
         mesh_graph.make_all_outgoing_halfedges_boundary_if_possible();
         mesh_graph.rebuild_bvh();
 
         mesh_graph
+    }
+
+    /// Computes the vertex normal from neighboring faces
+    pub fn compute_vertex_normal(&mut self, vertex_id: VertexId) {
+        if self.vertex_normals.is_none() {
+            return;
+        }
+
+        let vertex = unwrap_or_return!(self.vertices.get(vertex_id), "Vertex not found");
+
+        let mut normal = Vec3::ZERO;
+
+        for face_id in vertex.faces(self) {
+            let face = unwrap_or_return!(self.faces.get(face_id), "Face not found");
+            normal += unwrap_or_return!(face.normal(self), "Face normal not found");
+        }
+
+        self.vertex_normals
+            .as_mut()
+            .unwrap()
+            .insert(vertex_id, normal.normalize());
     }
 
     /// Computes the vertex normals by averaging over the computed face normals
