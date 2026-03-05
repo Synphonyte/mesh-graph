@@ -28,6 +28,17 @@ impl<'a> CircularHalfedgesIterator<'a> {
             next_idx: 0,
         }
     }
+
+    pub fn empty(mesh_graph: &'a MeshGraph) -> Self {
+        Self {
+            start_halfedge: None,
+            mesh_graph,
+            current_halfedge: None,
+            get_next_halfedge: |_, _| None,
+            max_count: 0,
+            next_idx: 0,
+        }
+    }
 }
 
 impl<'a> Iterator for CircularHalfedgesIterator<'a> {

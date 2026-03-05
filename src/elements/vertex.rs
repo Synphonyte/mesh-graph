@@ -1,6 +1,6 @@
 use tracing::{error, instrument};
 
-use crate::{CircularHalfedgesIterator, MeshGraph, error_none};
+use crate::{CircularHalfedgesIterator, MeshGraph, error_none, utils::unwrap_or_return};
 
 use super::{FaceId, HalfedgeId, VertexId};
 
@@ -140,5 +140,56 @@ impl Vertex {
                     .or_else(error_none!("Outgoing halfedge not found"))?
                     .cw_rotated_neighbour(mesh_graph)
             })
+    }
+
+    /// Returns an iterator over the series of boundary halfedges starting from this vertex.
+    ///
+    /// If this vertex has no outgoing halfedge or no outgoing boundary halfedges, the iterator is empty.
+    pub fn boundary_halfedgdes<'a>(
+        &self,
+        mesh_graph: &'a MeshGraph,
+    ) -> CircularHalfedgesIterator<'a> {
+        let Some(out_he_id) = self.outgoing_halfedge else {
+            return CircularHalfedgesIterator::empty(mesh_graph);
+        };
+
+        let he = unwrap_or_return!(
+            mesh_graph.halfedges.get(out_he_id),
+            "Halfedge not found",
+            CircularHalfedgesIterator::empty(mesh_graph)
+        );
+
+        if !he.is_boundary() {
+            return CircularHalfedgesIterator::empty(mesh_graph);
+        }
+
+        CircularHalfedgesIterator::new(
+            self.outgoing_halfedge,
+            mesh_graph,
+            |he_id, mesh_graph| {
+                let end_v_id = mesh_graph
+                    .halfedges
+                    .get(he_id)
+                    .or_else(error_none!("Halfedge not found"))?
+                    .end_vertex;
+                let next_he_id = mesh_graph
+                    .vertices
+                    .get(end_v_id)
+                    .or_else(error_none!("Vertex not found"))?
+                    .outgoing_halfedge?;
+
+                let next_he = mesh_graph
+                    .halfedges
+                    .get(next_he_id)
+                    .or_else(error_none!("Halfedge not found"))?;
+
+                if next_he.is_boundary() {
+                    Some(next_he_id)
+                } else {
+                    None
+                }
+            },
+            usize::MAX,
+        )
     }
 }

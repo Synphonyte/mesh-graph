@@ -59,7 +59,11 @@ impl MeshGraph {
             );
 
             let vertex_neighborhoods_to_check = if collapse_edge_result.added_vertices.is_empty() {
-                vec![start_vertex_id]
+                if collapse_edge_result.removed_halfedges.is_empty() {
+                    vec![]
+                } else {
+                    vec![start_vertex_id]
+                }
             } else {
                 marked_vertices.extend(collapse_edge_result.added_vertices.iter().copied());
 

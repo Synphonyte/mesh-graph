@@ -67,12 +67,13 @@ impl MeshGraph {
                 "Start vertex not found",
                 (vec![], vec![])
             );
-            self.outgoing_halfedges[start_v_id].retain(|&id| id != he_id);
+            if let Some(out_he_ids) = self.outgoing_halfedges.get_mut(start_v_id) {
+                out_he_ids.retain(|&id| id != he_id);
+            }
 
-            if self.outgoing_halfedges[start_v_id].is_empty() {
-                self.remove_only_vertex(start_v_id);
-                removed_vertices.push(start_v_id);
-            } else {
+            if let Some(out_he_ids) = self.outgoing_halfedges.get(start_v_id)
+                && !out_he_ids.is_empty()
+            {
                 let v = unwrap_or_return!(
                     self.vertices.get_mut(start_v_id),
                     "Vertex not found",
@@ -80,6 +81,9 @@ impl MeshGraph {
                 );
 
                 v.outgoing_halfedge = Some(self.outgoing_halfedges[start_v_id][0]);
+            } else {
+                self.remove_only_vertex(start_v_id);
+                removed_vertices.push(start_v_id);
             }
         }
 

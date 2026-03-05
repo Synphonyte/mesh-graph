@@ -1,6 +1,7 @@
 use glam::Vec3;
 use hashbrown::HashMap;
 use itertools::Itertools;
+use tracing::error;
 
 use crate::RR;
 use crate::utils::*;
@@ -100,8 +101,14 @@ impl MeshGraph {
 
         let he = self.halfedges[halfedge];
 
-        let start = self.positions[he.start_vertex(self).unwrap()];
-        let end = self.positions[he.end_vertex];
+        let start = unwrap_or_return!(
+            self.positions.get(he.start_vertex(self).unwrap()),
+            "Start vertex of he {halfedge:?} not found"
+        );
+        let end = unwrap_or_return!(
+            self.positions.get(he.end_vertex),
+            "End vertex of he {halfedge:?} not found"
+        );
 
         RR.log(
             format!("meshgraph/halfedge/{name}"),
@@ -122,8 +129,21 @@ impl MeshGraph {
         for &he_id in halfedges {
             let he = self.halfedges[he_id];
 
-            let start = self.positions[he.start_vertex(self).unwrap()];
-            let end = self.positions[he.end_vertex];
+            let Some(start) = self.positions.get(he.start_vertex(self).unwrap()) else {
+                error!(
+                    "Missing position for start vertex {:?} of he {:?}",
+                    he.start_vertex(self).unwrap(),
+                    he_id
+                );
+                continue;
+            };
+            let Some(end) = self.positions.get(he.end_vertex) else {
+                error!(
+                    "Missing position for end vertex {:?} of he {:?}",
+                    he.end_vertex, he_id
+                );
+                continue;
+            };
 
             origins.push(vec3_array(start));
             vectors.push(vec3_array(end - start));
@@ -175,13 +195,21 @@ impl MeshGraph {
         .unwrap();
     }
 
-    pub fn log_face_rerun(&self, name: &str, face: FaceId) {
+    pub fn log_face_rerun(&self, name: &str, face_id: FaceId) {
         let mut origins = Vec::with_capacity(3);
         let mut vectors = Vec::with_capacity(3);
 
-        let face = self.faces[face];
+        let face = self.faces[face_id];
 
-        let pos = face.vertices(self).map(|v| self.positions[v]).collect_vec();
+        let pos = face
+            .vertices(self)
+            .filter_map(|v| self.positions.get(v).copied())
+            .collect_vec();
+
+        if pos.len() < 3 {
+            error!("face {face:?} has less than 3 vertices or positions");
+            return;
+        }
 
         let center = pos.iter().copied().reduce(|a, b| a + b).unwrap() / pos.len() as f32;
 
@@ -238,13 +266,19 @@ impl MeshGraph {
 
             let mut center = Vec3::ZERO;
 
-            for he in self.halfedges.values() {
+            for (he_id, he) in &self.halfedges {
                 if he.face != Some(face.id) {
                     continue;
                 }
 
-                let end_pos = self.positions[he.end_vertex];
-                pos.insert(he.end_vertex, end_pos);
+                let Some(end_pos) = self.positions.get(he.end_vertex) else {
+                    error!(
+                        "Missing position for end vertex {:?} of he {:?}",
+                        he.end_vertex, he_id
+                    );
+                    continue;
+                };
+                pos.insert(he.end_vertex, *end_pos);
 
                 center += end_pos;
             }
@@ -263,11 +297,24 @@ impl MeshGraph {
                 }
 
                 let start_v_id = he.start_vertex(self).unwrap();
-                let start = pos
+                let Some(start) = pos
                     .get(&start_v_id)
                     .copied()
-                    .unwrap_or_else(|| self.positions[start_v_id]);
-                let end = pos[&he.end_vertex];
+                    .or_else(|| self.positions.get(start_v_id).copied())
+                else {
+                    error!(
+                        "Missing position for start vertex {:?} of he {:?}",
+                        start_v_id, he_id
+                    );
+                    continue;
+                };
+                let Some(end) = pos.get(&he.end_vertex).copied() else {
+                    error!(
+                        "Missing position for end vertex {:?} of he {:?}",
+                        he.end_vertex, he_id
+                    );
+                    continue;
+                };
 
                 he_to_pos.insert(he_id, (start, end));
 
@@ -282,8 +329,20 @@ impl MeshGraph {
                 let start_vertex = he.start_vertex(self).unwrap();
                 let end_vertex = he.end_vertex;
 
-                let start = self.positions[start_vertex];
-                let end = self.positions[end_vertex];
+                let Some(&start) = self.positions.get(start_vertex) else {
+                    error!(
+                        "Missing position for start vertex {:?} of he {:?}",
+                        start_vertex, he_id
+                    );
+                    continue;
+                };
+                let Some(&end) = self.positions.get(end_vertex) else {
+                    error!(
+                        "Missing position for end vertex {:?} of he {:?}",
+                        end_vertex, he_id
+                    );
+                    continue;
+                };
 
                 let offset = if let Some(normals) = self.vertex_normals.as_ref()
                     && let Some(start_normal) = normals.get(start_vertex)
@@ -323,8 +382,14 @@ impl MeshGraph {
         for (he_id, he) in &self.halfedges {
             let twin = he.twin.unwrap();
 
-            let (he_start, he_end) = he_to_pos[&he_id];
-            let (tw_start, tw_end) = he_to_pos[&twin];
+            let Some(&(he_start, he_end)) = he_to_pos.get(&he_id) else {
+                error!("Missing position for halfedge {:?}", he_id);
+                continue;
+            };
+            let Some(&(tw_start, tw_end)) = he_to_pos.get(&twin) else {
+                error!("Missing position for twin halfedge {:?}", twin);
+                continue;
+            };
 
             let start = he_start * 0.8 + he_end * 0.2;
             let end = tw_start * 0.2 + tw_end * 0.8;
@@ -352,7 +417,10 @@ impl MeshGraph {
                 )
                 .unwrap();
 
-                let (start_he, end_he) = he_to_pos[he];
+                let Some(&(start_he, end_he)) = he_to_pos.get(he) else {
+                    error!("Halfedge {he:?} not found in mapped positions");
+                    continue;
+                };
 
                 let end = start_he.lerp(end_he, 0.05);
 
@@ -380,7 +448,10 @@ impl MeshGraph {
             {
                 let start = self.positions[v_id];
 
-                let (start_he, end_he) = he_to_pos[&he];
+                let Some(&(start_he, end_he)) = he_to_pos.get(&he) else {
+                    error!("Halfedge {he:?} not found in mapped halfedges");
+                    continue;
+                };
 
                 let end = start_he.lerp(end_he, 0.1);
 
@@ -402,7 +473,11 @@ impl MeshGraph {
         for face in self.faces.values() {
             let start = face_to_center[&face.id];
 
-            let (he_start, he_end) = he_to_pos[&face.halfedge];
+            let Some(&(he_start, he_end)) = he_to_pos.get(&face.halfedge) else {
+                error!("Halfedge {:?} not found in mapped halfedges", face.halfedge);
+                continue;
+            };
+
             let end = he_start * 0.6 + he_end * 0.4;
 
             origins.push(vec3_array(start));
@@ -424,7 +499,10 @@ impl MeshGraph {
 
         for (he_id, he) in &self.halfedges {
             if let Some(face_id) = he.face {
-                let (he_start, he_end) = he_to_pos[&he_id];
+                let Some(&(he_start, he_end)) = he_to_pos.get(&he_id) else {
+                    error!("Halfedge {he_id:?} not found in mapped halfedges");
+                    continue;
+                };
                 let start = he_start * 0.4 + he_end * 0.6;
 
                 let end = face_to_center[&face_id];
@@ -445,10 +523,16 @@ impl MeshGraph {
 
         for (he_id, he) in &self.halfedges {
             if let Some(next_id) = he.next {
-                let (he_start, he_end) = he_to_pos[&he_id];
+                let Some((he_start, he_end)) = he_to_pos.get(&he_id) else {
+                    error!("Halfedge {he_id:?} not found in mapped halfedges");
+                    continue;
+                };
                 let start = he_start * 0.15 + he_end * 0.85;
 
-                let (next_start, next_end) = he_to_pos[&next_id];
+                let Some((next_start, next_end)) = he_to_pos.get(&next_id) else {
+                    error!("Halfedge {next_id:?} not found in mapped halfedges");
+                    continue;
+                };
                 let end = next_start * 0.85 + next_end * 0.15;
 
                 origins.push(vec3_array(start));
