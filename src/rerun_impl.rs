@@ -546,7 +546,7 @@ impl MeshGraph {
         )
         .unwrap();
 
-        let buffers = crate::integrations::VertexIndexBuffers::from(self.clone());
+        let buffers = crate::integrations::VertexIndexBuffers::from(self);
         RR.log(
             "meshgraph/mesh",
             &rerun::Mesh3D::new(

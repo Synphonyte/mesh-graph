@@ -323,6 +323,9 @@ impl MeshGraph {
     /// Rebuilds the BVH from scratch
     #[inline]
     pub fn rebuild_bvh(&mut self) {
+        self.bvh = Bvh::new();
+        self.bvh_workspace = BvhWorkspace::default();
+
         for face in self.faces.values() {
             self.bvh
                 .insert_or_update_partially(face.aabb(self), face.index, 0.0);

@@ -474,10 +474,6 @@ impl MeshGraph {
             orig_start_idx2
         );
 
-        if orig_start_idx1 != 0 || orig_start_idx2 != 5 {
-            println!("nope");
-        }
-
         let len1 = one_ring_v_ids1.len();
         let len2 = one_ring_v_ids2.len();
 
