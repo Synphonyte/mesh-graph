@@ -27,7 +27,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
       - name: Clippy
-        run: cargo clippy --tests -- -D warnings
+        run: cargo clippy --features gltf --tests -- -D warnings
 
       - name: Check if the README is up to date.
         run: |
@@ -35,7 +35,7 @@ jobs:
           cargo rdme --check
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --features gltf
 
       - name: Publish crate mesh-graph
         uses: katyo/publish-crates@v2

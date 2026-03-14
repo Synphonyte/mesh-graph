@@ -3,9 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-
+## [0.5.0] - 2026-03-14
 
 - Updated parry and bevy dependencies
+- All methods to add stuff to the mesh graph are now named `add_...`
+- Similarly, all methods to remove stuff from the mesh graph are now named `remove_...`
+- Added a bunch of methods to access and modify for example `merge_vertices_one_rings`
 
 ## [0.4.0] - 2025-12-22
 

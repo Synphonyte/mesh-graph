@@ -45,5 +45,6 @@ rerun = ["dep:cfg-if", "dep:lazy_static", "dep:rerun"]
 serde = ["dep:serde", "glam/serde", "hashbrown/serde", "slotmap/serde"]
 
 [[bin]]
+required-features = ["gltf"]
 name = "vertex-neighborhood"
 path = "src/bin/vn.rs"

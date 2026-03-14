@@ -1,4 +1,4 @@
-use std::iter::repeat;
+use std::iter::repeat_n;
 
 use glam::Vec3;
 use hashbrown::HashMap;
@@ -34,9 +34,8 @@ where
         let (positions, normals, indices, vertex_id_to_index) =
             Self::attrs_from_mesh_graph(mesh_graph);
 
-        let mut custom_vertex_attribute = repeat(T::default())
-            .take(positions.len())
-            .collect::<Vec<T>>();
+        let mut custom_vertex_attribute =
+            repeat_n(T::default(), positions.len()).collect::<Vec<T>>();
 
         for (vertex_id, value) in attr {
             if let Some(index) = vertex_id_to_index.get(*vertex_id) {
@@ -76,7 +75,7 @@ where
         'outer: for face in mesh_graph.faces.values() {
             let mut face_indices = Vec::with_capacity(3);
 
-            for vertex in face.vertices(&mesh_graph) {
+            for vertex in face.vertices(mesh_graph) {
                 let Some(&index) = vertex_id_to_index.get(vertex) else {
                     error!("Vertex {vertex:?} not found in mapped vertices");
                     continue 'outer;
