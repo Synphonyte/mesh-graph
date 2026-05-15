@@ -131,7 +131,7 @@ impl MeshGraph {
     }
 
     #[instrument(skip(self))]
-    fn can_collapse_edge_inner(
+    pub fn can_collapse_edge_inner(
         &mut self,
         halfedge_id: HalfedgeId,
     ) -> Option<(HalfedgeId, VertexId, VertexId, Vec3)> {

@@ -1,4 +1,4 @@
-use tracing::instrument;
+use tracing::{error, instrument};
 
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none, utils::unwrap_or_return};
 
@@ -70,6 +70,31 @@ impl MeshGraph {
         })
     }
 
+    /// Returns all the halfedges from the start vertex to the end vertex.
+    /// In a valid manifold mesh, this should return exactly one halfedge.
+    #[instrument(skip(self))]
+    pub fn halfedges_from_to(
+        &self,
+        start_vertex_id: VertexId,
+        end_vertex_id: VertexId,
+    ) -> Vec<HalfedgeId> {
+        let out_hes = unwrap_or_return!(
+            self.outgoing_halfedges.get(start_vertex_id),
+            "Start vertex not found",
+            vec![]
+        );
+
+        out_hes
+            .iter()
+            .copied()
+            .filter(|he_id| {
+                self.halfedges
+                    .get(*he_id)
+                    .is_some_and(|he| he.end_vertex == end_vertex_id)
+            })
+            .collect()
+    }
+
     /// Returns the face with the given vertices, if it exists. `None` otherwise.
     pub fn face_with_vertices(
         &self,
@@ -98,5 +123,28 @@ impl MeshGraph {
         }
 
         None
+    }
+
+    /// Returns an iterator of all adjacent faces to the give vertex.
+    ///
+    /// In contrast to `Vertex.faces()` it doesn't guarantee a specific order. But it
+    /// uses `MeshGraph::outgoing_halfedges` so it can continue to work with non-manifold
+    /// mesh graphs while `Vertex.faces()` only works with manifold ones.
+    #[instrument(skip(self))]
+    pub fn vertex_adjacent_faces(&self, vertex_id: VertexId) -> Vec<FaceId> {
+        let Some(he_ids) = self.outgoing_halfedges.get(vertex_id) else {
+            error!("No outgoing halfedges entry for vertex {vertex_id:?}");
+            return vec![];
+        };
+
+        he_ids
+            .iter()
+            .filter_map(|he_id| {
+                self.halfedges
+                    .get(*he_id)
+                    .or_else(error_none!("Halfedge not found for {he_id:?}"))
+                    .and_then(|he| he.face)
+            })
+            .collect()
     }
 }

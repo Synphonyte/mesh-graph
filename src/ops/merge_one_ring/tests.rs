@@ -626,14 +626,15 @@ fn test_vertex_merge_common_double_flap() {
     }
 
     assert_eq!(result.removed_faces.len(), 9);
-    assert_eq!(result.removed_halfedges.len(), 24);
+    assert_eq!(result.removed_halfedges.len(), 23);
     assert_eq!(result.removed_vertices.len(), 3);
 
     assert_eq!(result.added_faces.len(), 3);
-    assert_eq!(result.added_halfedges.len(), 6);
+    assert_eq!(result.added_halfedges.len(), 5);
+    assert_eq!(result.added_vertices.len(), 0);
 
-    assert_eq!(marked_halfedges.len(), 6);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
+    assert_eq!(marked_vertices.len(), result.added_vertices.len());
 }
 
 #[cfg(feature = "gltf")]
@@ -768,6 +769,7 @@ fn test_vertex_merge_connected_hes() {
 
     get_tracing_subscriber();
     let mut meshgraph = gltf::load("src/ops/merge_one_ring/glb/merge_connected_hes.glb").unwrap();
+    meshgraph.compute_vertex_normals();
 
     #[cfg(feature = "rerun")]
     meshgraph.log_rerun();
@@ -816,15 +818,16 @@ fn test_vertex_merge_connected_hes() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 13);
-    assert_eq!(result.removed_halfedges.len(), 30);
-    assert_eq!(result.removed_vertices.len(), 2);
+    assert_eq!(result.removed_faces.len(), 15);
+    assert_eq!(result.removed_halfedges.len(), 38);
+    assert_eq!(result.removed_vertices.len(), 4);
 
-    assert_eq!(result.added_faces.len(), 9);
-    assert_eq!(result.added_halfedges.len(), 18);
+    assert_eq!(result.added_faces.len(), 7);
+    assert_eq!(result.added_halfedges.len(), 14);
+    assert_eq!(result.added_vertices.len(), 0);
 
-    assert_eq!(marked_halfedges.len(), 18);
-    assert_eq!(marked_vertices.len(), 4);
+    assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
+    assert_eq!(marked_vertices.len(), result.added_vertices.len());
 }
 
 #[cfg(feature = "gltf")]
@@ -1093,4 +1096,72 @@ fn test_vertex_merge_common_vert_he_tube() {
 
     assert_eq!(marked_halfedges.len(), 10);
     assert_eq!(marked_vertices.len(), 2);
+}
+
+#[cfg(feature = "gltf")]
+#[test]
+fn test_merge_4_4() {
+    use crate::integrations::gltf;
+
+    get_tracing_subscriber();
+
+    let mut meshgraph = gltf::load("src/ops/merge_one_ring/glb/merge_4_4.glb").unwrap();
+    meshgraph.compute_vertex_normals();
+
+    #[cfg(feature = "rerun")]
+    meshgraph.log_rerun();
+
+    let mut v_top_id = VertexId::default();
+    let mut v_bottom_id = VertexId::default();
+
+    for (v_id, pos) in &meshgraph.positions {
+        if pos.x == -1.0 && pos.y == -1.0 {
+            v_top_id = v_id;
+        } else if pos.x == 1.0 && pos.y == 1.0 {
+            v_bottom_id = v_id;
+        }
+    }
+
+    if v_top_id == VertexId::default() {
+        panic!("No top vertex found");
+    }
+
+    if v_bottom_id == VertexId::default() {
+        panic!("No bottom vertex found");
+    }
+
+    #[cfg(feature = "rerun")]
+    meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
+
+    let mut marked_halfedges = HashSet::new();
+    let mut marked_vertices = HashSet::new();
+
+    let result = meshgraph.merge_vertices_one_rings(
+        v_top_id,
+        v_bottom_id,
+        0.01,
+        &mut marked_halfedges,
+        &mut marked_vertices,
+    );
+
+    #[cfg(feature = "rerun")]
+    {
+        use itertools::Itertools;
+
+        meshgraph.log_rerun();
+        meshgraph.log_verts_rerun("marked", &marked_vertices.iter().copied().collect_vec());
+        RR.flush_blocking().unwrap();
+        RR.flush_blocking().unwrap();
+    }
+
+    assert_eq!(result.removed_faces.len(), 11);
+    assert_eq!(result.removed_halfedges.len(), 28);
+    assert_eq!(result.removed_vertices.len(), 3);
+
+    assert_eq!(result.added_faces.len(), 5);
+    assert_eq!(result.added_halfedges.len(), 10);
+    assert_eq!(result.added_vertices.len(), 0);
+
+    assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
+    assert_eq!(marked_vertices.len(), result.added_vertices.len());
 }

@@ -110,8 +110,12 @@ impl MeshGraph {
         he_id1: HalfedgeId,
         he_id2: HalfedgeId,
     ) -> Option<AddFace> {
-        let he_id1 = self.boundary_he(he_id1)?;
-        let he_id2 = self.boundary_he(he_id2)?;
+        let he_id1 = self
+            .boundary_he(he_id1)
+            .or_else(error_none!("Boundary Halfedge 1 {he_id1:?} not found"))?;
+        let he_id2 = self
+            .boundary_he(he_id2)
+            .or_else(error_none!("Boundary Halfedge 2 {he_id2:?} not found"))?;
 
         let he1 = *self
             .halfedges

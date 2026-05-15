@@ -177,10 +177,42 @@ impl MeshGraph {
         Self::indexed_triangles(&unique_positions, &face_indices)
     }
 
+    /// Create a triangle mesh graph from vertex positions, face indices,
+    /// and a custom vertex attribute.
+    #[instrument]
+    pub fn indexed_triangles_with_custom_attribute<T>(
+        vertex_positions: &[Vec3],
+        face_indices: &[usize],
+        custom_attribute: &[T],
+    ) -> (Self, SecondaryMap<VertexId, T>)
+    where
+        T: Clone + std::fmt::Debug,
+    {
+        let (mesh_graph, vertex_ids) =
+            Self::indexed_triangles_and_vertex_ids(vertex_positions, face_indices);
+
+        let mut custom_attribute_map = SecondaryMap::with_capacity(custom_attribute.len());
+        for (attr, vertex_id) in custom_attribute.iter().zip(vertex_ids) {
+            custom_attribute_map.insert(vertex_id, attr.clone());
+        }
+
+        (mesh_graph, custom_attribute_map)
+    }
+
     /// Create a triangle mesh graph from vertex positions and face indices.
     /// Every chunk of three indices represents a triangle.
-    #[instrument]
+    #[inline]
     pub fn indexed_triangles(vertex_positions: &[Vec3], face_indices: &[usize]) -> Self {
+        Self::indexed_triangles_and_vertex_ids(vertex_positions, face_indices).0
+    }
+
+    /// Create a triangle mesh graph from vertex positions and face indices,
+    /// returning the graph and a list of vertex IDs in the same order as `vertex_positions`.
+    #[instrument]
+    pub fn indexed_triangles_and_vertex_ids(
+        vertex_positions: &[Vec3],
+        face_indices: &[usize],
+    ) -> (Self, Vec<VertexId>) {
         let mut mesh_graph = Self {
             bvh: Bvh::new(),
             bvh_workspace: BvhWorkspace::default(),
@@ -236,7 +268,7 @@ impl MeshGraph {
         mesh_graph.make_all_outgoing_halfedges_boundary_if_possible();
         mesh_graph.rebuild_bvh();
 
-        mesh_graph
+        (mesh_graph, vertex_ids)
     }
 
     /// Computes the vertex normal from neighboring faces
@@ -284,8 +316,16 @@ impl MeshGraph {
             let b = he_a.end_vertex;
             let c = he_b.end_vertex;
 
-            let diff_a = self.positions[c] - self.positions[a];
-            let diff_b = self.positions[c] - self.positions[b];
+            let (Some(pos_a), Some(pos_b), Some(pos_c)) = (
+                self.positions.get(a),
+                self.positions.get(b),
+                self.positions.get(c),
+            ) else {
+                continue;
+            };
+
+            let diff_a = pos_c - pos_a;
+            let diff_b = pos_c - pos_b;
 
             // TODO : normalizing necessary here?
             let face_normal = diff_a.cross(diff_b);

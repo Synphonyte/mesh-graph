@@ -56,7 +56,7 @@ impl MeshGraph {
     }
 
     pub fn log_vert_rerun(&self, name: &str, vert: VertexId) {
-        let pos = self.positions[vert];
+        let pos = unwrap_or_return!(self.positions.get(vert), "Vertex {vert:?} not found");
 
         RR.log(
             format!("meshgraph/vertex/{name}"),
@@ -83,14 +83,20 @@ impl MeshGraph {
         vertices: &[VertexId],
         labels: &[impl AsRef<str>],
     ) {
+        let (positions, labels): (Vec<_>, Vec<_>) = vertices
+            .iter()
+            .zip(labels)
+            .filter_map(|(&v_id, labl)| {
+                self.positions
+                    .get(v_id)
+                    .map(vec3_array)
+                    .and_then(|a| Some((a, labl.as_ref())))
+            })
+            .unzip();
+
         RR.log(
             format!("meshgraph/vertex/{name}"),
-            &rerun::Points3D::new(
-                vertices
-                    .iter()
-                    .map(|&v_id| vec3_array(self.positions[v_id])),
-            )
-            .with_labels(labels.iter().map(|l| l.as_ref())),
+            &rerun::Points3D::new(&positions).with_labels(labels),
         )
         .unwrap();
     }
@@ -118,15 +124,72 @@ impl MeshGraph {
         .unwrap();
     }
 
-    pub fn log_hes_rerun(&self, name: &str, halfedges: &[HalfedgeId]) {
+    pub fn log_hes_rerun<'a>(
+        &self,
+        name: &str,
+        halfedges: impl IntoIterator<Item = &'a HalfedgeId>,
+    ) {
         self.log_hes_rerun_with_name(format!("meshgraph/halfedge/{name}"), halfedges);
     }
 
-    pub fn log_hes_rerun_with_name(&self, name: String, halfedges: &[HalfedgeId]) {
+    pub fn log_hes_w_labels_rerun<'a>(
+        &self,
+        name: &str,
+        halfedges: impl IntoIterator<Item = &'a HalfedgeId>,
+        labels: &[impl AsRef<str>],
+    ) {
+        let name = format!("meshgraph/halfedge/{name}");
+
+        let halfedges = halfedges.into_iter().copied();
+        let halfedges = halfedges.collect::<Vec<_>>();
+
         let mut origins = Vec::with_capacity(halfedges.len());
         let mut vectors = Vec::with_capacity(halfedges.len());
 
-        for &he_id in halfedges {
+        for he_id in halfedges {
+            let he = self.halfedges[he_id];
+
+            let Some(start) = self.positions.get(he.start_vertex(self).unwrap()) else {
+                error!(
+                    "Missing position for start vertex {:?} of he {:?}",
+                    he.start_vertex(self).unwrap(),
+                    he_id
+                );
+                continue;
+            };
+            let Some(end) = self.positions.get(he.end_vertex) else {
+                error!(
+                    "Missing position for end vertex {:?} of he {:?}",
+                    he.end_vertex, he_id
+                );
+                continue;
+            };
+
+            origins.push(vec3_array(start));
+            vectors.push(vec3_array(end - start));
+        }
+
+        RR.log(
+            name,
+            &rerun::Arrows3D::from_vectors(vectors)
+                .with_origins(origins)
+                .with_labels(labels.iter().map(AsRef::as_ref)),
+        )
+        .unwrap();
+    }
+
+    pub fn log_hes_rerun_with_name<'a>(
+        &self,
+        name: String,
+        halfedges: impl IntoIterator<Item = &'a HalfedgeId>,
+    ) {
+        let halfedges = halfedges.into_iter().copied();
+        let halfedges = halfedges.collect::<Vec<_>>();
+
+        let mut origins = Vec::with_capacity(halfedges.len());
+        let mut vectors = Vec::with_capacity(halfedges.len());
+
+        for he_id in halfedges {
             let he = self.halfedges[he_id];
 
             let Some(start) = self.positions.get(he.start_vertex(self).unwrap()) else {
@@ -199,7 +262,7 @@ impl MeshGraph {
         let mut origins = Vec::with_capacity(3);
         let mut vectors = Vec::with_capacity(3);
 
-        let face = self.faces[face_id];
+        let face = unwrap_or_return!(self.faces.get(face_id), "Face {face_id:?} not found");
 
         let pos = face
             .vertices(self)
@@ -222,8 +285,15 @@ impl MeshGraph {
         for he_id in face.halfedges(self) {
             let he = self.halfedges[he_id];
 
-            let start = pos[&he.start_vertex(self).unwrap()];
-            let end = pos[&he.end_vertex];
+            let start = unwrap_or_return!(
+                pos.get(&he.start_vertex(self).unwrap()),
+                "Start vertex pos not found"
+            );
+            let end = unwrap_or_return!(
+                pos.get(&he.end_vertex),
+                "End vertex pos
+                not found"
+            );
 
             origins.push(vec3_array(start));
             vectors.push(vec3_array(end - start));
@@ -546,37 +616,37 @@ impl MeshGraph {
         )
         .unwrap();
 
-        let buffers = crate::integrations::VertexIndexBuffers::from(self);
-        RR.log(
-            "meshgraph/mesh",
-            &rerun::Mesh3D::new(
-                buffers
-                    .positions
-                    .into_iter()
-                    .zip(buffers.normals.iter().cloned())
-                    .map(|(pos, norm)| vec3_array(pos - norm * 0.1)),
-            )
-            .with_triangle_indices(
-                buffers
-                    .indices
-                    .chunks(3)
-                    .map(|chunk| rerun::datatypes::UVec3D::new(chunk[0], chunk[1], chunk[2])),
-            )
-            .with_vertex_colors(
-                buffers
-                    .normals
-                    .into_iter()
-                    .map(|v| {
-                        [
-                            (100.0 + v.x * 100.0) as u8,
-                            (100.0 + v.y * 100.0) as u8,
-                            (100.0 + v.z * 100.0) as u8,
-                        ]
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        )
-        .unwrap();
+        // let buffers = crate::integrations::VertexIndexBuffers::from(self);
+        // RR.log(
+        //     "meshgraph/mesh",
+        //     &rerun::Mesh3D::new(
+        //         buffers
+        //             .positions
+        //             .into_iter()
+        //             .zip(buffers.normals.iter().cloned())
+        //             .map(|(pos, norm)| vec3_array(pos - norm * 0.1)),
+        //     )
+        //     .with_triangle_indices(
+        //         buffers
+        //             .indices
+        //             .chunks(3)
+        //             .map(|chunk| rerun::datatypes::UVec3D::new(chunk[0], chunk[1], chunk[2])),
+        //     )
+        //     .with_vertex_colors(
+        //         buffers
+        //             .normals
+        //             .into_iter()
+        //             .map(|v| {
+        //                 [
+        //                     (100.0 + v.x * 100.0) as u8,
+        //                     (100.0 + v.y * 100.0) as u8,
+        //                     (100.0 + v.z * 100.0) as u8,
+        //                 ]
+        //             })
+        //             .collect::<Vec<_>>(),
+        //     ),
+        // )
+        // .unwrap();
     }
 }
 

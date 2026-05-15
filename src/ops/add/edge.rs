@@ -47,6 +47,46 @@ impl MeshGraph {
         ret
     }
 
+    /// Adds or gets a boundary edge between two vertices.
+    /// If the edge already exists and the halfedge (start_vertex_id, end_vertex_id) is a boundary halfedge, it is returned;
+    /// otherwise, a new halfedge pair is created.
+    ///
+    /// Note that this can lead to duplicate halfedges if the edge already exists but is not a boundary edge.
+    pub fn add_or_get_boundary_edge(
+        &mut self,
+        start_vertex_id: VertexId,
+        end_vertex_id: VertexId,
+    ) -> AddOrGetEdge {
+        let existing_he_ids = self.halfedges_from_to(start_vertex_id, end_vertex_id);
+        if let Some(he_id) = existing_he_ids.into_iter().find(|he_id| {
+            // already checked in `halfedges_from_to()`
+            let he = &self.halfedges[*he_id];
+            he.is_boundary() && he.twin.is_some()
+        }) {
+            // already checked in `halfedges_from_to()`
+            let he = self.halfedges[he_id];
+
+            return AddOrGetEdge {
+                start_to_end_he_id: he_id,
+                twin_he_id: he.twin.unwrap(), // checked above
+                new_start_to_end: false,
+                new_twin: false,
+            };
+        }
+
+        let AddEdge {
+            start_to_end_he_id,
+            twin_he_id,
+        } = self.add_edge(start_vertex_id, end_vertex_id);
+
+        AddOrGetEdge {
+            start_to_end_he_id,
+            twin_he_id,
+            new_start_to_end: true,
+            new_twin: true,
+        }
+    }
+
     fn add_or_get_edge_inner(
         &mut self,
         start_vertex_id: VertexId,

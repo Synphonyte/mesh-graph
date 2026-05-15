@@ -662,18 +662,13 @@ impl MeshGraph {
         removed_halfedges: &mut Vec<HalfedgeId>,
         removed_faces: &mut Vec<FaceId>,
     ) -> Option<bool> {
-        let faces = self
-            .vertices
-            .get(vertex_id)
-            .or_else(error_none!("Vertex not found"))?
-            .faces(self)
-            .collect_vec();
+        let faces = self.vertex_adjacent_faces(vertex_id);
 
         if faces.len() < 2 {
             return Some(false);
         }
 
-        let mut face_tuples = faces.into_iter().circular_tuple_windows().collect_vec();
+        let mut face_tuples = faces.into_iter().tuple_combinations().collect_vec();
 
         while let Some((face_id1, face_id2)) = face_tuples.pop() {
             if self.faces_share_all_vertices(face_id1, face_id2) {
@@ -770,6 +765,8 @@ impl MeshGraph {
                             .or_else(error_none!("Start vertex 2 missing"))?
                             .outgoing_halfedge = Some(twin_id1);
                     }
+                } else {
+                    tracing::warn!("There's only one halfedge left");
                 }
 
                 return Some(true);

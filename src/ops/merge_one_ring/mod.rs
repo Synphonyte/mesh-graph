@@ -45,44 +45,65 @@ impl MeshGraph {
         let vertex1 = *unwrap_or_return!(self.vertices.get(vertex_id1), "Vertex not found", result);
         let vertex2 = *unwrap_or_return!(self.vertices.get(vertex_id2), "Vertex not found", result);
 
-        // halfedges' existence already checked in `one_ring()`.
-        let one_ring_v_ids1 = vertex1
-            .one_ring(self)
-            .map(|he_id| self.halfedges[he_id].end_vertex)
-            .collect_vec();
-        let mut one_ring_v_ids2 = vertex2
-            .one_ring(self)
-            .map(|he_id| self.halfedges[he_id].end_vertex)
-            .collect_vec();
-        one_ring_v_ids2.reverse();
+        let one_ring_he_ids1 = vertex1.one_ring(self).collect_vec();
+        let mut one_ring_he_ids2 = vertex2.one_ring(self).collect_vec();
+        one_ring_he_ids2.reverse();
 
+        // halfedges' existence already checked in `one_ring()`.
+        let mut one_ring_v_ids1 = one_ring_he_ids1
+            .iter()
+            .map(|he_id| self.halfedges[*he_id].end_vertex)
+            .collect_vec();
+        one_ring_v_ids1.rotate_right(1);
+        let one_ring_v_ids2 = one_ring_he_ids2
+            .iter()
+            .map(|he_id| self.halfedges[*he_id].end_vertex)
+            .collect_vec();
         if one_ring_v_ids1.len() < 3 || one_ring_v_ids2.len() < 3 {
             error!("One rings are too small");
             return result;
         }
 
-        let one_ring_set1 = HashSet::<VertexId>::from_iter(one_ring_v_ids1.iter().copied());
-        let one_ring_set2 = HashSet::<VertexId>::from_iter(one_ring_v_ids2.iter().copied());
-        let shared_v_ids =
-            HashSet::<VertexId>::from_iter(one_ring_set1.intersection(&one_ring_set2).copied());
+        let one_ring_he_set1 = HashSet::<HalfedgeId>::from_iter(one_ring_he_ids1.iter().copied());
+        let one_ring_he_set2 = HashSet::<HalfedgeId>::from_iter(one_ring_he_ids2.iter().copied());
+        let shared_he_ids = HashSet::<HalfedgeId>::from_iter(
+            one_ring_he_set1.intersection(&one_ring_he_set2).copied(),
+        );
 
-        if self.check_and_flip_single_shared_he(
-            &one_ring_v_ids1,
-            &one_ring_v_ids2,
-            &shared_v_ids,
-            flip_threshold_sqr,
-            &mut result,
-        ) {
+        let one_ring_v_set1 = HashSet::<VertexId>::from_iter(one_ring_v_ids1.iter().copied());
+        let one_ring_v_set2 = HashSet::<VertexId>::from_iter(one_ring_v_ids2.iter().copied());
+        let shared_v_ids =
+            HashSet::<VertexId>::from_iter(one_ring_v_set1.intersection(&one_ring_v_set2).copied());
+
+        if self.check_and_flip_single_shared_he(&shared_he_ids, flip_threshold_sqr, &mut result) {
             return result;
         }
 
-        self.remove_neighbour_faces(&vertex1, &vertex2, &mut result);
+        self.remove_neighbor_faces(&vertex1, &vertex2, &mut result);
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
 
-        let range_pairs_to_connect =
-            self.compute_range_pairs_to_connect(&one_ring_v_ids1, &one_ring_v_ids2, &shared_v_ids);
+        let (already_connected_pairings, connected_v_ids, connected_he_ids) = unwrap_or_return!(
+            self.find_already_connected_pairings(
+                &one_ring_v_ids1,
+                &one_ring_v_ids2,
+                &shared_v_ids,
+            ),
+            "Error in find_already_connected_pairings",
+            result
+        );
+
+        let range_pairs_to_connect = self.compute_range_pairs_to_connect(
+            &one_ring_v_ids1,
+            &one_ring_v_ids2,
+            &one_ring_he_ids1,
+            &one_ring_he_ids2,
+            &shared_v_ids,
+            &shared_he_ids,
+            connected_v_ids,
+            connected_he_ids,
+        );
 
         if range_pairs_to_connect.is_empty() {
             error!("No range pairs to connect");
@@ -91,13 +112,17 @@ impl MeshGraph {
 
         tracing::info!("Range pairs to connect: {range_pairs_to_connect:#?}");
 
-        let planned_faces =
-            self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
+        let planned_faces = self.plan_new_faces(
+            &range_pairs_to_connect,
+            already_connected_pairings,
+            &one_ring_v_ids1,
+            &one_ring_v_ids2,
+        );
 
         self.add_planned_faces(
             planned_faces,
-            &one_ring_set1,
-            &one_ring_set2,
+            &one_ring_v_set1,
+            &one_ring_v_set2,
             marked_halfedges,
             &mut result,
         );
@@ -123,6 +148,362 @@ impl MeshGraph {
         );
 
         result
+    }
+
+    fn find_already_connected_pairings(
+        &mut self,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        shared_v_ids: &HashSet<VertexId>,
+    ) -> Option<(Vec<Vec<Pairing>>, HashSet<VertexId>, HashSet<HalfedgeId>)> {
+        let mut already_connected_pairings = vec![];
+        let mut connected_v_ids = HashSet::new();
+        let mut connected_he_ids = HashSet::new();
+
+        for ((idx1, &v_id1), (idx2, &v_id2)) in one_ring_v_ids1
+            .iter()
+            .enumerate()
+            .cartesian_product(one_ring_v_ids2.iter().enumerate())
+        {
+            if shared_v_ids.contains(&v_id1) || shared_v_ids.contains(&v_id2) {
+                continue;
+            }
+
+            if v_id1 == v_id2 {
+                connected_v_ids.insert(v_id1);
+                continue;
+            }
+
+            if connected_v_ids.contains(&v_id1) && connected_v_ids.contains(&v_id2) {
+                continue;
+            }
+
+            if let Some(he_id) = self.halfedge_from_to(v_id1, v_id2) {
+                let pairing = self.find_triangle_fan(
+                    he_id,
+                    idx1,
+                    idx2,
+                    one_ring_v_ids1,
+                    one_ring_v_ids2,
+                    &mut connected_he_ids,
+                )?;
+
+                #[cfg(feature = "rerun")]
+                pairing.log_rerun(
+                    "already_connected_init",
+                    [one_ring_v_ids1, one_ring_v_ids2],
+                    self,
+                );
+
+                let mut connected_pairings = self.find_connected_triangle_fans(
+                    one_ring_v_ids1,
+                    one_ring_v_ids2,
+                    &pairing,
+                    -1,
+                    &mut connected_he_ids,
+                );
+
+                connected_pairings.push(pairing.clone());
+
+                connected_pairings.extend(self.find_connected_triangle_fans(
+                    one_ring_v_ids1,
+                    one_ring_v_ids2,
+                    &pairing,
+                    1,
+                    &mut connected_he_ids,
+                ));
+
+                for pairing in &connected_pairings {
+                    for v_id in pairing.all_vertex_ids([one_ring_v_ids1, one_ring_v_ids2]) {
+                        connected_v_ids.insert(v_id);
+                    }
+                }
+
+                already_connected_pairings.push(connected_pairings);
+            }
+        }
+
+        Some((
+            already_connected_pairings,
+            connected_v_ids,
+            connected_he_ids,
+        ))
+    }
+
+    fn find_connected_triangle_fans(
+        &self,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        pairing: &Pairing,
+        idx_step: i32,
+        connected_he_ids: &mut HashSet<HalfedgeId>,
+    ) -> Vec<Pairing> {
+        let (single_v_ids, other_v_ids) = if pairing.single_range_idx == 0 {
+            (one_ring_v_ids1, one_ring_v_ids2)
+        } else {
+            (one_ring_v_ids2, one_ring_v_ids1)
+        };
+
+        let next_single_idx = ((pairing.single_idx_in_range + single_v_ids.len()) as i32 + idx_step)
+            as usize
+            % single_v_ids.len();
+        let next_v_id = single_v_ids[next_single_idx];
+
+        let mut other_idx = if idx_step < 0 {
+            *pairing.other_range.start()
+        } else {
+            *pairing.other_range.end()
+        };
+        other_idx %= other_v_ids.len();
+
+        let current_single_v_id = single_v_ids[pairing.single_idx_in_range];
+
+        let mut pairings = vec![];
+
+        if self
+            .face_with_vertices(next_v_id, current_single_v_id, other_v_ids[other_idx])
+            .is_some()
+        {
+            // swap single range and other range
+            let mut current_pairing = Pairing::new_triangle(
+                1 - pairing.single_range_idx,
+                other_idx,
+                next_single_idx,
+                pairing.single_idx_in_range,
+                single_v_ids.len(),
+            );
+
+            self.extend_triangle_pairing_fan(
+                one_ring_v_ids1,
+                one_ring_v_ids2,
+                &mut current_pairing,
+                connected_he_ids,
+            );
+
+            #[cfg(feature = "rerun")]
+            current_pairing.log_rerun(
+                format!("extended/step_{}", idx_step),
+                [one_ring_v_ids1, one_ring_v_ids2],
+                self,
+            );
+
+            let next_pairings = self.find_connected_triangle_fans(
+                one_ring_v_ids1,
+                one_ring_v_ids2,
+                &current_pairing,
+                idx_step,
+                connected_he_ids,
+            );
+
+            pairings.push(current_pairing);
+            pairings.extend(next_pairings);
+        }
+
+        pairings
+    }
+
+    fn find_triangle_fan(
+        &self,
+        he_id: HalfedgeId,
+        idx1: usize,
+        idx2: usize,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        connected_he_ids: &mut HashSet<HalfedgeId>,
+    ) -> Option<Pairing> {
+        let he = self
+            .halfedges
+            .get(he_id)
+            .or_else(error_none!("Halfedge not found"))?;
+
+        let mut current_pairing = Pairing {
+            single_range_idx: 0,
+            single_idx_in_range: idx1,
+            other_range: idx2..=idx2,
+        };
+
+        // might not exist. we removed some faces (neighbors).
+        let Some(opposite_v_id) = he.opposite_vertex(self) else {
+            return Some(current_pairing);
+        };
+
+        self.log_vert_rerun("find_triangle_fan/opposite_v1", opposite_v_id);
+
+        if !self.create_triangle_pairing(
+            one_ring_v_ids1,
+            one_ring_v_ids2,
+            idx1,
+            idx2,
+            opposite_v_id,
+            &mut current_pairing,
+        ) {
+            let twin_id = he.twin.or_else(error_none!("Twin not found"))?;
+            let twin = self
+                .halfedges
+                .get(twin_id)
+                .or_else(error_none!("Twin not found"))?;
+
+            // might not exist. we removed some faces (neighbors).
+            let Some(opposite_v_id) = twin.opposite_vertex(self) else {
+                return Some(current_pairing);
+            };
+
+            self.log_vert_rerun("find_triangle_fan/opposite_v2", opposite_v_id);
+
+            if !self.create_triangle_pairing(
+                one_ring_v_ids1,
+                one_ring_v_ids2,
+                idx1,
+                idx2,
+                opposite_v_id,
+                &mut current_pairing,
+            ) {
+                // Return single halfedge current pairing
+                return Some(current_pairing);
+            }
+        }
+
+        self.extend_triangle_pairing_fan(
+            one_ring_v_ids1,
+            one_ring_v_ids2,
+            &mut current_pairing,
+            connected_he_ids,
+        );
+
+        Some(current_pairing)
+    }
+
+    fn add_face_to_connected_he_ids(
+        &self,
+        face_id: FaceId,
+        connected_he_ids: &mut HashSet<HalfedgeId>,
+    ) {
+        let face = unwrap_or_return!(
+            self.faces.get(face_id),
+            "failed to get start face for pairing fan"
+        );
+        connected_he_ids.extend(
+            face.halfedges(self)
+                .filter_map(|he_id| {
+                    let he = self
+                        .halfedges
+                        .get(he_id)
+                        .or_else(error_none!("Halfedge not found"))?;
+                    Some([
+                        he_id,
+                        he.twin.or_else(error_none!("Twin halfedge not found"))?,
+                    ])
+                })
+                .flatten(),
+        );
+    }
+
+    fn extend_triangle_pairing_fan(
+        &self,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        current_pairing: &mut Pairing,
+        connected_he_ids: &mut HashSet<HalfedgeId>,
+    ) {
+        let (single_ids, other_ids) = if current_pairing.single_range_idx == 0 {
+            (one_ring_v_ids1, one_ring_v_ids2)
+        } else {
+            (one_ring_v_ids2, one_ring_v_ids1)
+        };
+
+        let other_len = other_ids.len();
+        let single_v_id = single_ids[current_pairing.single_idx_in_range % single_ids.len()];
+
+        // Walk backwards from the start of other_range
+        let mut range_start = *current_pairing.other_range.start();
+
+        let start_face_id = unwrap_or_return!(
+            self.face_with_vertices(
+                single_v_id,
+                other_ids[range_start % other_len],
+                other_ids[*current_pairing.other_range.end() % other_len],
+            ),
+            "failed to find start face for pairing fan"
+        );
+        self.add_face_to_connected_he_ids(start_face_id, connected_he_ids);
+
+        loop {
+            // Wrap backwards (using saturating to avoid underflow; handle wrap via modular arithmetic)
+            let prev_idx = (range_start + other_len - 1) % other_len;
+            let prev_v_id = other_ids[prev_idx];
+
+            let boundary_v_id = other_ids[range_start % other_len];
+            if let Some(face_id) = self.face_with_vertices(single_v_id, prev_v_id, boundary_v_id) {
+                // Adjust range_start to go one step back; keep values un-modded so the
+                // range arithmetic stays consistent with how ConnectPair::new handles wrapping.
+                if range_start == 0 {
+                    range_start = other_len - 1;
+                } else {
+                    range_start -= 1;
+                }
+                current_pairing.other_range = range_start..=*current_pairing.other_range.end();
+
+                self.add_face_to_connected_he_ids(face_id, connected_he_ids);
+            } else {
+                break;
+            }
+        }
+
+        // Walk forwards from the end of other_range
+        let mut range_end = *current_pairing.other_range.end();
+        loop {
+            let next_idx = (range_end + 1) % other_len;
+            let next_v_id = other_ids[next_idx];
+
+            let boundary_v_id = other_ids[range_end % other_len];
+            if let Some(face_id) = self.face_with_vertices(single_v_id, boundary_v_id, next_v_id) {
+                range_end += 1;
+                current_pairing.other_range = *current_pairing.other_range.start()..=range_end;
+
+                self.add_face_to_connected_he_ids(face_id, connected_he_ids);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn create_triangle_pairing(
+        &self,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        idx1: usize,
+        idx2: usize,
+        third_v_id: VertexId,
+        current_pairing: &mut Pairing,
+    ) -> bool {
+        let (idx1, idx2) =
+            if let Some(idx) = one_ring_v_ids1.iter().position(|v_id| *v_id == third_v_id) {
+                current_pairing.single_range_idx = 1;
+                current_pairing.single_idx_in_range = idx2;
+                idx1.min(idx)..=idx1.max(idx);
+
+                (idx, idx1)
+            } else if let Some(idx) = one_ring_v_ids2.iter().position(|v_id| *v_id == third_v_id) {
+                (idx, idx2)
+            } else {
+                return false;
+            };
+
+        let other_len = if current_pairing.single_range_idx == 0 {
+            one_ring_v_ids2.len()
+        } else {
+            one_ring_v_ids1.len()
+        };
+
+        *current_pairing = Pairing::new_triangle(
+            current_pairing.single_range_idx,
+            current_pairing.single_idx_in_range,
+            idx1,
+            idx2,
+            other_len,
+        );
+
+        true
     }
 
     fn cleanup_bookkeeping(
@@ -193,9 +574,9 @@ impl MeshGraph {
 
         for planned_face in planned_faces {
             let inserted = if let Some(prev_he) = prev_he {
-                planned_face.add_to_meshgraph_and_he(self, prev_he)
+                planned_face.add_to_mesh_graph_and_he(self, prev_he)
             } else {
-                planned_face.add_to_meshgraph(self)
+                planned_face.add_to_mesh_graph(self)
             };
 
             let inserted = unwrap_or_return!(inserted, "Failed to add face");
@@ -222,7 +603,7 @@ impl MeshGraph {
         }
     }
 
-    fn remove_neighbour_faces(
+    fn remove_neighbor_faces(
         &mut self,
         vertex1: &Vertex,
         vertex2: &Vertex,
@@ -289,6 +670,7 @@ impl MeshGraph {
     fn plan_new_faces(
         &self,
         range_pairs_to_connect: &[ConnectPair],
+        mut already_connected_pairings: Vec<Vec<Pairing>>,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
     ) -> Vec<PlannedFace> {
@@ -300,6 +682,10 @@ impl MeshGraph {
             let pairings = range_pair_to_connect.compute_pairings();
 
             tracing::info!("Pairings: {:#?}", pairings);
+            tracing::info!(
+                "Already connected pairings: {:#?}",
+                already_connected_pairings
+            );
 
             if pairings.is_empty() {
                 continue;
@@ -308,7 +694,7 @@ impl MeshGraph {
             let mut prev_single_v_id = None;
             let mut prev_other_v_id = None;
 
-            if !range_pair_to_connect.closed {
+            if matches!(range_pair_to_connect.start_cap, ConnectPairCap::Open) {
                 let last_pairing = pairings.last().unwrap();
 
                 let (s, o) = last_pairing.last_pair([one_ring_v_ids1, one_ring_v_ids2]);
@@ -381,7 +767,42 @@ impl MeshGraph {
                 prev_other_v_id = Some(other_v_id);
             }
 
-            planned_faces[start_pairing_index].order = PlannedFaceOrder::Start;
+            if !matches!(
+                range_pair_to_connect.start_cap,
+                ConnectPairCap::AlreadyConnected
+            ) {
+                planned_faces[start_pairing_index].order = PlannedFaceOrder::Start;
+            }
+
+            if matches!(
+                range_pair_to_connect.end_cap,
+                ConnectPairCap::AlreadyConnected
+            ) {
+                let mut connected_idx = None;
+
+                for (i, connected_strip_pairing) in already_connected_pairings.iter().enumerate() {
+                    let first_pairing = &connected_strip_pairing[0];
+                    let (single_v_id, other_v_id) =
+                        first_pairing.first_pair([one_ring_v_ids1, one_ring_v_ids2]);
+
+                    if Some(single_v_id) == prev_single_v_id && Some(other_v_id) == prev_other_v_id
+                        || Some(single_v_id) == prev_other_v_id
+                            && Some(other_v_id) == prev_single_v_id
+                    {
+                        for pairing in connected_strip_pairing {
+                            planned_faces
+                                .extend(pairing.fill_faces([one_ring_v_ids1, one_ring_v_ids2]));
+                        }
+
+                        connected_idx = Some(i);
+                        break;
+                    }
+                }
+
+                if let Some(connected_idx) = connected_idx {
+                    already_connected_pairings.remove(connected_idx);
+                }
+            }
 
             let len = planned_faces.len();
             planned_faces[len - 1].order = if len - 1 == start_pairing_index {
@@ -391,56 +812,46 @@ impl MeshGraph {
             };
         }
 
+        for connected_strip_pairing in already_connected_pairings {
+            let start_pairing_index = planned_faces.len();
+
+            for pairing in connected_strip_pairing {
+                planned_faces.extend(pairing.fill_faces([one_ring_v_ids1, one_ring_v_ids2]));
+            }
+
+            let len = planned_faces.len();
+            planned_faces[len - 1].order = if len - 1 == start_pairing_index {
+                PlannedFaceOrder::Single
+            } else {
+                PlannedFaceOrder::End
+            };
+        }
+
+        for f in &planned_faces {
+            f.log_rerun("planned", self);
+        }
+
         planned_faces
     }
 
     #[instrument(skip_all)]
     fn check_and_flip_single_shared_he(
         &mut self,
-        one_ring_v_ids1: &[VertexId],
-        one_ring_v_ids2: &[VertexId],
-        shared_v_ids: &HashSet<VertexId>,
+        shared_he_ids: &HashSet<HalfedgeId>,
         flip_threshold_sqr: f32,
         result: &mut MergeVerticesOneRing,
     ) -> bool {
-        if shared_v_ids.len() == 2 {
-            let (first_v_id, second_v_id) = shared_v_ids.iter().copied().collect_tuple().unwrap();
-
-            let first_pos1 = one_ring_v_ids1
-                .iter()
-                .position(|v_id| *v_id == first_v_id)
-                .unwrap() as i64;
-            let second_pos1 = one_ring_v_ids1
-                .iter()
-                .position(|v_id| *v_id == second_v_id)
-                .unwrap() as i64;
-
-            let first_pos2 = one_ring_v_ids2
-                .iter()
-                .position(|v_id| *v_id == first_v_id)
-                .unwrap() as i64;
-            let second_pos2 = one_ring_v_ids2
-                .iter()
-                .position(|v_id| *v_id == second_v_id)
-                .unwrap() as i64;
-
-            if (first_pos1 - second_pos1).abs() != 1 || (first_pos2 - second_pos2).abs() != 1 {
-                return false;
-            }
+        if shared_he_ids.len() == 1 {
+            let shared_he_id = shared_he_ids.iter().copied().next().unwrap();
 
             #[cfg(feature = "rerun")]
-            self.log_verts_rerun("common_one_ring", &[first_v_id, second_v_id]);
+            self.log_he_rerun("common_one_ring_he", shared_he_id);
 
-            if let Some(he_id) = self.halfedge_from_to(first_v_id, second_v_id) {
-                #[cfg(feature = "rerun")]
-                self.log_he_rerun("common_one_ring_he", he_id);
-
-                return self.flip_and_collapse_single_shared_edge_if_below_threshold(
-                    he_id,
-                    flip_threshold_sqr,
-                    result,
-                );
-            }
+            return self.flip_and_collapse_single_shared_edge_if_below_threshold(
+                shared_he_id,
+                flip_threshold_sqr,
+                result,
+            );
         }
 
         false
@@ -451,18 +862,25 @@ impl MeshGraph {
         &mut self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
+        one_ring_he_ids1: &[HalfedgeId],
+        one_ring_he_ids2: &[HalfedgeId],
         shared_v_ids: &HashSet<VertexId>,
+        shared_he_ids: &HashSet<HalfedgeId>,
+        mut connected_v_ids: HashSet<VertexId>,
+        mut connected_he_ids: HashSet<HalfedgeId>,
     ) -> Vec<ConnectPair> {
         let mut range_pairs_to_connect = vec![];
 
-        let mut connected_v_ids = HashSet::new();
-
-        let (orig_start_idx1, orig_start_idx2) = unwrap_or_return!(
+        let (orig_start_idx1, orig_start_idx2, orig_start_cap) = unwrap_or_return!(
             self.find_start_indices(
                 one_ring_v_ids1,
                 one_ring_v_ids2,
+                one_ring_he_ids1,
+                one_ring_he_ids2,
                 shared_v_ids,
-                &connected_v_ids
+                shared_he_ids,
+                &connected_v_ids,
+                &connected_he_ids,
             ),
             "Couldn't find start indices",
             range_pairs_to_connect
@@ -479,6 +897,7 @@ impl MeshGraph {
 
         let mut start_idx1 = orig_start_idx1;
         let mut start_idx2 = orig_start_idx2;
+        let mut start_cap = orig_start_cap;
 
         let mut end_idx1 = (start_idx1 + 1) % len1;
         let mut end_idx2 = (start_idx2 + 1) % len2;
@@ -500,7 +919,7 @@ impl MeshGraph {
             v_id1 = one_ring_v_ids1[end_idx1];
             v_id2 = one_ring_v_ids2[end_idx2];
 
-            let mut shared = false;
+            let mut end_cap = ConnectPairCap::Open;
 
             if shared_v_ids.contains(&v_id1) {
                 while v_id2 != v_id1 {
@@ -511,7 +930,7 @@ impl MeshGraph {
                     self.log_vert_rerun("pairs_end_idx2", v_id2);
                 }
 
-                shared = true;
+                end_cap = ConnectPairCap::Closed;
             } else if shared_v_ids.contains(&v_id2) {
                 while v_id1 != v_id2 {
                     end_idx1 = (end_idx1 + 1) % len1;
@@ -521,37 +940,87 @@ impl MeshGraph {
                     self.log_vert_rerun("pairs_end_idx1", v_id1);
                 }
 
-                shared = true;
+                end_cap = ConnectPairCap::Closed;
+            } else if connected_v_ids.contains(&v_id1) {
+                while !connected_v_ids.contains(&v_id2) {
+                    end_idx2 = (end_idx2 + 1) % len2;
+                    v_id2 = one_ring_v_ids2[end_idx2];
+
+                    #[cfg(feature = "rerun")]
+                    self.log_vert_rerun("pairs_end_idx2", v_id2);
+                }
+
+                end_cap = ConnectPairCap::AlreadyConnected;
+            } else if connected_v_ids.contains(&v_id2) {
+                while !connected_v_ids.contains(&v_id1) {
+                    end_idx1 = (end_idx1 + 1) % len1;
+                    v_id1 = one_ring_v_ids1[end_idx1];
+
+                    #[cfg(feature = "rerun")]
+                    self.log_vert_rerun("pairs_end_idx1", v_id1);
+                }
+
+                end_cap = ConnectPairCap::AlreadyConnected;
             }
 
-            if shared {
+            if !matches!(end_cap, ConnectPairCap::Open) {
                 range_pairs_to_connect.push(ConnectPair::new(
                     start_idx1..=end_idx1,
                     len1,
                     start_idx2..=end_idx2,
                     len2,
-                    true,
+                    start_cap,
+                    end_cap,
                 ));
 
                 let mut idx = start_idx1;
-                while idx != end_idx1 {
+                loop {
                     connected_v_ids.insert(one_ring_v_ids1[idx]);
-                    idx = (idx + 1) % len1;
+                    let next_idx = (idx + 1) % len1;
+                    if next_idx == end_idx1 {
+                        break;
+                    }
+                    let he_id = one_ring_he_ids1[idx];
+                    connected_he_ids.insert(he_id);
+                    // halfedge existence already checked in `one_ring()`
+                    if let Some(twin_id) = self.halfedges[he_id].twin {
+                        connected_he_ids.insert(twin_id);
+                    } else {
+                        error!("halfedge {:?} has no twin", he_id);
+                    }
+                    idx = next_idx;
                 }
                 idx = start_idx2;
-                while idx != end_idx2 {
+                loop {
                     connected_v_ids.insert(one_ring_v_ids2[idx]);
-                    idx = (idx + 1) % len2;
+                    let next_idx = (idx + 1) % len2;
+                    if next_idx == end_idx2 {
+                        break;
+                    }
+                    let he_id = one_ring_he_ids2[idx];
+                    connected_he_ids.insert(he_id);
+                    // halfedge existence already checked in `one_ring()`
+                    if let Some(twin_id) = self.halfedges[he_id].twin {
+                        connected_he_ids.insert(twin_id);
+                    } else {
+                        error!("halfedge {:?} has no twin", he_id);
+                    }
+                    idx = next_idx;
                 }
 
-                if let Some((idx1, idx2)) = self.find_start_indices(
+                if let Some((idx1, idx2, start)) = self.find_start_indices(
                     one_ring_v_ids1,
                     one_ring_v_ids2,
+                    one_ring_he_ids1,
+                    one_ring_he_ids2,
                     shared_v_ids,
+                    shared_he_ids,
                     &connected_v_ids,
+                    &connected_he_ids,
                 ) {
                     start_idx1 = idx1;
                     start_idx2 = idx2;
+                    start_cap = start;
                 } else {
                     return range_pairs_to_connect;
                 }
@@ -591,10 +1060,14 @@ impl MeshGraph {
         let diff2 = (start_idx2 as i32 - end_idx2 as i32).unsigned_abs() as usize;
         let diff2 = diff2.min(len2 - diff2);
 
-        let closed = !shared_v_ids.is_empty();
+        let cap = if shared_v_ids.is_empty() {
+            ConnectPairCap::Open
+        } else {
+            ConnectPairCap::Closed
+        };
 
         if range_pairs_to_connect.is_empty() {
-            let (end1, end2) = if closed {
+            let (end1, end2) = if matches!(cap, ConnectPairCap::Closed) {
                 (orig_start_idx1, orig_start_idx2)
             } else {
                 (
@@ -608,7 +1081,8 @@ impl MeshGraph {
                 len1,
                 orig_start_idx2..=end2,
                 len2,
-                closed,
+                cap,
+                cap,
             ));
         } else if diff1 > 1 || diff2 > 1 || range_pairs_to_connect.is_empty() {
             range_pairs_to_connect.push(ConnectPair::new(
@@ -616,7 +1090,8 @@ impl MeshGraph {
                 len1,
                 start_idx2..=end_idx2,
                 len2,
-                closed,
+                cap,
+                cap,
             ));
         }
 
@@ -652,38 +1127,71 @@ impl MeshGraph {
         &self,
         one_ring_v_ids: &[VertexId],
         other_one_ring_v_ids: &[VertexId],
+        one_ring_he_ids: &[HalfedgeId],
+        other_one_ring_he_ids: &[HalfedgeId],
         shared_v_ids: &HashSet<VertexId>,
+        shared_he_ids: &HashSet<HalfedgeId>,
         connected_v_ids: &HashSet<VertexId>,
-    ) -> Option<(usize, usize)> {
+        connected_he_ids: &HashSet<HalfedgeId>,
+    ) -> Option<(usize, usize, ConnectPairCap)> {
         let len = one_ring_v_ids.len();
+        let other_len = other_one_ring_v_ids.len();
 
-        for (idx, &v_id1) in one_ring_v_ids.iter().enumerate() {
-            if self.vertices.contains_key(v_id1)
-                && !shared_v_ids.contains(&v_id1)
-                && !connected_v_ids.contains(&v_id1)
+        debug_assert_eq!(len, one_ring_he_ids.len());
+        debug_assert_eq!(other_len, other_one_ring_he_ids.len());
+
+        for (he_idx, &he_id1) in one_ring_he_ids.iter().enumerate() {
+            if self.halfedges.contains_key(he_id1)
+                && !shared_he_ids.contains(&he_id1)
+                && !connected_he_ids.contains(&he_id1)
             {
-                let mut start_idx = idx;
-                let mut start_v_id = &v_id1;
+                // walk backwards until we find a connection between the two one-rings
 
-                while self.vertices.contains_key(*start_v_id)
+                let mut start_idx = he_idx;
+                let mut start_he_id = &one_ring_he_ids[start_idx];
+
+                let mut start_v_id = &one_ring_v_ids[start_idx];
+
+                while self.halfedges.contains_key(*start_he_id)
+                    && !shared_he_ids.contains(start_he_id)
+                    && !connected_he_ids.contains(start_he_id)
+                    && self.vertices.contains_key(*start_v_id)
                     && !shared_v_ids.contains(start_v_id)
                     && !connected_v_ids.contains(start_v_id)
                 {
                     start_idx = (start_idx + len - 1) % len;
+                    start_he_id = &one_ring_he_ids[start_idx];
                     start_v_id = &one_ring_v_ids[start_idx];
 
-                    if start_idx == idx {
+                    if start_idx == he_idx {
                         return None;
                     }
                 }
 
-                return Some((
-                    start_idx,
-                    other_one_ring_v_ids
-                        .iter()
-                        .position(|v_id| start_v_id == v_id)
-                        .unwrap(),
-                ));
+                // find the corresponding vertex in the other one-ring
+
+                // either it's the same vertex ...
+                if let Some(other_idx) = other_one_ring_v_ids
+                    .iter()
+                    .position(|v_id| start_v_id == v_id)
+                {
+                    return Some((start_idx, other_idx, ConnectPairCap::Closed));
+                }
+
+                // ... or it's a different vertex that is connected by a halfedge
+                for (other_idx, &other_v_id) in other_one_ring_v_ids.iter().enumerate() {
+                    if self.halfedge_from_to(*start_v_id, other_v_id).is_some() {
+                        let other_he_id = &other_one_ring_he_ids[other_idx];
+
+                        if !shared_he_ids.contains(other_he_id)
+                            && !connected_he_ids.contains(other_he_id)
+                        {
+                            return Some((start_idx, other_idx, ConnectPairCap::AlreadyConnected));
+                        }
+                    }
+                }
+
+                return None;
             }
         }
 
@@ -695,39 +1203,25 @@ impl MeshGraph {
         &self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
+        one_ring_he_ids1: &[HalfedgeId],
+        one_ring_he_ids2: &[HalfedgeId],
         shared_v_ids: &HashSet<VertexId>,
+        shared_he_ids: &HashSet<HalfedgeId>,
         connected_v_ids: &HashSet<VertexId>,
-    ) -> Option<(usize, usize)> {
-        if !shared_v_ids.is_empty() {
-            if let Some(indices) = self.find_shared_start_indices_from_ring(
+        connected_he_ids: &HashSet<HalfedgeId>,
+    ) -> Option<(usize, usize, ConnectPairCap)> {
+        if !shared_v_ids.is_empty() || !connected_v_ids.is_empty() {
+            self.find_shared_start_indices_from_ring(
                 one_ring_v_ids1,
                 one_ring_v_ids2,
+                one_ring_he_ids1,
+                one_ring_he_ids2,
                 shared_v_ids,
+                shared_he_ids,
                 connected_v_ids,
-            ) {
-                Some(indices)
-            } else if let Some((idx2, idx1)) = self.find_shared_start_indices_from_ring(
-                one_ring_v_ids2,
-                one_ring_v_ids1,
-                shared_v_ids,
-                connected_v_ids,
-            ) {
-                Some((idx1, idx2))
-            } else {
-                None
-            }
+                connected_he_ids,
+            )
         } else {
-            for (idx1, &v_id1) in one_ring_v_ids1.iter().enumerate() {
-                for (idx2, &v_id2) in one_ring_v_ids2.iter().enumerate() {
-                    if self.halfedge_from_to(v_id1, v_id2).is_some() {
-                        tracing::info!(
-                            "Found common edge between vertices {idx1} (id {v_id1:?}) and {idx2} (id {v_id2:?})"
-                        );
-                        return Some((idx1, idx2));
-                    }
-                }
-            }
-
             let first_v_id = one_ring_v_ids1[0];
             let first_pos = *self
                 .positions
@@ -751,16 +1245,29 @@ impl MeshGraph {
                 }
             }
 
-            Some((0, start_idx2))
+            Some((0, start_idx2, ConnectPairCap::Open))
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectPairCap {
+    /// Indices reference the same vertex, thus forming a closed polygon.
+    Closed,
+    /// Indices reference different vertices, thus forming an open polygon.
+    Open,
+    /// Indices are already connected by neighboring faces, so no need to connect them again.
+    AlreadyConnected,
 }
 
 /// Two ranges of elements that need to be connected by faces.
 #[derive(Debug)]
 struct ConnectPair {
-    /// Wether the first and last indices in the two ranges reference the same vertex, thus forming a closed polygon.
-    closed: bool,
+    /// Wether the first indices in the two ranges reference the same vertex, thus forming a closed polygon.
+    start_cap: ConnectPairCap,
+
+    /// Wether the last indices in the two ranges reference the same vertex, thus forming a closed polygon.
+    end_cap: ConnectPairCap,
 
     /// The pair of ranges of vertex indices that need to be connected.
     ranges: [RangeInclusive<usize>; 2],
@@ -772,7 +1279,8 @@ impl ConnectPair {
         len1: usize,
         mut range2: RangeInclusive<usize>,
         len2: usize,
-        closed: bool,
+        start_cap: ConnectPairCap,
+        end_cap: ConnectPairCap,
     ) -> Self {
         if range1.end() <= range1.start() {
             range1 = (*range1.start())..=(*range1.end() + len1);
@@ -781,8 +1289,14 @@ impl ConnectPair {
             range2 = (*range2.start())..=(*range2.end() + len2);
         }
 
+        debug_assert!(
+            (start_cap != ConnectPairCap::Open || start_cap == end_cap)
+                && (end_cap != ConnectPairCap::Open || end_cap == start_cap)
+        );
+
         ConnectPair {
-            closed,
+            start_cap,
+            end_cap,
             ranges: [range1, range2],
         }
     }
@@ -849,7 +1363,7 @@ impl ConnectPair {
 }
 
 /// Pairs one element from one range with one or more elements from the other range.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Pairing {
     /// The index of the range in which each single element is paired to one or more elements in the other range.
     /// Can only be `0` or `1`.
@@ -863,6 +1377,66 @@ struct Pairing {
 }
 
 impl Pairing {
+    fn new_triangle(
+        single_range_idx: usize,
+        single_idx_in_range: usize,
+        other_idx1: usize,
+        other_idx2: usize,
+        other_len: usize,
+    ) -> Self {
+        let other_range = if (other_idx1 as i32 - other_idx2 as i32).abs() == 1 {
+            other_idx1.min(other_idx2)..=other_idx1.max(other_idx2)
+        } else {
+            other_idx1.max(other_idx2)..=other_idx1.min(other_idx2) + other_len
+        };
+
+        debug_assert_eq!(other_range.end() - other_range.start(), 1);
+
+        Self {
+            single_range_idx,
+            single_idx_in_range,
+            other_range,
+        }
+    }
+
+    fn other_he_ids(
+        &self,
+        v_ids: [&[VertexId]; 2],
+        mesh_graph: &MeshGraph,
+    ) -> impl Iterator<Item = HalfedgeId> {
+        let other_ids = &v_ids[1 - self.single_range_idx];
+
+        other_ids
+            .iter()
+            .tuple_windows()
+            .filter_map(|(v_id, next_v_id)| {
+                mesh_graph
+                    .halfedge_from_to(*v_id, *next_v_id)
+                    .or_else(error_none!(
+                        "Halfedge not found from {v_id:?} to {next_v_id:?}"
+                    ))
+            })
+    }
+
+    fn all_vertex_ids(&self, v_ids: [&[VertexId]; 2]) -> Vec<VertexId> {
+        let single_ids = &v_ids[self.single_range_idx];
+        let other_ids = &v_ids[1 - self.single_range_idx];
+
+        let mut all_ids = vec![];
+
+        all_ids.push(single_ids[self.single_idx_in_range % single_ids.len()]);
+
+        let mut idx = *self.other_range.start() % other_ids.len();
+        all_ids.push(other_ids[idx]);
+        while idx != *self.other_range.end() % other_ids.len() {
+            idx += 1;
+            idx %= other_ids.len();
+            all_ids.push(other_ids[idx]);
+        }
+
+        all_ids
+    }
+
     fn first_pair(&self, v_ids: [&[VertexId]; 2]) -> (VertexId, VertexId) {
         let single_ids = &v_ids[self.single_range_idx];
         let other_ids = &v_ids[1 - self.single_range_idx];
@@ -884,13 +1458,17 @@ impl Pairing {
     }
 
     fn fill_faces(&self, v_ids: [&[VertexId]; 2]) -> Vec<PlannedFace> {
-        let single_ids = &v_ids[self.single_range_idx];
-        let other_ids = &v_ids[1 - self.single_range_idx];
+        let single_ids = v_ids[self.single_range_idx];
+        let other_ids = v_ids[1 - self.single_range_idx];
 
         let single_v_id = single_ids[self.single_idx_in_range % single_ids.len()];
         let mut faces = Vec::<PlannedFace>::new();
 
         let mut others = self.other_range.clone();
+
+        if others.start() == others.end() {
+            return faces;
+        }
 
         let mut prev_other_v_id = other_ids[others.next().unwrap() % other_ids.len()];
         let mut face_order = PlannedFaceOrder::Middle;
@@ -935,8 +1513,66 @@ impl Pairing {
 
         faces
     }
+
+    #[cfg(feature = "rerun")]
+    fn log_rerun(
+        &self,
+        label: impl AsRef<str>,
+        v_ids: [&[VertexId]; 2],
+        mesh_graph: &MeshGraph,
+    ) -> Option<()> {
+        use crate::utils::vec3_array;
+
+        let single_v_ids = v_ids[self.single_range_idx];
+        let other_v_ids = v_ids[1 - self.single_range_idx];
+
+        let single_v_id = single_v_ids[self.single_idx_in_range];
+        let single_pos = vec3_array(mesh_graph.positions.get(single_v_id)?);
+
+        let mut other_pos = vec![];
+        let mut idx = self.other_range.start() % other_v_ids.len();
+
+        other_pos.push(vec3_array(mesh_graph.positions.get(other_v_ids[idx])?));
+        while idx != *self.other_range.end() % other_v_ids.len() {
+            idx += 1;
+            idx %= other_v_ids.len();
+            other_pos.push(vec3_array(mesh_graph.positions.get(other_v_ids[idx])?));
+        }
+
+        crate::RR
+            .log(
+                format!("pairing/{}/single", label.as_ref()),
+                &rerun::Points3D::new([single_pos.clone()]),
+            )
+            .unwrap();
+        crate::RR
+            .log(
+                format!("pairing/{}/other", label.as_ref()),
+                &rerun::LineStrips3D::new(
+                    other_pos
+                        .into_iter()
+                        .map(|other_pos| [single_pos.clone(), other_pos]),
+                ),
+            )
+            .unwrap();
+
+        Some(())
+    }
 }
 
+/// Represents a triangle that is planned to be added to the mesh graph.
+///
+/// v1 ()◀───────────────() new_he_v2
+///      ╲              ▲
+///       ╲            ╱
+///        ╲          ╱
+///         ╲        ╱
+///          ╲      ╱
+///           ╲    ╱
+///            ▼  ╱
+///             ()
+///         new_he_v1
+///
 #[derive(Debug)]
 struct PlannedFace {
     order: PlannedFaceOrder,
@@ -969,77 +1605,44 @@ impl PlannedFace {
     }
 
     #[instrument(skip(mesh_graph))]
-    fn add_to_meshgraph(
+    fn add_to_mesh_graph(
         &self,
         mesh_graph: &mut MeshGraph,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
-        mesh_graph.log_verts_w_labels_rerun(
-            "add_to_meshgraph",
-            &[self.v1, self.new_he_v1, self.new_he_v2],
-            &["1", "2", "3"],
-        );
+        self.log_rerun("add_to_mesh_graph", mesh_graph);
 
-        let add_or_get_edge = mesh_graph.add_or_get_edge(self.v1, self.new_he_v1);
+        let add_or_get_edge1 = mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1);
+        let add_or_get_edge2 = mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2);
 
-        let (start_to_end_he_id, twin_he_id) = match self.order {
-            PlannedFaceOrder::Start => {
-                let AddEdge {
-                    start_to_end_he_id,
-                    twin_he_id,
-                } = mesh_graph.add_edge(self.new_he_v1, self.new_he_v2);
+        let mut add_face = mesh_graph.add_face_from_halfedges(
+            add_or_get_edge1.start_to_end_he_id,
+            add_or_get_edge2.start_to_end_he_id,
+        )?;
 
-                (start_to_end_he_id, twin_he_id)
-            }
-            PlannedFaceOrder::Single => (
-                mesh_graph.halfedge_from_to(self.new_he_v1, self.new_he_v2)?,
-                mesh_graph.halfedge_from_to(self.new_he_v2, self.new_he_v1)?,
-            ),
-            _ => {
-                error!("Invalid face order {:?}", self.order);
-                return None;
-            }
-        };
-
-        let he = mesh_graph
-            .halfedges
-            .get(add_or_get_edge.start_to_end_he_id)
-            .or_else(error_none!("Halfedge not found"))?;
-
-        let add_or_get_edge = if he.is_boundary() {
-            add_or_get_edge
-        } else {
-            let AddEdge {
-                start_to_end_he_id,
-                twin_he_id,
-            } = mesh_graph.add_edge(self.v1, self.new_he_v1);
-
-            AddOrGetEdge {
-                start_to_end_he_id,
-                twin_he_id,
-                new_start_to_end: true,
-                new_twin: true,
-            }
-        };
-
-        let mut add_face = mesh_graph
-            .add_face_from_halfedges(add_or_get_edge.start_to_end_he_id, start_to_end_he_id)?;
-
-        add_face.halfedge_ids.push(start_to_end_he_id);
-        add_face.halfedge_ids.push(twin_he_id);
-
-        if add_or_get_edge.new_start_to_end {
+        if add_or_get_edge1.new_start_to_end {
             add_face
                 .halfedge_ids
-                .push(add_or_get_edge.start_to_end_he_id);
+                .push(add_or_get_edge1.start_to_end_he_id);
         }
-        if add_or_get_edge.new_twin {
-            add_face.halfedge_ids.push(add_or_get_edge.twin_he_id);
+        if add_or_get_edge1.new_twin {
+            add_face.halfedge_ids.push(add_or_get_edge1.twin_he_id);
+        }
+        if add_or_get_edge2.new_start_to_end {
+            add_face
+                .halfedge_ids
+                .push(add_or_get_edge2.start_to_end_he_id);
+        }
+        if add_or_get_edge2.new_twin {
+            add_face.halfedge_ids.push(add_or_get_edge2.twin_he_id);
         }
 
         Some((
-            if matches!(self.order, PlannedFaceOrder::Start) {
-                Some(twin_he_id)
+            if matches!(
+                self.order,
+                PlannedFaceOrder::Start | PlannedFaceOrder::Middle
+            ) {
+                Some(add_or_get_edge2.twin_he_id)
             } else {
                 None
             },
@@ -1048,19 +1651,15 @@ impl PlannedFace {
     }
 
     #[instrument(skip(mesh_graph))]
-    fn add_to_meshgraph_and_he(
+    fn add_to_mesh_graph_and_he(
         &self,
         mesh_graph: &mut MeshGraph,
         existing_he_id: HalfedgeId,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
         {
-            mesh_graph.log_he_rerun("add_meshgraph_and_he", existing_he_id);
-            mesh_graph.log_verts_w_labels_rerun(
-                "add_to_meshgraph_and_he",
-                &[self.v1, self.new_he_v1, self.new_he_v2],
-                &["1", "2", "3"],
-            );
+            mesh_graph.log_he_rerun("add_mesh_graph_and_he", existing_he_id);
+            self.log_rerun("add_to_mesh_graph_and_he", mesh_graph);
         }
 
         match self.order {
@@ -1078,11 +1677,19 @@ impl PlannedFace {
                 Some((Some(twin_he_id), add_face))
             }
             PlannedFaceOrder::End => {
-                let end_he = mesh_graph
-                    .halfedge_from_to(self.new_he_v1, self.new_he_v2)
-                    .or_else(error_none!("Final halfedge not found"))?;
+                let add_or_get_edge =
+                    mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2);
 
-                let add_face = mesh_graph.add_face_from_halfedges(existing_he_id, end_he)?;
+                let mut add_face = mesh_graph
+                    .add_face_from_halfedges(existing_he_id, add_or_get_edge.start_to_end_he_id)?;
+                if add_or_get_edge.new_start_to_end {
+                    add_face
+                        .halfedge_ids
+                        .push(add_or_get_edge.start_to_end_he_id);
+                }
+                if add_or_get_edge.new_twin {
+                    add_face.halfedge_ids.push(add_or_get_edge.twin_he_id);
+                }
 
                 Some((None, add_face))
             }
@@ -1091,5 +1698,36 @@ impl PlannedFace {
                 None
             }
         }
+    }
+
+    #[cfg(feature = "rerun")]
+    fn log_rerun(&self, label: &str, mesh_graph: &MeshGraph) {
+        use crate::{RR, utils::vec3_array};
+
+        let (positions, labels): (Vec<_>, Vec<_>) =
+            [(self.v1, "1"), (self.new_he_v1, "2"), (self.new_he_v2, "3")]
+                .into_iter()
+                .filter_map(|(v_id, labl)| {
+                    mesh_graph.positions.get(v_id).and_then(|a| Some((a, labl)))
+                })
+                .unzip();
+
+        RR.log(
+            format!("meshgraph/planned_face/{label}/positions"),
+            &rerun::Points3D::new(positions.iter().map(vec3_array)).with_labels(labels),
+        )
+        .unwrap();
+
+        RR.log(
+            format!("meshgraph/planned_face/{label}/edges"),
+            &rerun::Arrows3D::from_vectors(
+                positions
+                    .iter()
+                    .circular_tuple_windows()
+                    .map(|(a, b)| vec3_array(*b - *a)),
+            )
+            .with_origins(positions.iter().map(vec3_array)),
+        )
+        .unwrap();
     }
 }

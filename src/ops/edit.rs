@@ -22,6 +22,9 @@ impl MeshGraph {
     /// ```
     #[instrument(skip(self))]
     pub fn flip_edge(&mut self, halfedge_id: HalfedgeId) {
+        #[cfg(feature = "rerun")]
+        self.log_he_rerun("flip", halfedge_id);
+
         let he = unwrap_or_return!(self.halfedges.get(halfedge_id), "Halfedge not found");
 
         let prev_he_id = unwrap_or_return!(he.prev(self), "Prev not found");
