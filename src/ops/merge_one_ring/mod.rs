@@ -951,7 +951,6 @@ impl MeshGraph {
                     start_idx2..=end_idx2,
                     len2,
                     start_cap,
-                    end_cap,
                 ));
 
                 self.remember_range_pair_connections(
@@ -1043,7 +1042,6 @@ impl MeshGraph {
                 orig_start_idx2..=end2,
                 len2,
                 cap,
-                cap,
             ));
         } else if diff1 > 1 || diff2 > 1 || range_pairs_to_connect.is_empty() {
             range_pairs_to_connect.push(ConnectPair::new(
@@ -1051,7 +1049,6 @@ impl MeshGraph {
                 len1,
                 start_idx2..=end_idx2,
                 len2,
-                cap,
                 cap,
             ));
         }
@@ -1291,9 +1288,6 @@ struct ConnectPair {
     /// Wether the first indices in the two ranges reference the same vertex, thus forming a closed polygon.
     start_cap: ConnectPairCap,
 
-    /// Wether the last indices in the two ranges reference the same vertex, thus forming a closed polygon.
-    end_cap: ConnectPairCap,
-
     /// The pair of ranges of vertex indices that need to be connected.
     ranges: [RangeInclusive<usize>; 2],
 }
@@ -1305,7 +1299,6 @@ impl ConnectPair {
         mut range2: RangeInclusive<usize>,
         len2: usize,
         start_cap: ConnectPairCap,
-        end_cap: ConnectPairCap,
     ) -> Self {
         if range1.end() <= range1.start() {
             range1 = (*range1.start())..=(*range1.end() + len1);
@@ -1314,14 +1307,8 @@ impl ConnectPair {
             range2 = (*range2.start())..=(*range2.end() + len2);
         }
 
-        debug_assert!(
-            start_cap == end_cap
-                || start_cap != ConnectPairCap::Open && end_cap != ConnectPairCap::Open
-        );
-
         ConnectPair {
             start_cap,
-            end_cap,
             ranges: [range1, range2],
         }
     }
