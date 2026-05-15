@@ -10,8 +10,8 @@ pub fn main() {
         .pretty()
         .init();
 
-    let mut meshgraph =
-        gltf::load("src/ops/merge_one_ring/glb/merge_common_double_flap.glb").unwrap();
+    let mut meshgraph = gltf::load("src/ops/merge_one_ring/glb/merge_4_4.glb").unwrap();
+    meshgraph.compute_vertex_normals();
 
     #[cfg(feature = "rerun")]
     meshgraph.log_rerun();

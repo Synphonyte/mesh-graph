@@ -8,7 +8,7 @@ use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{
-    AddEdge, AddOrGetEdge, FaceId, HalfedgeId, MeshGraph, Vertex, VertexId, error_none,
+    AddEdge, FaceId, HalfedgeId, MeshGraph, Vertex, VertexId, error_none,
     ops::{add::AddFace, collapse::CollapseEdge},
     utils::unwrap_or_return,
 };
@@ -46,7 +46,16 @@ impl MeshGraph {
         let vertex2 = *unwrap_or_return!(self.vertices.get(vertex_id2), "Vertex not found", result);
 
         let one_ring_he_ids1 = vertex1.one_ring(self).collect_vec();
-        let mut one_ring_he_ids2 = vertex2.one_ring(self).collect_vec();
+        let mut one_ring_he_ids2 = vertex2
+            .one_ring(self)
+            // halfedges are reversed, so twin halfedges are actually the next halfedges.
+            // also existence is checked in `one_ring()`.
+            .filter_map(|he_id| {
+                self.halfedges[he_id]
+                    .twin
+                    .or_else(error_none!("Twin not found"))
+            })
+            .collect_vec();
         one_ring_he_ids2.reverse();
 
         // halfedges' existence already checked in `one_ring()`.
@@ -55,10 +64,12 @@ impl MeshGraph {
             .map(|he_id| self.halfedges[*he_id].end_vertex)
             .collect_vec();
         one_ring_v_ids1.rotate_right(1);
-        let one_ring_v_ids2 = one_ring_he_ids2
+        let mut one_ring_v_ids2 = one_ring_he_ids2
             .iter()
             .map(|he_id| self.halfedges[*he_id].end_vertex)
             .collect_vec();
+        one_ring_v_ids2.rotate_right(1);
+
         if one_ring_v_ids1.len() < 3 || one_ring_v_ids2.len() < 3 {
             error!("One rings are too small");
             return result;
@@ -84,7 +95,7 @@ impl MeshGraph {
         #[cfg(feature = "rerun")]
         self.log_rerun();
 
-        let (already_connected_pairings, connected_v_ids, connected_he_ids) = unwrap_or_return!(
+        let (already_connected_face_ids, connected_v_ids, connected_he_ids) = unwrap_or_return!(
             self.find_already_connected_pairings(
                 &one_ring_v_ids1,
                 &one_ring_v_ids2,
@@ -93,6 +104,12 @@ impl MeshGraph {
             "Error in find_already_connected_pairings",
             result
         );
+
+        #[cfg(feature = "rerun")]
+        {
+            self.log_faces_rerun("already_connected", &already_connected_face_ids);
+            self.log_hes_rerun("already_connected", &connected_he_ids);
+        }
 
         let range_pairs_to_connect = self.compute_range_pairs_to_connect(
             &one_ring_v_ids1,
@@ -112,12 +129,15 @@ impl MeshGraph {
 
         tracing::info!("Range pairs to connect: {range_pairs_to_connect:#?}");
 
-        let planned_faces = self.plan_new_faces(
-            &range_pairs_to_connect,
-            already_connected_pairings,
-            &one_ring_v_ids1,
-            &one_ring_v_ids2,
-        );
+        let planned_faces =
+            self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
+
+        for face_id in already_connected_face_ids {
+            let (v_ids, he_ids) = self.remove_face(face_id);
+            result.removed_faces.push(face_id);
+            result.removed_halfedges.extend(he_ids);
+            result.removed_vertices.extend(v_ids);
+        }
 
         self.add_planned_faces(
             planned_faces,
@@ -155,10 +175,10 @@ impl MeshGraph {
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
         shared_v_ids: &HashSet<VertexId>,
-    ) -> Option<(Vec<Vec<Pairing>>, HashSet<VertexId>, HashSet<HalfedgeId>)> {
-        let mut already_connected_pairings = vec![];
+    ) -> Option<(Vec<FaceId>, HashSet<VertexId>, HashSet<HalfedgeId>)> {
         let mut connected_v_ids = HashSet::new();
         let mut connected_he_ids = HashSet::new();
+        let mut already_connected_face_ids = vec![];
 
         for ((idx1, &v_id1), (idx2, &v_id2)) in one_ring_v_ids1
             .iter()
@@ -186,6 +206,7 @@ impl MeshGraph {
                     one_ring_v_ids1,
                     one_ring_v_ids2,
                     &mut connected_he_ids,
+                    &mut already_connected_face_ids,
                 )?;
 
                 #[cfg(feature = "rerun")]
@@ -201,6 +222,7 @@ impl MeshGraph {
                     &pairing,
                     -1,
                     &mut connected_he_ids,
+                    &mut already_connected_face_ids,
                 );
 
                 connected_pairings.push(pairing.clone());
@@ -211,6 +233,7 @@ impl MeshGraph {
                     &pairing,
                     1,
                     &mut connected_he_ids,
+                    &mut already_connected_face_ids,
                 ));
 
                 for pairing in &connected_pairings {
@@ -218,13 +241,11 @@ impl MeshGraph {
                         connected_v_ids.insert(v_id);
                     }
                 }
-
-                already_connected_pairings.push(connected_pairings);
             }
         }
 
         Some((
-            already_connected_pairings,
+            already_connected_face_ids,
             connected_v_ids,
             connected_he_ids,
         ))
@@ -237,6 +258,7 @@ impl MeshGraph {
         pairing: &Pairing,
         idx_step: i32,
         connected_he_ids: &mut HashSet<HalfedgeId>,
+        connected_face_ids: &mut Vec<FaceId>,
     ) -> Vec<Pairing> {
         let (single_v_ids, other_v_ids) = if pairing.single_range_idx == 0 {
             (one_ring_v_ids1, one_ring_v_ids2)
@@ -278,6 +300,7 @@ impl MeshGraph {
                 one_ring_v_ids2,
                 &mut current_pairing,
                 connected_he_ids,
+                connected_face_ids,
             );
 
             #[cfg(feature = "rerun")]
@@ -293,6 +316,7 @@ impl MeshGraph {
                 &current_pairing,
                 idx_step,
                 connected_he_ids,
+                connected_face_ids,
             );
 
             pairings.push(current_pairing);
@@ -302,6 +326,7 @@ impl MeshGraph {
         pairings
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn find_triangle_fan(
         &self,
         he_id: HalfedgeId,
@@ -310,6 +335,7 @@ impl MeshGraph {
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
         connected_he_ids: &mut HashSet<HalfedgeId>,
+        connected_face_ids: &mut Vec<FaceId>,
     ) -> Option<Pairing> {
         let he = self
             .halfedges
@@ -326,8 +352,6 @@ impl MeshGraph {
         let Some(opposite_v_id) = he.opposite_vertex(self) else {
             return Some(current_pairing);
         };
-
-        self.log_vert_rerun("find_triangle_fan/opposite_v1", opposite_v_id);
 
         if !self.create_triangle_pairing(
             one_ring_v_ids1,
@@ -348,8 +372,6 @@ impl MeshGraph {
                 return Some(current_pairing);
             };
 
-            self.log_vert_rerun("find_triangle_fan/opposite_v2", opposite_v_id);
-
             if !self.create_triangle_pairing(
                 one_ring_v_ids1,
                 one_ring_v_ids2,
@@ -368,6 +390,7 @@ impl MeshGraph {
             one_ring_v_ids2,
             &mut current_pairing,
             connected_he_ids,
+            connected_face_ids,
         );
 
         Some(current_pairing)
@@ -404,6 +427,7 @@ impl MeshGraph {
         one_ring_v_ids2: &[VertexId],
         current_pairing: &mut Pairing,
         connected_he_ids: &mut HashSet<HalfedgeId>,
+        connected_face_ids: &mut Vec<FaceId>,
     ) {
         let (single_ids, other_ids) = if current_pairing.single_range_idx == 0 {
             (one_ring_v_ids1, one_ring_v_ids2)
@@ -426,6 +450,7 @@ impl MeshGraph {
             "failed to find start face for pairing fan"
         );
         self.add_face_to_connected_he_ids(start_face_id, connected_he_ids);
+        connected_face_ids.push(start_face_id);
 
         loop {
             // Wrap backwards (using saturating to avoid underflow; handle wrap via modular arithmetic)
@@ -444,6 +469,7 @@ impl MeshGraph {
                 current_pairing.other_range = range_start..=*current_pairing.other_range.end();
 
                 self.add_face_to_connected_he_ids(face_id, connected_he_ids);
+                connected_face_ids.push(face_id);
             } else {
                 break;
             }
@@ -461,6 +487,7 @@ impl MeshGraph {
                 current_pairing.other_range = *current_pairing.other_range.start()..=range_end;
 
                 self.add_face_to_connected_he_ids(face_id, connected_he_ids);
+                connected_face_ids.push(face_id);
             } else {
                 break;
             }
@@ -579,7 +606,10 @@ impl MeshGraph {
                 planned_face.add_to_mesh_graph(self)
             };
 
-            let inserted = unwrap_or_return!(inserted, "Failed to add face");
+            let Some(inserted) = inserted else {
+                // depending on the topology inserting a face can fail sometimes. this is fine.
+                continue;
+            };
 
             prev_he = inserted.0;
             let inserted = inserted.1;
@@ -670,7 +700,6 @@ impl MeshGraph {
     fn plan_new_faces(
         &self,
         range_pairs_to_connect: &[ConnectPair],
-        mut already_connected_pairings: Vec<Vec<Pairing>>,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
     ) -> Vec<PlannedFace> {
@@ -682,10 +711,6 @@ impl MeshGraph {
             let pairings = range_pair_to_connect.compute_pairings();
 
             tracing::info!("Pairings: {:#?}", pairings);
-            tracing::info!(
-                "Already connected pairings: {:#?}",
-                already_connected_pairings
-            );
 
             if pairings.is_empty() {
                 continue;
@@ -774,61 +799,12 @@ impl MeshGraph {
                 planned_faces[start_pairing_index].order = PlannedFaceOrder::Start;
             }
 
-            if matches!(
-                range_pair_to_connect.end_cap,
-                ConnectPairCap::AlreadyConnected
-            ) {
-                let mut connected_idx = None;
-
-                for (i, connected_strip_pairing) in already_connected_pairings.iter().enumerate() {
-                    let first_pairing = &connected_strip_pairing[0];
-                    let (single_v_id, other_v_id) =
-                        first_pairing.first_pair([one_ring_v_ids1, one_ring_v_ids2]);
-
-                    if Some(single_v_id) == prev_single_v_id && Some(other_v_id) == prev_other_v_id
-                        || Some(single_v_id) == prev_other_v_id
-                            && Some(other_v_id) == prev_single_v_id
-                    {
-                        for pairing in connected_strip_pairing {
-                            planned_faces
-                                .extend(pairing.fill_faces([one_ring_v_ids1, one_ring_v_ids2]));
-                        }
-
-                        connected_idx = Some(i);
-                        break;
-                    }
-                }
-
-                if let Some(connected_idx) = connected_idx {
-                    already_connected_pairings.remove(connected_idx);
-                }
-            }
-
             let len = planned_faces.len();
             planned_faces[len - 1].order = if len - 1 == start_pairing_index {
                 PlannedFaceOrder::Single
             } else {
                 PlannedFaceOrder::End
             };
-        }
-
-        for connected_strip_pairing in already_connected_pairings {
-            let start_pairing_index = planned_faces.len();
-
-            for pairing in connected_strip_pairing {
-                planned_faces.extend(pairing.fill_faces([one_ring_v_ids1, one_ring_v_ids2]));
-            }
-
-            let len = planned_faces.len();
-            planned_faces[len - 1].order = if len - 1 == start_pairing_index {
-                PlannedFaceOrder::Single
-            } else {
-                PlannedFaceOrder::End
-            };
-        }
-
-        for f in &planned_faces {
-            f.log_rerun("planned", self);
         }
 
         planned_faces
@@ -858,6 +834,7 @@ impl MeshGraph {
     }
 
     #[instrument(skip_all)]
+    #[allow(clippy::too_many_arguments)]
     fn compute_range_pairs_to_connect(
         &mut self,
         one_ring_v_ids1: &[VertexId],
@@ -919,6 +896,10 @@ impl MeshGraph {
             v_id1 = one_ring_v_ids1[end_idx1];
             v_id2 = one_ring_v_ids2[end_idx2];
 
+            if !self.vertices.contains_key(v_id1) || !self.vertices.contains_key(v_id2) {
+                break;
+            }
+
             let mut end_cap = ConnectPairCap::Open;
 
             if shared_v_ids.contains(&v_id1) {
@@ -973,40 +954,20 @@ impl MeshGraph {
                     end_cap,
                 ));
 
-                let mut idx = start_idx1;
-                loop {
-                    connected_v_ids.insert(one_ring_v_ids1[idx]);
-                    let next_idx = (idx + 1) % len1;
-                    if next_idx == end_idx1 {
-                        break;
-                    }
-                    let he_id = one_ring_he_ids1[idx];
-                    connected_he_ids.insert(he_id);
-                    // halfedge existence already checked in `one_ring()`
-                    if let Some(twin_id) = self.halfedges[he_id].twin {
-                        connected_he_ids.insert(twin_id);
-                    } else {
-                        error!("halfedge {:?} has no twin", he_id);
-                    }
-                    idx = next_idx;
-                }
-                idx = start_idx2;
-                loop {
-                    connected_v_ids.insert(one_ring_v_ids2[idx]);
-                    let next_idx = (idx + 1) % len2;
-                    if next_idx == end_idx2 {
-                        break;
-                    }
-                    let he_id = one_ring_he_ids2[idx];
-                    connected_he_ids.insert(he_id);
-                    // halfedge existence already checked in `one_ring()`
-                    if let Some(twin_id) = self.halfedges[he_id].twin {
-                        connected_he_ids.insert(twin_id);
-                    } else {
-                        error!("halfedge {:?} has no twin", he_id);
-                    }
-                    idx = next_idx;
-                }
+                self.remember_range_pair_connections(
+                    start_idx1,
+                    end_idx1,
+                    start_idx2,
+                    end_idx2,
+                    len1,
+                    len2,
+                    one_ring_v_ids1,
+                    one_ring_v_ids2,
+                    one_ring_he_ids1,
+                    one_ring_he_ids2,
+                    &mut connected_v_ids,
+                    &mut connected_he_ids,
+                );
 
                 if let Some((idx1, idx2, start)) = self.find_start_indices(
                     one_ring_v_ids1,
@@ -1123,6 +1084,69 @@ impl MeshGraph {
     }
 
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
+    fn remember_range_pair_connections(
+        &mut self,
+        start_idx1: usize,
+        end_idx1: usize,
+        start_idx2: usize,
+        end_idx2: usize,
+        len1: usize,
+        len2: usize,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        one_ring_he_ids1: &[HalfedgeId],
+        one_ring_he_ids2: &[HalfedgeId],
+        connected_v_ids: &mut HashSet<VertexId>,
+        connected_he_ids: &mut HashSet<HalfedgeId>,
+    ) {
+        let mut idx = start_idx1;
+        loop {
+            connected_v_ids.insert(one_ring_v_ids1[idx]);
+            if idx == end_idx1 {
+                break;
+            }
+            let he_id = one_ring_he_ids1[idx];
+            connected_he_ids.insert(he_id);
+
+            // could have been deleted by neighbor face deletion
+            if let Some(he) = self.halfedges.get(he_id) {
+                // halfedge existence already checked in `one_ring()`
+                if let Some(twin_id) = he.twin {
+                    connected_he_ids.insert(twin_id);
+                } else {
+                    error!("halfedge {:?} has no twin", he_id);
+                }
+            }
+
+            idx = (idx + 1) % len1;
+        }
+
+        idx = start_idx2;
+        loop {
+            connected_v_ids.insert(one_ring_v_ids2[idx]);
+            if idx == end_idx2 {
+                break;
+            }
+            let he_id = one_ring_he_ids2[idx];
+            connected_he_ids.insert(he_id);
+
+            // could have been deleted by neighbor face deletion
+            if let Some(he) = self.halfedges.get(he_id) {
+                // halfedge existence already checked in `one_ring()`
+                if let Some(twin_id) = he.twin {
+                    connected_he_ids.insert(twin_id);
+                } else {
+                    error!("halfedge {:?} has no twin", he_id);
+                }
+            }
+
+            idx = (idx + 1) % len2;
+        }
+    }
+
+    #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     fn find_shared_start_indices_from_ring(
         &self,
         one_ring_v_ids: &[VertexId],
@@ -1198,6 +1222,7 @@ impl MeshGraph {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[instrument(skip(self))]
     fn find_start_indices(
         &self,
@@ -1290,8 +1315,8 @@ impl ConnectPair {
         }
 
         debug_assert!(
-            (start_cap != ConnectPairCap::Open || start_cap == end_cap)
-                && (end_cap != ConnectPairCap::Open || end_cap == start_cap)
+            start_cap == end_cap
+                || start_cap != ConnectPairCap::Open && end_cap != ConnectPairCap::Open
         );
 
         ConnectPair {
@@ -1390,32 +1415,11 @@ impl Pairing {
             other_idx1.max(other_idx2)..=other_idx1.min(other_idx2) + other_len
         };
 
-        debug_assert_eq!(other_range.end() - other_range.start(), 1);
-
         Self {
             single_range_idx,
             single_idx_in_range,
             other_range,
         }
-    }
-
-    fn other_he_ids(
-        &self,
-        v_ids: [&[VertexId]; 2],
-        mesh_graph: &MeshGraph,
-    ) -> impl Iterator<Item = HalfedgeId> {
-        let other_ids = &v_ids[1 - self.single_range_idx];
-
-        other_ids
-            .iter()
-            .tuple_windows()
-            .filter_map(|(v_id, next_v_id)| {
-                mesh_graph
-                    .halfedge_from_to(*v_id, *next_v_id)
-                    .or_else(error_none!(
-                        "Halfedge not found from {v_id:?} to {next_v_id:?}"
-                    ))
-            })
     }
 
     fn all_vertex_ids(&self, v_ids: [&[VertexId]; 2]) -> Vec<VertexId> {

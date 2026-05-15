@@ -626,11 +626,11 @@ fn test_vertex_merge_common_double_flap() {
     }
 
     assert_eq!(result.removed_faces.len(), 9);
-    assert_eq!(result.removed_halfedges.len(), 23);
+    assert_eq!(result.removed_halfedges.len(), 22);
     assert_eq!(result.removed_vertices.len(), 3);
 
     assert_eq!(result.added_faces.len(), 3);
-    assert_eq!(result.added_halfedges.len(), 5);
+    assert_eq!(result.added_halfedges.len(), 4);
     assert_eq!(result.added_vertices.len(), 0);
 
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
@@ -751,14 +751,15 @@ fn test_vertex_merge_common_one_4_9() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 15);
-    assert_eq!(result.removed_halfedges.len(), 35);
-    assert_eq!(result.removed_vertices.len(), 3);
+    assert_eq!(result.removed_faces.len(), 16);
+    assert_eq!(result.removed_halfedges.len(), 38);
+    assert_eq!(result.removed_vertices.len(), 4);
 
-    assert_eq!(result.added_faces.len(), 9);
-    assert_eq!(result.added_halfedges.len(), 17);
+    assert_eq!(result.added_faces.len(), 8);
+    assert_eq!(result.added_halfedges.len(), 14);
+    assert_eq!(result.added_vertices.len(), 0);
 
-    assert_eq!(marked_halfedges.len(), 17);
+    assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
     assert_eq!(marked_vertices.len(), 0);
 }
 
@@ -819,11 +820,11 @@ fn test_vertex_merge_connected_hes() {
     }
 
     assert_eq!(result.removed_faces.len(), 15);
-    assert_eq!(result.removed_halfedges.len(), 38);
+    assert_eq!(result.removed_halfedges.len(), 36);
     assert_eq!(result.removed_vertices.len(), 4);
 
     assert_eq!(result.added_faces.len(), 7);
-    assert_eq!(result.added_halfedges.len(), 14);
+    assert_eq!(result.added_halfedges.len(), 12);
     assert_eq!(result.added_vertices.len(), 0);
 
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
@@ -887,7 +888,7 @@ fn test_vertex_merge_common_two_vs_3_4() {
     }
 
     assert_eq!(result.removed_faces.len(), 8);
-    assert_eq!(result.removed_halfedges.len(), 18);
+    assert_eq!(result.removed_halfedges.len(), 20);
 
     assert_eq!(result.added_faces.len(), 2);
     assert_eq!(result.added_halfedges.len(), 2);
@@ -953,15 +954,15 @@ fn test_vertex_merge_common_two_consec_vs_one_he_9_10() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 20);
-    assert_eq!(result.removed_halfedges.len(), 45);
-    assert_eq!(result.removed_vertices.len(), 2);
+    assert_eq!(result.removed_faces.len(), 21);
+    assert_eq!(result.removed_halfedges.len(), 48);
+    assert_eq!(result.removed_vertices.len(), 3);
 
-    assert_eq!(result.added_faces.len(), 12);
-    assert_eq!(result.added_halfedges.len(), 23);
+    assert_eq!(result.added_faces.len(), 11);
+    assert_eq!(result.added_halfedges.len(), 18);
     assert_eq!(result.added_vertices.len(), 0);
 
-    assert_eq!(marked_halfedges.len(), 23);
+    assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
     assert_eq!(marked_vertices.len(), result.added_vertices.len());
 }
 
@@ -1155,11 +1156,11 @@ fn test_merge_4_4() {
     }
 
     assert_eq!(result.removed_faces.len(), 11);
-    assert_eq!(result.removed_halfedges.len(), 28);
+    assert_eq!(result.removed_halfedges.len(), 26);
     assert_eq!(result.removed_vertices.len(), 3);
 
     assert_eq!(result.added_faces.len(), 5);
-    assert_eq!(result.added_halfedges.len(), 10);
+    assert_eq!(result.added_halfedges.len(), 8);
     assert_eq!(result.added_vertices.len(), 0);
 
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
