@@ -21,7 +21,7 @@ derive_more = { version = "2", features = ["deref", "deref_mut"] }
 glam = "0.33"
 gltf = { version = "1.4", optional = true, features = ["extras"] }
 hashbrown = "0.17"
-itertools = "0.14"
+itertools = "0.15"
 lazy_static = { version = "1.5.0", optional = true }
 parry3d = "0.28"
 rerun = { version = "0.33", default-features = false, optional = true, features = [
