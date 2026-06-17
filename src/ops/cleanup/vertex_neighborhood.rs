@@ -276,7 +276,7 @@ impl MeshGraph {
             .outgoing_halfedges(self)
             .collect_vec();
 
-        for (he_id1, he_id2) in halfedges.into_iter().tuple_combinations() {
+        for [he_id1, he_id2] in halfedges.into_iter().array_combinations() {
             if self.halfedges_share_all_vertices(he_id1, he_id2) {
                 let he1 = self.halfedges[he_id1];
                 let twin_id1 = he1.twin.or_else(error_none!("Twin not found"))?;
@@ -418,7 +418,7 @@ impl MeshGraph {
             .faces(self)
             .collect_vec();
 
-        for (face_id1, face_id2) in faces.into_iter().tuple_combinations() {
+        for [face_id1, face_id2] in faces.into_iter().array_combinations() {
             if self.faces_share_all_vertices(face_id1, face_id2) {
                 let coincident_face_ids = self.vertices[vertex_id].faces(self).collect_vec();
                 let mut start_idx = 0;
@@ -718,7 +718,7 @@ impl MeshGraph {
 
                 // TODO : Handle the case when there is only one halfedge?
                 if halfedges_of_faces.len() >= 2 {
-                    for (he_id1, he_id2) in halfedges_of_faces.iter().copied().tuple_combinations()
+                    for [he_id1, he_id2] in halfedges_of_faces.iter().copied().array_combinations()
                     {
                         let Some(he1) = self.halfedges.get(he_id1) else {
                             // might have been deleted by prior iteration

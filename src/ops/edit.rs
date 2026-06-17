@@ -84,18 +84,17 @@ impl MeshGraph {
                 .collect();
 
             for (he_id, he) in face_hes {
-                if let Some(twin_id) = he.twin {
-                    if let Some(twin) = self.halfedges.get(twin_id) {
-                        if twin.is_boundary()
-                            || twin.face.map_or(false, |f| faces_to_remove.contains(&f))
-                        {
-                            halfedges_to_remove.insert(he_id);
-                            halfedges_to_remove.insert(twin_id);
-                        } else {
-                            if let Some(he_mut) = self.halfedges.get_mut(he_id) {
-                                he_mut.face = None;
-                                he_mut.next = None;
-                            }
+                if let Some(twin_id) = he.twin
+                    && let Some(twin) = self.halfedges.get(twin_id)
+                {
+                    if twin.is_boundary() || twin.face.is_some_and(|f| faces_to_remove.contains(&f))
+                    {
+                        halfedges_to_remove.insert(he_id);
+                        halfedges_to_remove.insert(twin_id);
+                    } else {
+                        if let Some(he_mut) = self.halfedges.get_mut(he_id) {
+                            he_mut.face = None;
+                            he_mut.next = None;
                         }
                     }
                 }
@@ -114,10 +113,10 @@ impl MeshGraph {
         // (start_vertex lookup needs the twin to be present)
         let mut outgoing_cleanup: Vec<(VertexId, HalfedgeId)> = Vec::new();
         for &he_id in &halfedges_to_remove {
-            if let Some(he) = self.halfedges.get(he_id) {
-                if let Some(start_v_id) = he.start_vertex(self) {
-                    outgoing_cleanup.push((start_v_id, he_id));
-                }
+            if let Some(he) = self.halfedges.get(he_id)
+                && let Some(start_v_id) = he.start_vertex(self)
+            {
+                outgoing_cleanup.push((start_v_id, he_id));
             }
         }
 
