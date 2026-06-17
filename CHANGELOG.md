@@ -5,7 +5,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] - 2026-06-17
 
-- Updated dependencies rerun, parry3d and glam
+- Updated dependencies rerun, parry3d, itertools and glam
 - Fixed `merge_one_ring` edge cases
 - A bunch of `edge` methods now return `Option<...>` because they can fail if given invalid `VertexId`s.
 - Added `MeshGraph::merge_vertices`
