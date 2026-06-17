@@ -10,9 +10,10 @@ impl MeshGraph {
         let b_id = self.add_vertex(b);
         let c_id = self.add_vertex(c);
 
-        let inserted_a = self.add_or_get_edge(a_id, b_id);
-        let inserted_b = self.add_or_get_edge(b_id, c_id);
-        let inserted_c = self.add_or_get_edge(c_id, a_id);
+        // vertices were just inserted, so this can't fail
+        let inserted_a = self.add_or_get_edge(a_id, b_id).unwrap();
+        let inserted_b = self.add_or_get_edge(b_id, c_id).unwrap();
+        let inserted_c = self.add_or_get_edge(c_id, a_id).unwrap();
 
         let face_id = self.add_face(
             inserted_a.start_to_end_he_id,
@@ -55,8 +56,8 @@ impl MeshGraph {
         let start_vertex_id_he_a = he_a.start_vertex(self)?;
         let end_vertex_id_he_a = he_a.end_vertex;
 
-        let inserted_b = self.add_or_get_edge(end_vertex_id_he_a, vertex_id);
-        let inserted_c = self.add_or_get_edge(vertex_id, start_vertex_id_he_a);
+        let inserted_b = self.add_or_get_edge(end_vertex_id_he_a, vertex_id)?;
+        let inserted_c = self.add_or_get_edge(vertex_id, start_vertex_id_he_a)?;
 
         let face_id = self.add_face(
             he_a_id,
@@ -81,10 +82,10 @@ impl MeshGraph {
         v_id1: VertexId,
         v_id2: VertexId,
         v_id3: VertexId,
-    ) -> AddFace {
-        let inserted_a = self.add_or_get_edge(v_id1, v_id2);
-        let inserted_b = self.add_or_get_edge(v_id2, v_id3);
-        let inserted_c = self.add_or_get_edge(v_id3, v_id1);
+    ) -> Option<AddFace> {
+        let inserted_a = self.add_or_get_edge(v_id1, v_id2)?;
+        let inserted_b = self.add_or_get_edge(v_id2, v_id3)?;
+        let inserted_c = self.add_or_get_edge(v_id3, v_id1)?;
 
         let face_id = self.add_face(
             inserted_a.start_to_end_he_id,
@@ -96,11 +97,11 @@ impl MeshGraph {
         halfedge_ids.extend(inserted_b.created_he_ids());
         halfedge_ids.extend(inserted_c.created_he_ids());
 
-        AddFace {
+        Some(AddFace {
             face_id,
             halfedge_ids,
             vertex_ids: vec![],
-        }
+        })
     }
 
     /// Creates a face from two halfedges.
@@ -135,7 +136,7 @@ impl MeshGraph {
             .or_else(error_none!("Start vertex should be available"))?;
 
         if he1_start_vertex == he2.end_vertex {
-            let inserted = self.add_or_get_edge(he1.end_vertex, he2_start_vertex);
+            let inserted = self.add_or_get_boundary_edge(he1.end_vertex, he2_start_vertex)?;
 
             let face_id = self.add_face(inserted.start_to_end_he_id, he_id2, he_id1);
 
@@ -145,7 +146,7 @@ impl MeshGraph {
                 vertex_ids: vec![],
             })
         } else if he1_start_vertex == he2_start_vertex {
-            let inserted = self.add_or_get_edge(he1.end_vertex, he2.end_vertex);
+            let inserted = self.add_or_get_boundary_edge(he1.end_vertex, he2.end_vertex)?;
 
             let face_id = self.add_face(
                 inserted.start_to_end_he_id,
@@ -159,7 +160,7 @@ impl MeshGraph {
                 vertex_ids: vec![],
             })
         } else if he1.end_vertex == he2.end_vertex {
-            let inserted = self.add_or_get_edge(he2_start_vertex, he1_start_vertex);
+            let inserted = self.add_or_get_boundary_edge(he2_start_vertex, he1_start_vertex)?;
 
             let face_id = self.add_face(
                 inserted.start_to_end_he_id,
@@ -173,7 +174,7 @@ impl MeshGraph {
                 vertex_ids: vec![],
             })
         } else {
-            let inserted = self.add_or_get_edge(he2.end_vertex, he1_start_vertex);
+            let inserted = self.add_or_get_boundary_edge(he2.end_vertex, he1_start_vertex)?;
 
             let face_id = self.add_face(inserted.start_to_end_he_id, he_id1, he_id2);
 

@@ -258,9 +258,10 @@ impl MeshGraph {
                 continue;
             }
 
-            let he_a_id = mesh_graph.add_or_get_edge(a, b).start_to_end_he_id;
-            let he_b_id = mesh_graph.add_or_get_edge(b, c).start_to_end_he_id;
-            let he_c_id = mesh_graph.add_or_get_edge(c, a).start_to_end_he_id;
+            // Vertices have already been added to the mesh graph, so we can safely use `unwrap()` here
+            let he_a_id = mesh_graph.add_or_get_edge(a, b).unwrap().start_to_end_he_id;
+            let he_b_id = mesh_graph.add_or_get_edge(b, c).unwrap().start_to_end_he_id;
+            let he_c_id = mesh_graph.add_or_get_edge(c, a).unwrap().start_to_end_he_id;
 
             let _face_id = mesh_graph.add_face(he_a_id, he_b_id, he_c_id);
         }
@@ -289,7 +290,7 @@ impl MeshGraph {
         self.vertex_normals
             .as_mut()
             .unwrap()
-            .insert(vertex_id, normal.normalize());
+            .insert(vertex_id, normal.try_normalize().unwrap_or(Vec3::ZERO));
     }
 
     /// Computes the vertex normals by averaging over the computed face normals

@@ -160,8 +160,11 @@ impl Vertex {
         );
 
         if !he.is_boundary() {
+            tracing::info!("he {out_he_id:?} is not boundary");
             return CircularHalfedgesIterator::empty(mesh_graph);
         }
+
+        tracing::info!("he {out_he_id:?} is boundary. {he:#?}");
 
         CircularHalfedgesIterator::new(
             self.outgoing_halfedge,

@@ -37,7 +37,23 @@
 		"args": [
 			"test",
 			"ops::merge_one_ring",
-			// "test_vertex_merge_connected_hes",
+			// "test_vertex_merge_common_one_ring",
+			"--lib",
+			// "--release",
+			"--features",
+			"rerun,gltf",
+			"--",
+			"--test-threads=1"
+		],
+		// Env overrides for the command, will be appended to the terminal's environment from the settings.
+		"env": { "RUST_LOG": "warn", "RUST_BACKTRACE": "1" }
+	},
+	{
+		"label": "Test collapse operations",
+		"command": "cargo",
+		"args": [
+			"test",
+			"ops::collapse",
 			"--lib",
 			// "--release",
 			"--features",
@@ -49,11 +65,11 @@
 		"env": { "RUST_LOG": "info", "RUST_BACKTRACE": "1" }
 	},
 	{
-		"label": "Test collapse operations",
+		"label": "Test edit operations",
 		"command": "cargo",
 		"args": [
 			"test",
-			"ops::collapse",
+			"ops::edit",
 			"--lib",
 			// "--release",
 			"--features",

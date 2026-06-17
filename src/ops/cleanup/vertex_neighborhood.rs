@@ -180,11 +180,17 @@ impl MeshGraph {
         while let Some(&start_he_id) = outgoing_halfedges.iter().next() {
             let mut current_he_id = start_he_id;
 
-            let mut current_outgoing_halfedges = Vec::with_capacity(outgoing_halfedges.len());
+            let len = outgoing_halfedges.len();
+            let mut current_outgoing_halfedges = Vec::with_capacity(len);
 
             loop {
-                outgoing_halfedges.remove(&current_he_id);
+                if !outgoing_halfedges.remove(&current_he_id) {
+                    return None;
+                }
                 current_outgoing_halfedges.push(current_he_id);
+                if current_outgoing_halfedges.len() == len {
+                    return None;
+                }
 
                 let cur_he = self
                     .halfedges
@@ -799,27 +805,31 @@ mod tests {
         let v1_id = meshgraph.add_vertex(Vec3::new(-0.2, 0.0, 0.0));
         let he_c_1_id = meshgraph
             .add_or_get_edge(center_v_id, v1_id)
+            .unwrap()
             .start_to_end_he_id;
         let v1p_id = meshgraph.add_vertex(Vec3::new(-0.2, 0.0, 0.0));
         let AddOrGetEdge {
             start_to_end_he_id: he_c_1p_id,
             twin_he_id: he_1p_c_id,
             ..
-        } = meshgraph.add_or_get_edge(center_v_id, v1p_id);
+        } = meshgraph.add_or_get_edge(center_v_id, v1p_id).unwrap();
 
         let v2_id = meshgraph.add_vertex(Vec3::new(-1.0, 1.0, 0.0));
         let he_c_2_id = meshgraph
             .add_or_get_edge(center_v_id, v2_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let v3_id = meshgraph.add_vertex(Vec3::new(-1.0, -1.0, 0.0));
         let he_c_3_id = meshgraph
             .add_or_get_edge(center_v_id, v3_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let v4_id = meshgraph.add_vertex(Vec3::new(0.2, 0.0, 0.0));
         let he_c_4_id = meshgraph
             .add_or_get_edge(center_v_id, v4_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let v4p_id = meshgraph.add_vertex(Vec3::new(0.2, 0.0, 0.0));
@@ -827,16 +837,18 @@ mod tests {
             start_to_end_he_id: he_c_4p_id,
             twin_he_id: he_4p_c_id,
             ..
-        } = meshgraph.add_or_get_edge(center_v_id, v4p_id);
+        } = meshgraph.add_or_get_edge(center_v_id, v4p_id).unwrap();
 
         let v5_id = meshgraph.add_vertex(Vec3::new(1.0, -1.0, 0.0));
         let he_c_5_id = meshgraph
             .add_or_get_edge(center_v_id, v5_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let v6_id = meshgraph.add_vertex(Vec3::new(1.0, 1.0, 0.0));
         let he_c_6_id = meshgraph
             .add_or_get_edge(center_v_id, v6_id)
+            .unwrap()
             .start_to_end_he_id;
 
         meshgraph
@@ -875,7 +887,7 @@ mod tests {
             start_to_end_he_id: he_1p_4p_id,
             twin_he_id: he_4p_1p_id,
             ..
-        } = meshgraph.add_or_get_edge(v1p_id, v4p_id);
+        } = meshgraph.add_or_get_edge(v1p_id, v4p_id).unwrap();
         meshgraph.halfedges[he_1p_4p_id].end_vertex = v4_id;
         meshgraph.halfedges[he_4p_1p_id].end_vertex = v1_id;
 
@@ -883,14 +895,14 @@ mod tests {
             start_to_end_he_id: he_3_1p_id,
             twin_he_id: he_1p_3_id,
             ..
-        } = meshgraph.add_or_get_edge(v3_id, v1p_id);
+        } = meshgraph.add_or_get_edge(v3_id, v1p_id).unwrap();
         meshgraph.halfedges[he_3_1p_id].end_vertex = v1_id;
 
         let AddOrGetEdge {
             start_to_end_he_id: he_4p_5_id,
             twin_he_id: he_5_4p_id,
             ..
-        } = meshgraph.add_or_get_edge(v4p_id, v5_id);
+        } = meshgraph.add_or_get_edge(v4p_id, v5_id).unwrap();
         meshgraph.halfedges[he_5_4p_id].end_vertex = v4_id;
 
         meshgraph.outgoing_halfedges[v1_id].push(he_1p_4p_id);
@@ -935,6 +947,7 @@ mod tests {
         let v1_id = meshgraph.add_vertex(Vec3::new(0.0, 0.0, 0.0));
         let he_c_1_id = meshgraph
             .add_or_get_edge(center_v_id, v1_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let v1p_id = meshgraph.add_vertex(Vec3::new(0.0, 0.0, 0.0));
@@ -942,26 +955,30 @@ mod tests {
             start_to_end_he_id: he_c_1p_id,
             twin_he_id: he_1p_c_id,
             ..
-        } = meshgraph.add_or_get_edge(center_v_id, v1p_id);
+        } = meshgraph.add_or_get_edge(center_v_id, v1p_id).unwrap();
 
         let v2_id = meshgraph.add_vertex(Vec3::new(-1.0, 1.0, 0.0));
         let he_c_2_id = meshgraph
             .add_or_get_edge(center_v_id, v2_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let v3_id = meshgraph.add_vertex(Vec3::new(-1.0, -1.0, 0.0));
         let he_c_3_id = meshgraph
             .add_or_get_edge(center_v_id, v3_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let v5_id = meshgraph.add_vertex(Vec3::new(1.0, -1.0, 0.0));
         let he_c_5_id = meshgraph
             .add_or_get_edge(center_v_id, v5_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let v6_id = meshgraph.add_vertex(Vec3::new(1.0, 1.0, 0.0));
         let he_c_6_id = meshgraph
             .add_or_get_edge(center_v_id, v6_id)
+            .unwrap()
             .start_to_end_he_id;
 
         meshgraph
@@ -992,14 +1009,14 @@ mod tests {
             start_to_end_he_id: he_3_1p_id,
             twin_he_id: he_1p_3_id,
             ..
-        } = meshgraph.add_or_get_edge(v3_id, v1p_id);
+        } = meshgraph.add_or_get_edge(v3_id, v1p_id).unwrap();
         meshgraph.halfedges[he_3_1p_id].end_vertex = v1_id;
 
         let AddOrGetEdge {
             start_to_end_he_id: he_1p_5_id,
             twin_he_id: he_5_1p_id,
             ..
-        } = meshgraph.add_or_get_edge(v1p_id, v5_id);
+        } = meshgraph.add_or_get_edge(v1p_id, v5_id).unwrap();
         meshgraph.halfedges[he_5_1p_id].end_vertex = v1_id;
 
         meshgraph.outgoing_halfedges[v1_id].push(he_1p_c_id);
@@ -1033,15 +1050,23 @@ mod tests {
         let v4 = mesh_graph.add_vertex(Vec3::new(1.0, 1.0, 0.5));
         let v5 = mesh_graph.add_vertex(Vec3::new(1.0, 1.0, -0.5));
 
-        let edge1 = mesh_graph.add_edge(v1, v2);
-        let edge2 = mesh_graph.add_edge(v2, v3);
-        let edge2_d = mesh_graph.add_edge(v2, v3);
+        let edge1 = mesh_graph.add_edge(v1, v2).unwrap();
+        let edge2 = mesh_graph.add_edge(v2, v3).unwrap();
+        let edge2_d = mesh_graph.add_edge(v2, v3).unwrap();
 
-        mesh_graph.add_face_from_halfedges(edge1.start_to_end_he_id, edge2.start_to_end_he_id);
-        mesh_graph.add_face_from_halfedges(edge2_d.twin_he_id, edge1.twin_he_id);
+        mesh_graph
+            .add_face_from_halfedges(edge1.start_to_end_he_id, edge2.start_to_end_he_id)
+            .unwrap();
+        mesh_graph
+            .add_face_from_halfedges(edge2_d.twin_he_id, edge1.twin_he_id)
+            .unwrap();
 
-        mesh_graph.add_face_from_halfedge_and_vertex(edge2.twin_he_id, v4);
-        mesh_graph.add_face_from_halfedge_and_vertex(edge2_d.start_to_end_he_id, v5);
+        mesh_graph
+            .add_face_from_halfedge_and_vertex(edge2.twin_he_id, v4)
+            .unwrap();
+        mesh_graph
+            .add_face_from_halfedge_and_vertex(edge2_d.start_to_end_he_id, v5)
+            .unwrap();
 
         #[cfg(feature = "rerun")]
         mesh_graph.log_rerun();
@@ -1081,18 +1106,28 @@ mod tests {
 
         let v5 = mesh_graph.add_vertex(Vec3::new(0.0, -1.0, 0.0));
 
-        let edge1 = mesh_graph.add_edge(v1, v2);
-        let edge1_d = mesh_graph.add_edge(v1, v2);
-        let edge2 = mesh_graph.add_edge(v2, v3);
-        let edge2_d = mesh_graph.add_edge(v2, v3);
+        let edge1 = mesh_graph.add_edge(v1, v2).unwrap();
+        let edge1_d = mesh_graph.add_edge(v1, v2).unwrap();
+        let edge2 = mesh_graph.add_edge(v2, v3).unwrap();
+        let edge2_d = mesh_graph.add_edge(v2, v3).unwrap();
 
-        mesh_graph.add_face_from_halfedges(edge1.start_to_end_he_id, edge2.start_to_end_he_id);
-        mesh_graph.add_face_from_halfedge_and_vertex(edge2.twin_he_id, v4);
+        mesh_graph
+            .add_face_from_halfedges(edge1.start_to_end_he_id, edge2.start_to_end_he_id)
+            .unwrap();
+        mesh_graph
+            .add_face_from_halfedge_and_vertex(edge2.twin_he_id, v4)
+            .unwrap();
 
-        mesh_graph.add_face_from_halfedge_and_vertex(edge2_d.start_to_end_he_id, v4);
-        mesh_graph.add_face_from_halfedges(edge2_d.twin_he_id, edge1_d.twin_he_id);
+        mesh_graph
+            .add_face_from_halfedge_and_vertex(edge2_d.start_to_end_he_id, v4)
+            .unwrap();
+        mesh_graph
+            .add_face_from_halfedges(edge2_d.twin_he_id, edge1_d.twin_he_id)
+            .unwrap();
 
-        mesh_graph.add_face_from_halfedge_and_vertex(edge1_d.start_to_end_he_id, v5);
+        mesh_graph
+            .add_face_from_halfedge_and_vertex(edge1_d.start_to_end_he_id, v5)
+            .unwrap();
 
         #[cfg(feature = "rerun")]
         mesh_graph.log_rerun();

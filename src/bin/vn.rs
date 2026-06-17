@@ -10,8 +10,7 @@ pub fn main() {
         .pretty()
         .init();
 
-    let mut meshgraph = gltf::load("src/ops/merge_one_ring/glb/merge_4_4.glb").unwrap();
-    meshgraph.compute_vertex_normals();
+    let mut meshgraph = gltf::load("src/ops/merge_one_ring/glb/merge_common_one_ring.glb").unwrap();
 
     #[cfg(feature = "rerun")]
     meshgraph.log_rerun();
@@ -20,10 +19,12 @@ pub fn main() {
     let mut v_bottom_id = VertexId::default();
 
     for (v_id, pos) in &meshgraph.positions {
-        if pos.x == -1.0 && pos.y == -1.0 {
-            v_top_id = v_id;
-        } else if pos.x == 1.0 && pos.y == 1.0 {
-            v_bottom_id = v_id;
+        if pos.x == 0.0 && pos.y == 0.0 {
+            if pos.z > 0.0 {
+                v_top_id = v_id;
+            } else {
+                v_bottom_id = v_id;
+            }
         }
     }
 
@@ -35,16 +36,13 @@ pub fn main() {
         panic!("No bottom vertex found");
     }
 
-    #[cfg(feature = "rerun")]
-    meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
-
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
     let _ = meshgraph.merge_vertices_one_rings(
         v_top_id,
         v_bottom_id,
-        0.01,
+        1.0,
         &mut marked_halfedges,
         &mut marked_vertices,
     );

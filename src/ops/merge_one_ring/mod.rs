@@ -9,7 +9,7 @@ use tracing::{error, instrument};
 
 use crate::{
     AddEdge, FaceId, HalfedgeId, MeshGraph, Vertex, VertexId, error_none,
-    ops::{add::AddFace, collapse::CollapseEdge},
+    ops::{add::AddFace, collapse::CollapseEdge, edit::MergeVertices},
     utils::unwrap_or_return,
 };
 
@@ -57,6 +57,15 @@ impl MeshGraph {
             })
             .collect_vec();
         one_ring_he_ids2.reverse();
+
+        if one_ring_he_ids1.len() < 3 || one_ring_he_ids2.len() < 3 {
+            error!(
+                "One rings are too small. One ring of {vertex_id1:?} = {}; one ring of {vertex_id2:?} = {}",
+                one_ring_he_ids1.len(),
+                one_ring_he_ids2.len()
+            );
+            return result;
+        }
 
         // halfedges' existence already checked in `one_ring()`.
         let mut one_ring_v_ids1 = one_ring_he_ids1
@@ -158,7 +167,12 @@ impl MeshGraph {
             &mut result,
         );
 
-        tracing::info!("smoothing vertices");
+        self.merge_remaining_unconnected(
+            one_ring_v_ids1.clone(),
+            one_ring_v_ids2.clone(),
+            &mut result,
+        );
+
         self.smooth_vertices(
             one_ring_v_ids1
                 .iter()
@@ -168,6 +182,45 @@ impl MeshGraph {
         );
 
         result
+    }
+
+    fn merge_remaining_unconnected(
+        &mut self,
+        mut one_ring_v_ids1: Vec<VertexId>,
+        mut one_ring_v_ids2: Vec<VertexId>,
+        result: &mut MergeVerticesOneRing,
+    ) {
+        while let Some(v_id) = one_ring_v_ids1.pop() {
+            let Some(vert) = self.vertices.get(v_id) else {
+                continue;
+            };
+
+            let mut vertices = vec![];
+
+            for he_id in vert.boundary_halfedgdes(self) {
+                let Some(he) = self.halfedges.get(he_id) else {
+                    error!("Halfedge not found: {he_id:?}");
+                    continue;
+                };
+
+                vertices.push(he.end_vertex);
+            }
+
+            if !vertices.is_empty() {
+                one_ring_v_ids1.retain(|v_id| !vertices.contains(v_id));
+                one_ring_v_ids2.retain(|v_id| !vertices.contains(v_id));
+
+                let MergeVertices {
+                    removed_vertices,
+                    removed_halfedges,
+                    removed_faces,
+                } = self.merge_vertices(vertices);
+
+                result.removed_vertices.extend(removed_vertices);
+                result.removed_halfedges.extend(removed_halfedges);
+                result.removed_faces.extend(removed_faces);
+            }
+        }
     }
 
     fn find_already_connected_pairings(
@@ -1204,15 +1257,14 @@ impl MeshGraph {
                     if self.halfedge_from_to(*start_v_id, other_v_id).is_some() {
                         let other_he_id = &other_one_ring_he_ids[other_idx];
 
-                        if !shared_he_ids.contains(other_he_id)
+                        if self.halfedges.contains_key(*other_he_id)
+                            && !shared_he_ids.contains(other_he_id)
                             && !connected_he_ids.contains(other_he_id)
                         {
                             return Some((start_idx, other_idx, ConnectPairCap::AlreadyConnected));
                         }
                     }
                 }
-
-                return None;
             }
         }
 
@@ -1603,8 +1655,9 @@ impl PlannedFace {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph", mesh_graph);
 
-        let add_or_get_edge1 = mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1);
-        let add_or_get_edge2 = mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2);
+        let add_or_get_edge1 = mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1)?;
+        let add_or_get_edge2 =
+            mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)?;
 
         let mut add_face = mesh_graph.add_face_from_halfedges(
             add_or_get_edge1.start_to_end_he_id,
@@ -1648,17 +1701,14 @@ impl PlannedFace {
         existing_he_id: HalfedgeId,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
-        {
-            mesh_graph.log_he_rerun("add_mesh_graph_and_he", existing_he_id);
-            self.log_rerun("add_to_mesh_graph_and_he", mesh_graph);
-        }
+        self.log_rerun("add_to_mesh_graph_and_he", mesh_graph);
 
         match self.order {
             PlannedFaceOrder::Middle => {
                 let AddEdge {
                     start_to_end_he_id,
                     twin_he_id,
-                } = mesh_graph.add_edge(self.new_he_v1, self.new_he_v2);
+                } = mesh_graph.add_edge(self.new_he_v1, self.new_he_v2)?;
 
                 let mut add_face =
                     mesh_graph.add_face_from_halfedges(existing_he_id, start_to_end_he_id)?;
@@ -1669,7 +1719,7 @@ impl PlannedFace {
             }
             PlannedFaceOrder::End => {
                 let add_or_get_edge =
-                    mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2);
+                    mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)?;
 
                 let mut add_face = mesh_graph
                     .add_face_from_halfedges(existing_he_id, add_or_get_edge.start_to_end_he_id)?;

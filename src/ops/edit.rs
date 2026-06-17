@@ -1,12 +1,318 @@
 use glam::Vec3;
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
 use slotmap::SparseSecondaryMap;
 use tracing::{error, instrument};
 
-use crate::{HalfedgeId, MeshGraph, VertexId, error_none, utils::unwrap_or_return};
+use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none, utils::unwrap_or_return};
+
+pub struct MergeVertices {
+    pub removed_vertices: Vec<VertexId>,
+    pub removed_halfedges: Vec<HalfedgeId>,
+    pub removed_faces: Vec<FaceId>,
+}
 
 impl MeshGraph {
+    /// Merges the given vertices into a single vertex, reconnecting halfedges and faces as needed.
+    #[instrument(skip_all)]
+    pub fn merge_vertices(
+        &mut self,
+        vertices: impl IntoIterator<Item = VertexId>,
+    ) -> MergeVertices {
+        let vertex_ids: Vec<VertexId> = vertices
+            .into_iter()
+            .filter(|v| self.vertices.contains_key(*v))
+            .unique()
+            .collect();
+
+        if vertex_ids.len() < 2 {
+            return MergeVertices {
+                removed_vertices: Vec::new(),
+                removed_halfedges: Vec::new(),
+                removed_faces: Vec::new(),
+            };
+        }
+
+        let vertex_set: HashSet<VertexId> = vertex_ids.iter().copied().collect();
+        let survivor_id = vertex_ids[0];
+
+        // Compute average position
+        let mut avg_pos = Vec3::ZERO;
+        let mut count = 0.0;
+        for &v_id in &vertex_ids {
+            if let Some(&pos) = self.positions.get(v_id) {
+                avg_pos += pos;
+                count += 1.0;
+            }
+        }
+        if count > 0.0 {
+            avg_pos /= count;
+        }
+
+        // Find faces to remove: any face with 2+ vertices in the merge set becomes degenerate
+        let mut faces_to_remove = HashSet::new();
+        for &v_id in &vertex_ids {
+            for face_id in self.vertex_adjacent_faces(v_id) {
+                if faces_to_remove.contains(&face_id) {
+                    continue;
+                }
+                if let Some(face) = self.faces.get(face_id) {
+                    let merged_count = face
+                        .vertices(self)
+                        .filter(|v| vertex_set.contains(v))
+                        .count();
+                    if merged_count >= 2 {
+                        faces_to_remove.insert(face_id);
+                    }
+                }
+            }
+        }
+
+        // Determine which halfedges to remove vs make boundary
+        let mut halfedges_to_remove = HashSet::new();
+        for &face_id in &faces_to_remove {
+            let face_hes: Vec<_> = self
+                .halfedges
+                .iter()
+                .filter_map(|(he_id, he)| {
+                    if he.face == Some(face_id) {
+                        Some((he_id, *he))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for (he_id, he) in face_hes {
+                if let Some(twin_id) = he.twin {
+                    if let Some(twin) = self.halfedges.get(twin_id) {
+                        if twin.is_boundary()
+                            || twin.face.map_or(false, |f| faces_to_remove.contains(&f))
+                        {
+                            halfedges_to_remove.insert(he_id);
+                            halfedges_to_remove.insert(twin_id);
+                        } else {
+                            if let Some(he_mut) = self.halfedges.get_mut(he_id) {
+                                he_mut.face = None;
+                                he_mut.next = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove faces from BVH and faces slotmap
+        for &face_id in &faces_to_remove {
+            if let Some(face) = self.faces.get(face_id) {
+                self.bvh.remove(face.index);
+            }
+            self.faces.remove(face_id);
+        }
+
+        // Collect outgoing halfedge cleanup info before removing halfedges
+        // (start_vertex lookup needs the twin to be present)
+        let mut outgoing_cleanup: Vec<(VertexId, HalfedgeId)> = Vec::new();
+        for &he_id in &halfedges_to_remove {
+            if let Some(he) = self.halfedges.get(he_id) {
+                if let Some(start_v_id) = he.start_vertex(self) {
+                    outgoing_cleanup.push((start_v_id, he_id));
+                }
+            }
+        }
+
+        for (v_id, he_id) in outgoing_cleanup {
+            if let Some(out_hes) = self.outgoing_halfedges.get_mut(v_id) {
+                out_hes.retain(|id| *id != he_id);
+            }
+        }
+
+        // Remove halfedges
+        for &he_id in &halfedges_to_remove {
+            self.halfedges.remove(he_id);
+        }
+
+        let mut removed_vertices = Vec::with_capacity(vertex_ids.len() - 1);
+
+        // Merge non-survivor vertices into survivor
+        for &v_id in &vertex_ids[1..] {
+            if !self.vertices.contains_key(v_id) {
+                continue;
+            }
+
+            removed_vertices.push(v_id);
+
+            // Get incoming halfedges to v_id (twins of outgoing halfedges from v_id)
+            let incoming_he_ids: Vec<HalfedgeId> = self
+                .outgoing_halfedges
+                .get(v_id)
+                .map(|out_hes| {
+                    out_hes
+                        .iter()
+                        .filter_map(|he_id| self.halfedges.get(*he_id)?.twin)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            for he_id in incoming_he_ids {
+                if let Some(he) = self.halfedges.get_mut(he_id) {
+                    he.end_vertex = survivor_id;
+                }
+            }
+
+            // Transfer outgoing halfedges to survivor
+            let outgoing = self
+                .outgoing_halfedges
+                .get(v_id)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(entry) = self.outgoing_halfedges.entry(survivor_id) {
+                entry.or_default().extend(outgoing);
+            }
+
+            self.remove_only_vertex(v_id);
+        }
+
+        let mut removed_halfedges: Vec<HalfedgeId> = halfedges_to_remove.into_iter().collect();
+        let removed_faces: Vec<FaceId> = faces_to_remove.into_iter().collect();
+
+        // Check if survivor still exists (could have been removed if all faces were removed)
+        if !self.vertices.contains_key(survivor_id) {
+            return MergeVertices {
+                removed_vertices,
+                removed_halfedges,
+                removed_faces,
+            };
+        }
+
+        self.positions[survivor_id] = avg_pos;
+
+        // Clean up stale outgoing halfedges for survivor
+        if let Some(out_hes) = self.outgoing_halfedges.get_mut(survivor_id) {
+            out_hes.retain(|he_id| self.halfedges.contains_key(*he_id));
+        }
+
+        // Remove duplicate halfedges that now share the same edge after vertex merge
+        {
+            let out_hes = self
+                .outgoing_halfedges
+                .get(survivor_id)
+                .cloned()
+                .unwrap_or_default();
+
+            let mut by_end: HashMap<VertexId, Vec<HalfedgeId>> = HashMap::new();
+            for &he_id in &out_hes {
+                if let Some(he) = self.halfedges.get(he_id) {
+                    by_end.entry(he.end_vertex).or_default().push(he_id);
+                }
+            }
+
+            let mut affected_vertices = HashSet::new();
+
+            for (end_v, group) in by_end {
+                if group.len() < 2 {
+                    continue;
+                }
+
+                // Pick best forward halfedge (prefer non-boundary)
+                let best_fwd = group
+                    .iter()
+                    .copied()
+                    .max_by_key(|&id| {
+                        self.halfedges
+                            .get(id)
+                            .map_or(0u8, |h| if h.face.is_some() { 1 } else { 0 })
+                    })
+                    .unwrap();
+
+                // Collect valid twins
+                let twins: Vec<HalfedgeId> = group
+                    .iter()
+                    .filter_map(|&id| {
+                        self.halfedges
+                            .get(id)?
+                            .twin
+                            .filter(|t| self.halfedges.contains_key(*t))
+                    })
+                    .collect();
+
+                // Pick best reverse halfedge (prefer non-boundary)
+                let best_rev = twins.iter().copied().max_by_key(|&id| {
+                    self.halfedges
+                        .get(id)
+                        .map_or(0u8, |h| if h.face.is_some() { 1 } else { 0 })
+                });
+
+                // Update twin pointers
+                if let Some(rev_id) = best_rev {
+                    if let Some(he) = self.halfedges.get_mut(best_fwd) {
+                        he.twin = Some(rev_id);
+                    }
+                    if let Some(he) = self.halfedges.get_mut(rev_id) {
+                        he.twin = Some(best_fwd);
+                    }
+                }
+
+                // Remove duplicate forward halfedges
+                for &he_id in &group {
+                    if he_id != best_fwd {
+                        self.halfedges.remove(he_id);
+                        removed_halfedges.push(he_id);
+                    }
+                }
+
+                // Remove duplicate reverse halfedges
+                for &twin_id in &twins {
+                    if Some(twin_id) != best_rev {
+                        self.halfedges.remove(twin_id);
+                        removed_halfedges.push(twin_id);
+                    }
+                }
+
+                affected_vertices.insert(end_v);
+            }
+
+            // Clean up outgoing halfedges for survivor
+            if let Some(out_hes) = self.outgoing_halfedges.get_mut(survivor_id) {
+                out_hes.retain(|he_id| self.halfedges.contains_key(*he_id));
+            }
+
+            // Clean up outgoing halfedges for affected adjacent vertices
+            for v in affected_vertices {
+                if let Some(out_hes) = self.outgoing_halfedges.get_mut(v) {
+                    out_hes.retain(|he_id| self.halfedges.contains_key(*he_id));
+                }
+                let new_out = self
+                    .outgoing_halfedges
+                    .get(v)
+                    .and_then(|hes| hes.first().copied());
+                if let Some(vertex) = self.vertices.get_mut(v) {
+                    vertex.outgoing_halfedge = new_out;
+                }
+            }
+        }
+
+        // Update outgoing_halfedge reference
+        let new_outgoing = self
+            .outgoing_halfedges
+            .get(survivor_id)
+            .and_then(|hes| hes.first().copied());
+
+        if let Some(vertex) = self.vertices.get_mut(survivor_id) {
+            vertex.outgoing_halfedge = new_outgoing;
+        }
+
+        self.make_outgoing_halfedge_boundary_if_possible(survivor_id);
+        self.compute_vertex_normal(survivor_id);
+
+        MergeVertices {
+            removed_vertices,
+            removed_halfedges,
+            removed_faces,
+        }
+    }
+
     /// Flips this edge so that it represents the other diagonal described by the quad formed by the two incident triangles.
     ///
     /// ```text
@@ -221,6 +527,104 @@ mod tests {
     use glam::Vec3;
 
     use super::*;
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn test_merge_vertices_cube() {
+        use crate::{integrations::gltf, utils::get_tracing_subscriber};
+
+        get_tracing_subscriber();
+        let mut meshgraph = gltf::load("src/ops/glb/cube.glb").unwrap();
+
+        #[cfg(feature = "rerun")]
+        meshgraph.log_rerun();
+
+        let x0_vertices: Vec<VertexId> = meshgraph
+            .positions
+            .iter()
+            .filter_map(|(v_id, pos)| if pos.x == 0.0 { Some(v_id) } else { None })
+            .collect();
+
+        let x0_count = x0_vertices.len();
+        assert!(x0_count >= 2, "Expected at least 2 vertices with x=0");
+
+        let MergeVertices {
+            removed_vertices,
+            removed_halfedges,
+            removed_faces,
+        } = meshgraph.merge_vertices(x0_vertices);
+
+        #[cfg(feature = "rerun")]
+        {
+            meshgraph.log_rerun();
+            crate::RR.flush_blocking().unwrap();
+        }
+
+        let remaining_x0: Vec<_> = meshgraph
+            .positions
+            .iter()
+            .filter(|(_, pos)| pos.x == 0.0)
+            .collect();
+
+        assert_eq!(remaining_x0.len(), 1);
+
+        assert_eq!(meshgraph.vertices.len(), 5);
+        assert_eq!(meshgraph.halfedges.len(), 18);
+        assert_eq!(meshgraph.faces.len(), 6);
+
+        assert_eq!(removed_vertices.len(), 3);
+        assert_eq!(removed_halfedges.len(), 18);
+        assert_eq!(removed_faces.len(), 6);
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn test_merge_vertices_cube_w_missing_triangle() {
+        use crate::{integrations::gltf, utils::get_tracing_subscriber};
+
+        get_tracing_subscriber();
+        let mut meshgraph = gltf::load("src/ops/glb/cube_w_missing_triangle.glb").unwrap();
+
+        #[cfg(feature = "rerun")]
+        meshgraph.log_rerun();
+
+        let x0_vertices: Vec<VertexId> = meshgraph
+            .positions
+            .iter()
+            .filter_map(|(v_id, pos)| if pos.x == 0.0 { Some(v_id) } else { None })
+            .collect();
+
+        let x0_count = x0_vertices.len();
+        assert!(x0_count >= 2, "Expected at least 2 vertices with x=0");
+
+        let MergeVertices {
+            removed_vertices,
+            removed_halfedges,
+            removed_faces,
+        } = meshgraph.merge_vertices(x0_vertices);
+
+        #[cfg(feature = "rerun")]
+        {
+            meshgraph.log_rerun();
+            crate::RR.flush_blocking().unwrap();
+        }
+
+        let remaining_x0: Vec<_> = meshgraph
+            .positions
+            .iter()
+            .filter(|(_, pos)| pos.x == 0.0)
+            .collect();
+
+        assert_eq!(remaining_x0.len(), 1);
+
+        assert_eq!(meshgraph.vertices.len(), 5);
+        assert_eq!(meshgraph.halfedges.len(), 18);
+        assert_eq!(meshgraph.faces.len(), 6);
+
+        assert_eq!(removed_vertices.len(), 3);
+        assert_eq!(removed_halfedges.len(), 18);
+        assert_eq!(removed_faces.len(), 5);
+    }
 
     #[test]
     fn test_flip_edge() {

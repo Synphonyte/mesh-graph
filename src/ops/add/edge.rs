@@ -13,12 +13,12 @@ impl MeshGraph {
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-    ) -> AddOrGetEdge {
-        let ret = self
-            .add_or_get_edge_inner(start_vertex_id, end_vertex_id)
-            .unwrap_or_else(|| {
-                let start_to_end_he_id = self.add_halfedge(start_vertex_id, end_vertex_id);
-                let twin_he_id = self.add_halfedge(end_vertex_id, start_vertex_id);
+    ) -> Option<AddOrGetEdge> {
+        let ret = match self.add_or_get_edge_inner(start_vertex_id, end_vertex_id) {
+            Some(ret) => ret,
+            None => {
+                let start_to_end_he_id = self.add_halfedge(start_vertex_id, end_vertex_id)?;
+                let twin_he_id = self.add_halfedge(end_vertex_id, start_vertex_id)?;
 
                 AddOrGetEdge {
                     start_to_end_he_id,
@@ -26,25 +26,26 @@ impl MeshGraph {
                     new_start_to_end: true,
                     new_twin: true,
                 }
-            });
+            }
+        };
 
         // insert_or_get_edge_inner ensures that both halfedges exist.
         self.halfedges[ret.start_to_end_he_id].twin = Some(ret.twin_he_id);
         self.halfedges[ret.twin_he_id].twin = Some(ret.start_to_end_he_id);
 
-        if let Some(start_v) = self.vertices.get_mut(start_vertex_id) {
-            start_v.outgoing_halfedge = Some(ret.start_to_end_he_id);
-        } else {
-            error!("Vertex not found");
-        }
+        let start_v = self
+            .vertices
+            .get_mut(start_vertex_id)
+            .or_else(error_none!("Vertex not found"))?;
+        start_v.outgoing_halfedge = Some(ret.start_to_end_he_id);
 
-        if let Some(end_v) = self.vertices.get_mut(end_vertex_id) {
-            end_v.outgoing_halfedge = Some(ret.twin_he_id);
-        } else {
-            error!("Vertex not found");
-        }
+        let end_v = self
+            .vertices
+            .get_mut(end_vertex_id)
+            .or_else(error_none!("Vertex not found"))?;
+        end_v.outgoing_halfedge = Some(ret.twin_he_id);
 
-        ret
+        Some(ret)
     }
 
     /// Adds or gets a boundary edge between two vertices.
@@ -56,7 +57,7 @@ impl MeshGraph {
         &mut self,
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
-    ) -> AddOrGetEdge {
+    ) -> Option<AddOrGetEdge> {
         let existing_he_ids = self.halfedges_from_to(start_vertex_id, end_vertex_id);
         if let Some(he_id) = existing_he_ids.into_iter().find(|he_id| {
             // already checked in `halfedges_from_to()`
@@ -66,25 +67,25 @@ impl MeshGraph {
             // already checked in `halfedges_from_to()`
             let he = self.halfedges[he_id];
 
-            return AddOrGetEdge {
+            return Some(AddOrGetEdge {
                 start_to_end_he_id: he_id,
                 twin_he_id: he.twin.unwrap(), // checked above
                 new_start_to_end: false,
                 new_twin: false,
-            };
+            });
         }
 
         let AddEdge {
             start_to_end_he_id,
             twin_he_id,
-        } = self.add_edge(start_vertex_id, end_vertex_id);
+        } = self.add_edge(start_vertex_id, end_vertex_id)?;
 
-        AddOrGetEdge {
+        Some(AddOrGetEdge {
             start_to_end_he_id,
             twin_he_id,
             new_start_to_end: true,
             new_twin: true,
-        }
+        })
     }
 
     fn add_or_get_edge_inner(
@@ -114,11 +115,11 @@ impl MeshGraph {
                 }
             }
             (Some(_h1_id), None) => {
-                he2_id = Some(self.add_halfedge(end_vertex_id, start_vertex_id));
+                he2_id = Some(self.add_halfedge(end_vertex_id, start_vertex_id)?);
                 new2 = true;
             }
             (None, Some(_h2_id)) => {
-                he1_id = Some(self.add_halfedge(start_vertex_id, end_vertex_id));
+                he1_id = Some(self.add_halfedge(start_vertex_id, end_vertex_id)?);
                 new1 = true;
             }
             (None, None) => {
@@ -143,18 +144,18 @@ impl MeshGraph {
     /// This creates two halfedges wether the vertices already have an edge between them or not.
     ///
     /// If you don't want this, consider using [`add_or_get_edge`] instead.
-    pub fn add_edge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> AddEdge {
-        let start_to_end_he_id = self.add_halfedge(start_vertex, end_vertex);
-        let twin_he_id = self.add_halfedge(end_vertex, start_vertex);
+    pub fn add_edge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> Option<AddEdge> {
+        let start_to_end_he_id = self.add_halfedge(start_vertex, end_vertex)?;
+        let twin_he_id = self.add_halfedge(end_vertex, start_vertex)?;
 
         // Just inserted above
         self.halfedges[start_to_end_he_id].twin = Some(twin_he_id);
         self.halfedges[twin_he_id].twin = Some(start_to_end_he_id);
 
-        AddEdge {
+        Some(AddEdge {
             start_to_end_he_id,
             twin_he_id,
-        }
+        })
     }
 
     /// Inserts a halfedge into the mesh graph. It only connects the halfedge to the given end vertex but not the reverse.
@@ -163,7 +164,12 @@ impl MeshGraph {
     /// It does insert into `self.outgoing_halfedges`.
     ///
     /// Use [`insert_or_get_edge`] instead of this when you can to lower the chance of creating an invalid graph.
-    pub fn add_halfedge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> HalfedgeId {
+    #[instrument(skip(self))]
+    pub fn add_halfedge(
+        &mut self,
+        start_vertex: VertexId,
+        end_vertex: VertexId,
+    ) -> Option<HalfedgeId> {
         let halfedge = Halfedge {
             end_vertex,
             next: None,
@@ -174,11 +180,11 @@ impl MeshGraph {
 
         self.outgoing_halfedges
             .entry(start_vertex)
-            .expect("we just insterted into halfedges above")
+            .or_else(error_none!("Start vertex not found {start_vertex:?}"))?
             .or_default()
             .push(he_id);
 
-        he_id
+        Some(he_id)
     }
 }
 

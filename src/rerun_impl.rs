@@ -4,6 +4,7 @@ use itertools::Itertools;
 use tracing::error;
 
 use crate::RR;
+use crate::error_none;
 use crate::utils::*;
 use crate::{FaceId, HalfedgeId, MeshGraph, Selection, VertexId};
 
@@ -71,7 +72,7 @@ impl MeshGraph {
             &rerun::Points3D::new(
                 vertices
                     .iter()
-                    .map(|&v_id| vec3_array(self.positions[v_id])),
+                    .filter_map(|&v_id| self.positions.get(v_id).map(vec3_array)),
             ),
         )
         .unwrap();
@@ -230,7 +231,19 @@ impl MeshGraph {
         for &face_id in faces {
             let face = self.faces[face_id];
 
-            let pos = face.vertices(self).map(|v| self.positions[v]).collect_vec();
+            let pos = face
+                .vertices(self)
+                .filter_map(|v| {
+                    self.positions
+                        .get(v)
+                        .or_else(error_none!("vertex position {v:?} not found"))
+                })
+                .copied()
+                .collect_vec();
+
+            if pos.len() < 3 {
+                continue;
+            }
 
             let center = pos.iter().copied().reduce(|a, b| a + b).unwrap() / pos.len() as f32;
 
@@ -394,6 +407,10 @@ impl MeshGraph {
             }
         }
 
+        let mut boundary_origins = Vec::with_capacity(self.faces.len() * 3);
+        let mut boundary_vectors = Vec::with_capacity(self.faces.len() * 3);
+        let mut boundary_labels = Vec::<String>::with_capacity(self.faces.len() * 3);
+
         for (he_id, he) in &self.halfedges {
             if he.is_boundary() {
                 let start_vertex = he.start_vertex(self).unwrap();
@@ -421,7 +438,8 @@ impl MeshGraph {
                     start_normal
                         .lerp(*end_normal, 0.5)
                         .cross(end - start)
-                        .normalize()
+                        .try_normalize()
+                        .unwrap_or(Vec3::ZERO)
                         * 0.1
                 } else {
                     Vec3::ZERO
@@ -431,9 +449,9 @@ impl MeshGraph {
 
                 he_to_pos.insert(he_id, (start, end));
 
-                origins.push(vec3_array(start));
-                vectors.push(vec3_array(end - start));
-                labels.push(he_label(he_id));
+                boundary_origins.push(vec3_array(start));
+                boundary_vectors.push(vec3_array(end - start));
+                boundary_labels.push(format!("b {}", he_label(he_id)));
             }
         }
 
@@ -442,6 +460,14 @@ impl MeshGraph {
             &rerun::Arrows3D::from_vectors(&vectors)
                 .with_origins(&origins)
                 .with_labels(labels.clone()),
+        )
+        .unwrap();
+
+        RR.log(
+            "meshgraph/halfedges/boundary",
+            &rerun::Arrows3D::from_vectors(&boundary_vectors)
+                .with_origins(&boundary_origins)
+                .with_labels(boundary_labels.clone()),
         )
         .unwrap();
 
@@ -616,37 +642,37 @@ impl MeshGraph {
         )
         .unwrap();
 
-        // let buffers = crate::integrations::VertexIndexBuffers::from(self);
-        // RR.log(
-        //     "meshgraph/mesh",
-        //     &rerun::Mesh3D::new(
-        //         buffers
-        //             .positions
-        //             .into_iter()
-        //             .zip(buffers.normals.iter().cloned())
-        //             .map(|(pos, norm)| vec3_array(pos - norm * 0.1)),
-        //     )
-        //     .with_triangle_indices(
-        //         buffers
-        //             .indices
-        //             .chunks(3)
-        //             .map(|chunk| rerun::datatypes::UVec3D::new(chunk[0], chunk[1], chunk[2])),
-        //     )
-        //     .with_vertex_colors(
-        //         buffers
-        //             .normals
-        //             .into_iter()
-        //             .map(|v| {
-        //                 [
-        //                     (100.0 + v.x * 100.0) as u8,
-        //                     (100.0 + v.y * 100.0) as u8,
-        //                     (100.0 + v.z * 100.0) as u8,
-        //                 ]
-        //             })
-        //             .collect::<Vec<_>>(),
-        //     ),
-        // )
-        // .unwrap();
+        let buffers = crate::integrations::VertexIndexBuffers::from(self);
+        RR.log(
+            "meshgraph/mesh",
+            &rerun::Mesh3D::new(
+                buffers
+                    .positions
+                    .into_iter()
+                    .zip(buffers.normals.iter().cloned())
+                    .map(|(pos, norm)| vec3_array(pos - norm * 0.1)),
+            )
+            .with_triangle_indices(
+                buffers
+                    .indices
+                    .chunks(3)
+                    .map(|chunk| rerun::datatypes::UVec3D::new(chunk[0], chunk[1], chunk[2])),
+            )
+            .with_vertex_colors(
+                buffers
+                    .normals
+                    .into_iter()
+                    .map(|v| {
+                        [
+                            (100.0 + v.x * 100.0) as u8,
+                            (100.0 + v.y * 100.0) as u8,
+                            (100.0 + v.z * 100.0) as u8,
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .unwrap();
     }
 }
 

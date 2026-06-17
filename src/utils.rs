@@ -104,9 +104,11 @@ fn extend_outer_corners(
         let next_vertext_id = outer_vertex_ids[(cv_i + 1) % outer_vertex_ids.len()];
         let halfedge_vertex_to_corner_id = meshgraph
             .add_or_get_edge(vertex_id, corner_vertex_id)
+            .unwrap()
             .start_to_end_he_id;
         let halfedge_vertex_to_next_vertex_id = meshgraph
             .add_or_get_edge(vertex_id, next_vertext_id)
+            .unwrap()
             .start_to_end_he_id;
 
         meshgraph
@@ -118,6 +120,7 @@ fn extend_outer_corners(
 
         let halfedge_corner_to_next_vertex_id = meshgraph
             .add_or_get_edge(corner_vertex_id, next_vertext_id)
+            .unwrap()
             .start_to_end_he_id;
 
         let halfedge_next_vertex_to_next_corner_vertex_id = meshgraph
@@ -125,6 +128,7 @@ fn extend_outer_corners(
                 next_vertext_id,
                 corner_vertex_ids[(cv_i + 1) % corner_vertex_ids.len()],
             )
+            .unwrap()
             .start_to_end_he_id;
 
         meshgraph
@@ -167,6 +171,7 @@ pub(crate) fn extend_with(
         let vertex_id = meshgraph.add_vertex(*point);
         let halfedge_id = meshgraph
             .add_or_get_edge(center_id, vertex_id)
+            .unwrap()
             .start_to_end_he_id;
 
         vertex_ids.push(vertex_id);

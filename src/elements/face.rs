@@ -96,7 +96,7 @@ impl Face {
         let a = positions[1] - positions[0];
         let b = positions[2] - positions[0];
 
-        a.cross(b).normalize()
+        a.cross(b).try_normalize().unwrap_or(Vec3::ZERO)
     }
 
     /// Wether this triangle is degenerate.

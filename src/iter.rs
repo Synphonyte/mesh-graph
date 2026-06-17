@@ -35,7 +35,7 @@ impl<'a> CircularHalfedgesIterator<'a> {
             mesh_graph,
             current_halfedge: None,
             get_next_halfedge: |_, _| None,
-            max_count: 0,
+            max_count: 10,
             next_idx: 0,
         }
     }
@@ -58,7 +58,10 @@ impl<'a> Iterator for CircularHalfedgesIterator<'a> {
         }
 
         if self.next_idx > self.max_count {
-            error!("Maximum count reached. In a valid mesh graph this should not happen.");
+            error!(
+                "Maximum count reached. In a valid mesh graph this should not happen. Start halfedge: {:?}",
+                self.start_halfedge
+            );
             return None;
         }
 
