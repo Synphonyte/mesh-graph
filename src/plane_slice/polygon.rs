@@ -82,8 +82,8 @@ impl Polygon2 {
     pub fn length(&self) -> f32 {
         self.vertices
             .iter()
-            .tuple_windows()
-            .map(|(a, b)| a.distance(*b))
+            .array_windows()
+            .map(|[a, b]| a.distance(*b))
             .sum()
     }
 
@@ -145,8 +145,8 @@ impl Polygon3 {
     pub fn length(&self) -> f32 {
         self.vertices
             .iter()
-            .tuple_windows()
-            .map(|(a, b)| a.distance(*b))
+            .array_windows()
+            .map(|[a, b]| a.distance(*b))
             .sum()
     }
 

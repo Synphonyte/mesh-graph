@@ -152,6 +152,10 @@ impl MeshGraph {
         self.halfedges[start_to_end_he_id].twin = Some(twin_he_id);
         self.halfedges[twin_he_id].twin = Some(start_to_end_he_id);
 
+        // Vertex existence already checked in `add_halfedge`
+        self.vertices[start_vertex].outgoing_halfedge = Some(start_to_end_he_id);
+        self.vertices[end_vertex].outgoing_halfedge = Some(twin_he_id);
+
         Some(AddEdge {
             start_to_end_he_id,
             twin_he_id,

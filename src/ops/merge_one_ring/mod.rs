@@ -1764,8 +1764,8 @@ impl PlannedFace {
             &rerun::Arrows3D::from_vectors(
                 positions
                     .iter()
-                    .circular_tuple_windows()
-                    .map(|(a, b)| vec3_array(*b - *a)),
+                    .circular_array_windows()
+                    .map(|[a, b]| vec3_array(*b - *a)),
             )
             .with_origins(positions.iter().map(vec3_array)),
         )

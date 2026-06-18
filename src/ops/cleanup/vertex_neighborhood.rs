@@ -661,7 +661,8 @@ impl MeshGraph {
         }
     }
 
-    fn remove_neighboring_flaps(
+    /// Removes all neighboring flaps (triangles that share all the same vertices) connected to the given vertex.
+    pub fn remove_neighboring_flaps(
         &mut self,
         vertex_id: VertexId,
         removed_vertices: &mut Vec<VertexId>,
@@ -679,9 +680,9 @@ impl MeshGraph {
             return Some(false);
         }
 
-        let mut face_tuples = faces.into_iter().circular_tuple_windows().collect_vec();
+        let mut face_tuples = faces.into_iter().circular_array_windows().collect_vec();
 
-        while let Some((face_id1, face_id2)) = face_tuples.pop() {
+        while let Some([face_id1, face_id2]) = face_tuples.pop() {
             if self.faces_share_all_vertices(face_id1, face_id2) {
                 #[cfg(feature = "rerun")]
                 {
