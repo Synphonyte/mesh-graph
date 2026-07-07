@@ -30,7 +30,7 @@ jobs:
         run: cargo clippy --features gltf --tests -- -D warnings
 
       - name: Install Cargo Rdme
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.82.7
         with:
           tool: cargo-rdme
 
