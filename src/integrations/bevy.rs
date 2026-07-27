@@ -16,8 +16,22 @@ impl From<MeshGraph> for Mesh {
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         )
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, buffers.positions)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, buffers.normals)
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            buffers
+                .positions
+                .into_iter()
+                .map(|v| v.to_array())
+                .collect::<Vec<_>>(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_NORMAL,
+            buffers
+                .normals
+                .into_iter()
+                .map(|v| v.to_array())
+                .collect::<Vec<_>>(),
+        )
         .with_inserted_indices(Indices::U32(buffers.indices))
 
         // TODO ?

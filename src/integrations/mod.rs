@@ -105,3 +105,9 @@ impl From<&MeshGraph> for VertexIndexBuffers {
         }
     }
 }
+
+impl From<MeshGraph> for VertexIndexBuffers {
+    fn from(mesh_graph: MeshGraph) -> Self {
+        Self::from(&mesh_graph)
+    }
+}
