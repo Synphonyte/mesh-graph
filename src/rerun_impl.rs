@@ -413,7 +413,10 @@ impl MeshGraph {
 
         for (he_id, he) in &self.halfedges {
             if he.is_boundary() {
-                let start_vertex = he.start_vertex(self).unwrap();
+                let Some(start_vertex) = he.start_vertex(self) else {
+                    error!("Start vertex not found for boundary halfedge {:?}", he_id);
+                    continue;
+                };
                 let end_vertex = he.end_vertex;
 
                 let Some(&start) = self.positions.get(start_vertex) else {
@@ -476,7 +479,10 @@ impl MeshGraph {
         labels.clear();
 
         for (he_id, he) in &self.halfedges {
-            let twin = he.twin.unwrap();
+            let Some(twin) = he.twin else {
+                error!("No twin for halfedge {:?}", he_id);
+                continue;
+            };
 
             let Some(&(he_start, he_end)) = he_to_pos.get(&he_id) else {
                 error!("Missing position for halfedge {:?}", he_id);

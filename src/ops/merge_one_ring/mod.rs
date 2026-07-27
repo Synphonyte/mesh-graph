@@ -505,6 +505,9 @@ impl MeshGraph {
         self.add_face_to_connected_he_ids(start_face_id, connected_he_ids);
         connected_face_ids.push(start_face_id);
 
+        // Cap the number of steps so a complete face fan around the single vertex
+        // can't make the walk wrap around the ring indefinitely.
+        let mut steps = 0;
         loop {
             // Wrap backwards (using saturating to avoid underflow; handle wrap via modular arithmetic)
             let prev_idx = (range_start + other_len - 1) % other_len;
@@ -523,6 +526,12 @@ impl MeshGraph {
 
                 self.add_face_to_connected_he_ids(face_id, connected_he_ids);
                 connected_face_ids.push(face_id);
+
+                steps += 1;
+                if steps >= other_len {
+                    error!("Pairing fan wrapped around the entire one ring");
+                    break;
+                }
             } else {
                 break;
             }
@@ -530,6 +539,9 @@ impl MeshGraph {
 
         // Walk forwards from the end of other_range
         let mut range_end = *current_pairing.other_range.end();
+        // Cap the number of steps so a complete face fan around the single vertex
+        // can't make the walk wrap around the ring indefinitely.
+        let mut steps = 0;
         loop {
             let next_idx = (range_end + 1) % other_len;
             let next_v_id = other_ids[next_idx];
@@ -541,6 +553,12 @@ impl MeshGraph {
 
                 self.add_face_to_connected_he_ids(face_id, connected_he_ids);
                 connected_face_ids.push(face_id);
+
+                steps += 1;
+                if steps >= other_len {
+                    error!("Pairing fan wrapped around the entire one ring");
+                    break;
+                }
             } else {
                 break;
             }
@@ -956,42 +974,66 @@ impl MeshGraph {
             let mut end_cap = ConnectPairCap::Open;
 
             if shared_v_ids.contains(&v_id1) {
+                let start_end_idx2 = end_idx2;
                 while v_id2 != v_id1 {
                     end_idx2 = (end_idx2 + 1) % len2;
                     v_id2 = one_ring_v_ids2[end_idx2];
 
                     #[cfg(feature = "rerun")]
                     self.log_vert_rerun("pairs_end_idx2", v_id2);
+
+                    if end_idx2 == start_end_idx2 {
+                        error!("Full cycle without finding shared vertex in one ring 2");
+                        return range_pairs_to_connect;
+                    }
                 }
 
                 end_cap = ConnectPairCap::Closed;
             } else if shared_v_ids.contains(&v_id2) {
+                let start_end_idx1 = end_idx1;
                 while v_id1 != v_id2 {
                     end_idx1 = (end_idx1 + 1) % len1;
                     v_id1 = one_ring_v_ids1[end_idx1];
 
                     #[cfg(feature = "rerun")]
                     self.log_vert_rerun("pairs_end_idx1", v_id1);
+
+                    if end_idx1 == start_end_idx1 {
+                        error!("Full cycle without finding shared vertex in one ring 1");
+                        return range_pairs_to_connect;
+                    }
                 }
 
                 end_cap = ConnectPairCap::Closed;
             } else if connected_v_ids.contains(&v_id1) {
+                let start_end_idx2 = end_idx2;
                 while !connected_v_ids.contains(&v_id2) {
                     end_idx2 = (end_idx2 + 1) % len2;
                     v_id2 = one_ring_v_ids2[end_idx2];
 
                     #[cfg(feature = "rerun")]
                     self.log_vert_rerun("pairs_end_idx2", v_id2);
+
+                    if end_idx2 == start_end_idx2 {
+                        error!("Full cycle without finding connected vertex in one ring 2");
+                        return range_pairs_to_connect;
+                    }
                 }
 
                 end_cap = ConnectPairCap::AlreadyConnected;
             } else if connected_v_ids.contains(&v_id2) {
+                let start_end_idx1 = end_idx1;
                 while !connected_v_ids.contains(&v_id1) {
                     end_idx1 = (end_idx1 + 1) % len1;
                     v_id1 = one_ring_v_ids1[end_idx1];
 
                     #[cfg(feature = "rerun")]
                     self.log_vert_rerun("pairs_end_idx1", v_id1);
+
+                    if end_idx1 == start_end_idx1 {
+                        error!("Full cycle without finding connected vertex in one ring 1");
+                        return range_pairs_to_connect;
+                    }
                 }
 
                 end_cap = ConnectPairCap::AlreadyConnected;
