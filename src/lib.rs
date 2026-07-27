@@ -234,7 +234,7 @@ impl MeshGraph {
             vertex_ids.push(mesh_graph.add_vertex(*pos));
         }
 
-        for chunk in face_indices.chunks_exact(3) {
+        for chunk in face_indices.as_chunks::<3>().0 {
             let a = vertex_ids[chunk[0]];
             let b = vertex_ids[chunk[1]];
             let c = vertex_ids[chunk[2]];
