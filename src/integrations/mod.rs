@@ -11,6 +11,8 @@ use crate::{MeshGraph, VertexId};
 pub mod bevy;
 #[cfg(feature = "gltf")]
 pub mod gltf;
+#[cfg(feature = "manifold")]
+pub mod manifold;
 
 /// Classical indexed mesh representation
 #[derive(Clone, Debug)]

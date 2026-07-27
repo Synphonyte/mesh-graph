@@ -8,7 +8,7 @@ license = "MIT"
 name = "mesh-graph"
 readme = "README.md"
 repository = "https://github.com/Synphonyte/mesh-graph"
-version = "0.7.0"
+version = "0.7.1"
 
 [dependencies]
 anyhow = "1"
@@ -23,6 +23,7 @@ gltf = { version = "1.4", optional = true, features = ["extras"] }
 hashbrown = "0.17"
 itertools = "0.15"
 lazy_static = { version = "1.5.0", optional = true }
+manifold-csg = { version = "0.3", default-features = false, optional = true }
 parry3d = "0.28"
 rerun = { version = "0.33", default-features = false, optional = true, features = [
     "sdk",
@@ -43,6 +44,7 @@ default = []
 gltf = ["dep:gltf"]
 rerun = ["dep:cfg-if", "dep:lazy_static", "dep:rerun"]
 serde = ["dep:serde", "glam/serde", "hashbrown/serde", "slotmap/serde"]
+manifold = ["dep:manifold-csg"]
 
 [[bin]]
 name = "vertex-neighborhood"
