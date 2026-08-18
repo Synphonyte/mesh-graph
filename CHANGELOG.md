@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Polygon2::terminal` now returns `Option<Vec2>` instead of `Vec2`. It returns `None` if the polygon is empty.
 - `MeshGraph::collapse_until_edges_above_min_length` now takes an additional `max_iterations` parameter to prevent potential infinite loops.
 - `MeshGraph::subdivide_until_edges_below_max_length` now takes an additional `max_iterations` parameter to prevent potential infinite loops.
+- Updated dependencies `manifold-csg` to `0.4`, `parry3d` to `0.30` and `rerun` to `0.36`.
 
 ## [0.8.0] - 2026-07-27
 
