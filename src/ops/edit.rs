@@ -185,6 +185,7 @@ impl MeshGraph {
             };
         }
 
+        // check just above
         self.positions[survivor_id] = avg_pos;
 
         // Clean up stale outgoing halfedges for survivor
@@ -355,10 +356,13 @@ impl MeshGraph {
         let twin_opposite_v_id = twin_next_he.end_vertex;
         let twin_next_twin_he_id = unwrap_or_return!(twin_next_he.twin, "Next twin twin not found");
 
+        // checked at the start
         self.halfedges[halfedge_id].end_vertex = opposite_v_id;
 
+        // checked above
         self.halfedges[prev_he_id].end_vertex = twin_opposite_v_id;
         self.make_twins(prev_he_id, twin_next_twin_he_id);
+        // checked above
         self.halfedges[next_he_id].end_vertex = start_v_id;
         self.make_twins(next_he_id, prev_twin_he_id);
 
@@ -370,10 +374,14 @@ impl MeshGraph {
         self.add_outgoing_halfedge(opposite_v_id, next_he_id);
         self.add_outgoing_halfedge(opposite_v_id, twin_he_id);
 
+        // checked above
         self.halfedges[twin_he_id].end_vertex = twin_opposite_v_id;
 
+        // checked above
         self.halfedges[twin_prev_he_id].end_vertex = opposite_v_id;
         self.make_twins(twin_prev_he_id, next_twin_he_id);
+
+        // checked above
         self.halfedges[twin_next_he_id].end_vertex = twin_start_v_id;
         self.make_twins(twin_next_he_id, twin_prev_twin_he_id);
 

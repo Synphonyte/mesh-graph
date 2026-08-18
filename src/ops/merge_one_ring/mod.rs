@@ -45,6 +45,11 @@ impl MeshGraph {
         let vertex1 = *unwrap_or_return!(self.vertices.get(vertex_id1), "Vertex not found", result);
         let vertex2 = *unwrap_or_return!(self.vertices.get(vertex_id2), "Vertex not found", result);
 
+        if vertex_id1 == vertex_id2 {
+            error!("Cannot merge a vertex with itself");
+            return result;
+        }
+
         let one_ring_he_ids1 = vertex1.one_ring(self).collect_vec();
         let mut one_ring_he_ids2 = vertex2
             .one_ring(self)
@@ -578,7 +583,6 @@ impl MeshGraph {
             if let Some(idx) = one_ring_v_ids1.iter().position(|v_id| *v_id == third_v_id) {
                 current_pairing.single_range_idx = 1;
                 current_pairing.single_idx_in_range = idx2;
-                idx1.min(idx)..=idx1.max(idx);
 
                 (idx, idx1)
             } else if let Some(idx) = one_ring_v_ids2.iter().position(|v_id| *v_id == third_v_id) {
@@ -729,6 +733,7 @@ impl MeshGraph {
         flip_threshold_sqr: f32,
         result: &mut MergeVerticesOneRing,
     ) -> bool {
+        // checked already in the call chain
         let he = self.halfedges[single_shared_he_id];
 
         let twin_id = unwrap_or_return!(he.twin, "Twin not found", false);
@@ -861,6 +866,11 @@ impl MeshGraph {
 
                 prev_single_v_id = Some(single_v_id);
                 prev_other_v_id = Some(other_v_id);
+            }
+
+            if planned_faces.len() == start_pairing_index {
+                // This range pair produced no faces (e.g. a single shared vertex).
+                continue;
             }
 
             if !matches!(
@@ -1115,20 +1125,15 @@ impl MeshGraph {
         let diff2 = (start_idx2 as i32 - end_idx2 as i32).unsigned_abs() as usize;
         let diff2 = diff2.min(len2 - diff2);
 
-        let cap = if shared_v_ids.is_empty() {
-            ConnectPairCap::Open
-        } else {
-            ConnectPairCap::Closed
-        };
-
         if range_pairs_to_connect.is_empty() {
-            let (end1, end2) = if matches!(cap, ConnectPairCap::Closed) {
-                (orig_start_idx1, orig_start_idx2)
-            } else {
+            let (end1, end2, cap) = if shared_v_ids.is_empty() {
                 (
                     (orig_start_idx1 + len1 - 1).rem_euclid(len1),
                     (orig_start_idx2 + len2 - 1).rem_euclid(len2),
+                    ConnectPairCap::Open,
                 )
+            } else {
+                (orig_start_idx1, orig_start_idx2, ConnectPairCap::Closed)
             };
 
             range_pairs_to_connect.push(ConnectPair::new(
@@ -1138,13 +1143,13 @@ impl MeshGraph {
                 len2,
                 cap,
             ));
-        } else if diff1 > 1 || diff2 > 1 || range_pairs_to_connect.is_empty() {
+        } else if diff1 > 1 || diff2 > 1 {
             range_pairs_to_connect.push(ConnectPair::new(
                 start_idx1..=end_idx1,
                 len1,
                 start_idx2..=end_idx2,
                 len2,
-                cap,
+                start_cap,
             ));
         }
 
@@ -1490,7 +1495,9 @@ impl Pairing {
         other_idx2: usize,
         other_len: usize,
     ) -> Self {
-        let other_range = if (other_idx1 as i32 - other_idx2 as i32).abs() == 1 {
+        let other_range = if other_idx1 == other_idx2 {
+            other_idx1..=other_idx2
+        } else if (other_idx1 as i32 - other_idx2 as i32).abs() == 1 {
             other_idx1.min(other_idx2)..=other_idx1.max(other_idx2)
         } else {
             other_idx1.max(other_idx2)..=other_idx1.min(other_idx2) + other_len
@@ -1627,7 +1634,7 @@ impl Pairing {
         crate::RR
             .log(
                 format!("pairing/{}/single", label.as_ref()),
-                &rerun::Points3D::new([single_pos.clone()]),
+                &rerun::Points3D::new([single_pos]),
             )
             .unwrap();
         crate::RR
@@ -1636,7 +1643,7 @@ impl Pairing {
                 &rerun::LineStrips3D::new(
                     other_pos
                         .into_iter()
-                        .map(|other_pos| [single_pos.clone(), other_pos]),
+                        .map(|other_pos| [single_pos, other_pos]),
                 ),
             )
             .unwrap();
@@ -1790,9 +1797,7 @@ impl PlannedFace {
         let (positions, labels): (Vec<_>, Vec<_>) =
             [(self.v1, "1"), (self.new_he_v1, "2"), (self.new_he_v2, "3")]
                 .into_iter()
-                .filter_map(|(v_id, labl)| {
-                    mesh_graph.positions.get(v_id).and_then(|a| Some((a, labl)))
-                })
+                .filter_map(|(v_id, labl)| mesh_graph.positions.get(v_id).map(|a| (a, labl)))
                 .unzip();
 
         RR.log(

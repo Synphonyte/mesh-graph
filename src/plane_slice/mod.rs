@@ -117,6 +117,10 @@ fn intersect_triangle_with_xy_plane(
         .map(|v| transformed_positions[v])
         .collect();
 
+    if vertices.len() != 3 {
+        return None;
+    }
+
     // Compute signed distances from each vertex to the XY plane (z=0)
     let distances: [f32; 3] = [vertices[0].z, vertices[1].z, vertices[2].z];
 

@@ -20,10 +20,15 @@ impl MeshGraph {
         max_length_squared: f32,
         marked_halfedge_ids: &mut HashSet<HalfedgeId>,
         marked_vertex_ids: &mut HashSet<VertexId>,
+        max_iterations: usize,
     ) {
         let mut halfedges_to_subdivide = self.halfedges_map(|len_sqr| len_sqr > max_length_squared);
 
-        while !halfedges_to_subdivide.is_empty() {
+        for _ in 0..max_iterations {
+            if halfedges_to_subdivide.is_empty() {
+                break;
+            }
+
             let mut max_len = 0.0;
             let mut max_he_id = HalfedgeId::default();
 
@@ -155,8 +160,14 @@ impl MeshGraph {
             .or_else(error_none!("Start vertex not found"))?;
         let end_v = he.end_vertex;
 
-        let start_pos = self.positions[start_v];
-        let end_pos = self.positions[end_v];
+        let start_pos = self
+            .positions
+            .get(start_v)
+            .or_else(error_none!("Start position not found"))?;
+        let end_pos = self
+            .positions
+            .get(end_v)
+            .or_else(error_none!("End position not found"))?;
 
         let center_pos = (start_pos + end_pos) * 0.5;
 
@@ -257,26 +268,24 @@ impl MeshGraph {
             .or_else(error_none!("Last halfedge not found"))?;
 
         // rewire existing face
-        let new_he = self.add_halfedge(center_v, self.halfedges[next_he].end_vertex)?;
+        let new_he = self.add_halfedge(center_v, self.halfedges[next_he].end_vertex)?; // checked above
 
-        self.halfedges[existing_halfedge_id].next = Some(new_he);
-        self.halfedges[new_he].next = Some(last_he);
-        self.halfedges[new_he].face = Some(face_id);
+        self.halfedges[existing_halfedge_id].next = Some(new_he); // checked above
+        self.halfedges[new_he].next = Some(last_he); // inserted above
+        self.halfedges[new_he].face = Some(face_id); // inserted above
 
-        let new_twin = self.add_halfedge(self.halfedges[next_he].end_vertex, center_v)?;
+        let new_twin = self.add_halfedge(self.halfedges[next_he].end_vertex, center_v)?; // checked above
 
         // insert new face
         let new_face_id = self.add_face(new_halfedge_id, next_he, new_twin);
 
-        self.halfedges[new_twin].twin = Some(new_he);
-        self.halfedges[new_he].twin = Some(new_twin);
+        self.halfedges[new_twin].twin = Some(new_he); // inserted above
+        self.halfedges[new_he].twin = Some(new_twin); // inserted above
 
-        self.halfedges[existing_halfedge_id].end_vertex = center_v;
+        self.halfedges[existing_halfedge_id].end_vertex = center_v; // checked above
 
-        // checked above
-        let face = self.faces[face_id];
-        // freshly inserted
-        let new_face = self.faces[new_face_id];
+        let face = self.faces[face_id]; // checked above
+        let new_face = self.faces[new_face_id]; // inserted above
         self.bvh
             .insert_or_update_partially(face.aabb(self), face.index, 0.0);
         self.bvh
@@ -298,6 +307,3 @@ pub struct SubdivideEdge {
     /// This is the center vertex of the subdivided edge that was created.
     added_vertex: VertexId,
 }
-
-#[cfg(test)]
-mod tests {}

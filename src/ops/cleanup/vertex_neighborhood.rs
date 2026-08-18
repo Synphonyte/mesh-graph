@@ -43,7 +43,12 @@ impl MeshGraph {
 
         let mut vertices = vec![vertex_id];
 
-        while let Some(&v_id) = vertices.first() {
+        let vertex_count = self.vertices.len();
+        let mut iterations = 0;
+
+        while let Some(&v_id) = vertices.first()
+            && iterations < vertex_count
+        {
             if !self.vertices.contains_key(v_id) {
                 vertices.swap_remove(0);
                 continue;
@@ -77,9 +82,7 @@ impl MeshGraph {
             result.removed_halfedges.extend(removed_halfedges);
             result.removed_faces.extend(removed_faces);
 
-            if vertices.is_empty() {
-                break;
-            }
+            iterations += 1;
         }
 
         for &cancelled_v_id in
@@ -218,7 +221,7 @@ impl MeshGraph {
                 self.vertices
                     .get_mut(vertex_id)
                     .or_else(error_none!("Vertex not found"))?
-                    .outgoing_halfedge = Some(*outgoing_halfedges.iter().next().unwrap());
+                    .outgoing_halfedge = Some(*outgoing_halfedges.iter().next().unwrap()); // check above that outgoing_halfedges is not empty
 
                 self.outgoing_halfedges
                     .insert(vertex_id, Vec::from_iter(outgoing_halfedges));
@@ -278,7 +281,7 @@ impl MeshGraph {
 
         for [he_id1, he_id2] in halfedges.into_iter().array_combinations() {
             if self.halfedges_share_all_vertices(he_id1, he_id2) {
-                let he1 = self.halfedges[he_id1];
+                let he1 = self.halfedges[he_id1]; // checked in `halfedges_share_all_vertices`
                 let twin_id1 = he1.twin.or_else(error_none!("Twin not found"))?;
                 let face_id1 = self
                     .halfedges
@@ -286,13 +289,11 @@ impl MeshGraph {
                     .or_else(error_none!("Halfedge not found"))?
                     .face
                     .or_else(error_none!("Face not found"))?;
-                let face_id2 = self
-                    .halfedges
-                    .get(he_id2)
-                    .or_else(error_none!("Halfedge not found"))?
+                let face_id2 = self.halfedges[he_id2] // checked in `halfedges_share_all_vertices`
                     .face
                     .or_else(error_none!("Face not found"))?;
 
+                // checked above
                 let coincident_face_ids = self.vertices[vertex_id].faces(self).collect_vec();
                 let mut start_idx = 0;
 
@@ -306,7 +307,7 @@ impl MeshGraph {
                 let mut end_idx = start_idx;
                 let mut side_one = vec![];
 
-                loop {
+                for _ in 0..coincident_face_ids.len() {
                     let face_id = coincident_face_ids[end_idx];
 
                     side_one.push(face_id);
@@ -321,7 +322,11 @@ impl MeshGraph {
 
                 let mut side_two = vec![];
 
-                while end_idx != start_idx {
+                for _ in 0..coincident_face_ids.len() {
+                    if end_idx == start_idx {
+                        break;
+                    }
+
                     let face_id = coincident_face_ids[end_idx];
 
                     side_two.push(face_id);
@@ -394,8 +399,10 @@ impl MeshGraph {
             side_two[side_two.len() - 1],
         );
 
+        // checked above
         self.outgoing_halfedges[vertex_id] =
             self.vertices[vertex_id].outgoing_halfedges(self).collect();
+        // checked above
         self.outgoing_halfedges[new_vertex_id] = self.vertices[new_vertex_id]
             .outgoing_halfedges(self)
             .collect();
@@ -420,6 +427,7 @@ impl MeshGraph {
 
         for [face_id1, face_id2] in faces.into_iter().array_combinations() {
             if self.faces_share_all_vertices(face_id1, face_id2) {
+                // checked above
                 let coincident_face_ids = self.vertices[vertex_id].faces(self).collect_vec();
                 let mut start_idx = 0;
 
@@ -433,7 +441,7 @@ impl MeshGraph {
                 let mut end_idx = start_idx;
                 let mut side_one = vec![];
 
-                loop {
+                for _ in 0..coincident_face_ids.len() {
                     let face_id = coincident_face_ids[end_idx];
 
                     end_idx += 1;
@@ -448,7 +456,11 @@ impl MeshGraph {
 
                 let mut side_two = vec![];
 
-                while end_idx != start_idx {
+                for _ in 0..coincident_face_ids.len() {
+                    if end_idx == start_idx {
+                        break;
+                    }
+
                     let face_id = coincident_face_ids[end_idx];
 
                     side_two.push(face_id);
@@ -525,8 +537,10 @@ impl MeshGraph {
         self.weld_faces(vertex_id, side_one[side_one.len() - 1], side_one[0]);
         self.weld_faces(new_vertex_id, side_two[0], side_two[side_two.len() - 1]);
 
+        // checked above
         self.outgoing_halfedges[vertex_id] =
             self.vertices[vertex_id].outgoing_halfedges(self).collect();
+        // inserted above
         self.outgoing_halfedges[new_vertex_id] = self.vertices[new_vertex_id]
             .outgoing_halfedges(self)
             .collect();
@@ -602,6 +616,7 @@ impl MeshGraph {
             .halfedge_between(start_vertex_id, other_common_vertex_id, self)
             .or_else(error_none!("Halfedge between vertices not found"))?;
 
+        // all checked above
         self.halfedges[he1_id].twin = Some(he2_id);
         self.halfedges[he2_id].twin = Some(he1_id);
 

@@ -52,7 +52,7 @@ impl MeshGraph {
     ) -> Option<AddFace> {
         let he_a_id = self.boundary_he(he_id)?;
 
-        let he_a = self.halfedges[he_a_id];
+        let he_a = self.halfedges[he_a_id]; // already checked in `boundary_he`
         let start_vertex_id_he_a = he_a.start_vertex(self)?;
         let end_vertex_id_he_a = he_a.end_vertex;
 

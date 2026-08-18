@@ -3,6 +3,18 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 
+
+- Hardened against panics and infinite loops.
+
+### Breaking Changes
+
+- `MeshGraph::triangles` now returns `Option<Self>` instead of `Self`. It returns `None` if the number of vertex positions is not a multiple of 3 instead of panicking.
+- `Face::normal_from_positions` now returns `Option<Vec3>` instead of `Vec3`. It returns `None` if there are fewer than 3 positions or the normal cannot be normalized.
+- `Polygon2::terminal` now returns `Option<Vec2>` instead of `Vec2`. It returns `None` if the polygon is empty.
+- `MeshGraph::collapse_until_edges_above_min_length` now takes an additional `max_iterations` parameter to prevent potential infinite loops.
+- `MeshGraph::subdivide_until_edges_below_max_length` now takes an additional `max_iterations` parameter to prevent potential infinite loops.
+
 ## [0.8.0] - 2026-07-27
 
 - Update dependencies `bevy` to `0.19` and `parry3d` to `0.29`

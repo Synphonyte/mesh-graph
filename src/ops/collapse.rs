@@ -15,10 +15,15 @@ impl MeshGraph {
         &mut self,
         min_length_squared: f32,
         marked_vertices: &mut HashSet<VertexId>,
+        max_iterations: usize,
     ) {
         let mut halfedges_to_collapse = self.halfedges_map(|len_sqr| len_sqr < min_length_squared);
 
-        while !halfedges_to_collapse.is_empty() {
+        for _ in 0..max_iterations {
+            if halfedges_to_collapse.is_empty() {
+                break;
+            }
+
             let mut min_len = f32::MAX;
             let mut min_he_id = None;
             let mut min_center = Vec3::ZERO;
@@ -46,6 +51,7 @@ impl MeshGraph {
             };
 
             let start_vertex_id = unwrap_or_return!(
+                // checked in `can_collapse_edge_inner`
                 self.halfedges[min_he_id].start_vertex(self),
                 "Start vertex not found"
             );
@@ -226,8 +232,12 @@ impl MeshGraph {
                 orig_positions.push(pos);
             }
 
-            let orig_normal = Face::normal_from_positions(&orig_positions);
-            let new_normal = Face::normal_from_positions(&new_positions);
+            let Some(orig_normal) = Face::normal_from_positions(&orig_positions) else {
+                continue;
+            };
+            let Some(new_normal) = Face::normal_from_positions(&new_positions) else {
+                continue;
+            };
 
             if orig_normal.dot(new_normal) < 0.0 {
                 return None;
@@ -248,21 +258,36 @@ impl MeshGraph {
     ) -> CollapseEdge {
         let mut result = CollapseEdge::default();
 
+        if start_v_id == end_v_id {
+            error!("Cannot collapse edge between the same vertex");
+            return result;
+        }
+
         #[cfg(feature = "rerun")]
         {
             self.log_he_rerun("collapse/he", halfedge_id);
         }
         // TODO : consider border vertices
 
-        let end_outgoing_halfedges = self.vertices[end_v_id]
-            .outgoing_halfedges(self)
-            .collect::<Vec<_>>();
-        let end_incoming_halfedges = self.vertices[end_v_id]
-            .incoming_halfedges(self)
-            .collect::<Vec<_>>();
+        let end_outgoing_halfedges =
+            unwrap_or_return!(self.vertices.get(end_v_id), "End vertex not found", result)
+                .outgoing_halfedges(self)
+                .collect::<Vec<_>>();
+        let end_incoming_halfedges =
+            unwrap_or_return!(self.vertices.get(end_v_id), "End vertex not found", result)
+                .incoming_halfedges(self)
+                .collect::<Vec<_>>();
 
-        let he = self.halfedges[halfedge_id];
-        let twin = self.halfedges[twin_id];
+        let he = *unwrap_or_return!(
+            self.halfedges.get(halfedge_id),
+            "Halfedge not found",
+            result
+        );
+        let twin = *unwrap_or_return!(
+            self.halfedges.get(twin_id),
+            "Twin halfedge not found",
+            result
+        );
 
         if !he.is_boundary() {
             let (face_id, halfedge_ids) = unwrap_or_return!(
@@ -319,6 +344,7 @@ impl MeshGraph {
         self.halfedges.remove(halfedge_id);
         self.halfedges.remove(twin_id);
 
+        // key exists. we accessed it above
         self.positions[start_v_id] = center_pos;
 
         let new_outgoing_he_id = end_outgoing_halfedges
@@ -326,6 +352,7 @@ impl MeshGraph {
             .find(|he_id| self.halfedges.contains_key(*he_id));
 
         if let Some(new_outgoing_he_id) = new_outgoing_he_id {
+            // key exists. we accessed it above
             self.vertices[start_v_id].outgoing_halfedge = Some(new_outgoing_he_id);
 
             #[cfg(feature = "rerun")]
@@ -411,10 +438,16 @@ impl MeshGraph {
             .prev(self)
             .or_else(error_none!("Previous halfedge is None"))?;
 
-        let next_twin_id = self.halfedges[next_he_id]
+        let next_twin_id = self
+            .halfedges
+            .get(next_he_id)
+            .or_else(error_none!("Next halfedge not found"))?
             .twin
             .or_else(error_none!("Next twin halfedge not found"))?;
-        let prev_twin_id = self.halfedges[prev_he_id]
+        let prev_twin_id = self
+            .halfedges
+            .get(prev_he_id)
+            .or_else(error_none!("Previous halfedge not found"))?
             .twin
             .or_else(error_none!("Previous twin halfedge not found"))?;
 
@@ -448,6 +481,7 @@ impl MeshGraph {
             .or_else(error_none!("Previous start vertex not found"))?;
 
         if prev_start_v.outgoing_halfedge == Some(prev_he_id) {
+            // checked just above
             self.vertices[prev_start_v_id].outgoing_halfedge = prev_he
                 .ccw_rotated_neighbour(self)
                 .or_else(|| prev_he.cw_rotated_neighbour(self))

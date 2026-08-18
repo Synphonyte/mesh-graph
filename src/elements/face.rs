@@ -83,20 +83,20 @@ impl Face {
     pub fn normal(&self, mesh_graph: &MeshGraph) -> Option<Vec3> {
         let positions = self.vertex_positions(mesh_graph).collect_vec();
 
-        if positions.len() < 3 {
-            error!("Face has less than 3 vertex positions");
-            return None;
-        }
-
-        Some(Self::normal_from_positions(&positions))
+        Self::normal_from_positions(&positions)
     }
 
     #[inline]
-    pub fn normal_from_positions(positions: &[Vec3]) -> Vec3 {
+    pub fn normal_from_positions(positions: &[Vec3]) -> Option<Vec3> {
+        if positions.len() < 3 {
+            error!("Less than 3 vertex positions");
+            return None;
+        }
+
         let a = positions[1] - positions[0];
         let b = positions[2] - positions[0];
 
-        a.cross(b).try_normalize().unwrap_or(Vec3::ZERO)
+        a.cross(b).try_normalize()
     }
 
     /// Wether this triangle is degenerate.

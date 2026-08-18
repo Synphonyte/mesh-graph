@@ -130,11 +130,10 @@ impl MeshGraph {
     /// Every three positions represent a triangle.
     ///
     /// Vertices with the same position are merged into a single vertex.
-    pub fn triangles(vertex_positions: &[Vec3]) -> Self {
-        assert!(
-            vertex_positions.len().is_multiple_of(3),
-            "Number of vertex positions should be a multiple of 3"
-        );
+    pub fn triangles(vertex_positions: &[Vec3]) -> Option<Self> {
+        if !vertex_positions.len().is_multiple_of(3) {
+            return None;
+        }
 
         // Create a map to track unique vertices
         let mut unique_positions: Vec<Vec3> = Vec::with_capacity(vertex_positions.len() / 3);
@@ -174,7 +173,7 @@ impl MeshGraph {
         }
 
         // Use indexed_triangles to create the mesh
-        Self::indexed_triangles(&unique_positions, &face_indices)
+        Some(Self::indexed_triangles(&unique_positions, &face_indices))
     }
 
     /// Create a triangle mesh graph from vertex positions, face indices,
@@ -299,13 +298,19 @@ impl MeshGraph {
         let mut normals = SecondaryMap::with_capacity(self.vertices.len());
 
         for face in self.faces.values() {
-            let ha_a_id = face.halfedge;
-            let he_a = self.halfedges[ha_a_id];
+            let Some(&he_a) = self.halfedges.get(face.halfedge) else {
+                error!("Halfedge not found");
+                continue;
+            };
 
-            let he_b_id = he_a
-                .next
-                .expect("Halfedge has definitely a face and thus a next halfedge");
-            let he_b = self.halfedges[he_b_id];
+            let Some(he_b_id) = he_a.next else {
+                error!("Halfedge has no next halfedge");
+                continue;
+            };
+            let Some(he_b) = self.halfedges.get(he_b_id) else {
+                error!("Next halfedge not found");
+                continue;
+            };
 
             let a = match he_a.start_vertex(self) {
                 Some(v) => v,
@@ -331,9 +336,12 @@ impl MeshGraph {
             // TODO : normalizing necessary here?
             let face_normal = diff_a.cross(diff_b);
 
-            *normals.entry(a).unwrap().or_default() += face_normal;
-            *normals.entry(b).unwrap().or_default() += face_normal;
-            *normals.entry(c).unwrap().or_default() += face_normal;
+            for v_id in [a, b, c] {
+                let Some(entry) = normals.entry(v_id) else {
+                    continue;
+                };
+                *entry.or_default() += face_normal;
+            }
         }
 
         self.vertex_normals = Some(normals);

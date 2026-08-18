@@ -80,6 +80,7 @@ impl MeshGraph {
                     (vec![], vec![])
                 );
 
+                // both accesses checked above in `if`
                 v.outgoing_halfedge = Some(self.outgoing_halfedges[start_v_id][0]);
             } else {
                 self.remove_only_vertex(start_v_id);

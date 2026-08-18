@@ -1,6 +1,7 @@
 use glam::{IVec2, Vec2};
 use hashbrown::{HashMap, HashSet};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
+use tracing::{error, instrument};
 
 use crate::plane_slice::{Polygon2, PolygonTerminal};
 #[cfg(feature = "rerun")]
@@ -36,6 +37,7 @@ impl HashGrid {
         }
     }
 
+    #[instrument(skip(self))]
     pub fn try_take_connecting_polygon(
         &mut self,
         point: Vec2,
@@ -48,8 +50,14 @@ impl HashGrid {
             let mut index = None;
 
             for (i, (terminal, polygon_id)) in e.iter().enumerate() {
-                let polygon = &self.polygons[*polygon_id];
-                let existing_point = polygon.terminal(*terminal);
+                let Some(polygon) = self.polygons.get(*polygon_id) else {
+                    error!("Polygon not found");
+                    continue;
+                };
+                let Some(existing_point) = polygon.terminal(*terminal) else {
+                    error!("Empty polygon");
+                    continue;
+                };
 
                 if existing_point.distance_squared(point) < 1e-6 {
                     index = Some(i);
@@ -147,6 +155,7 @@ impl HashGrid {
         terminal2: PolygonTerminal,
     ) {
         if polygon_id1 == polygon_id2 {
+            // this method is only called with valid polygon ids
             let polygon = &mut self.polygons[polygon_id1];
             polygon.close();
 
@@ -166,8 +175,13 @@ impl HashGrid {
 
         polygon1.merge_polygon(terminal1, polygon2, terminal2);
 
-        let start_point = polygon1.terminal(PolygonTerminal::Start);
-        let end_point = polygon1.terminal(PolygonTerminal::End);
+        if polygon1.vertices.is_empty() {
+            return;
+        }
+
+        // checked that the polygon is not empty => we can unwrap the terminal vertices
+        let start_point = polygon1.terminal(PolygonTerminal::Start).unwrap();
+        let end_point = polygon1.terminal(PolygonTerminal::End).unwrap();
 
         #[cfg(feature = "rerun")]
         {

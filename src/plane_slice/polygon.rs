@@ -20,13 +20,19 @@ pub struct Polygon3 {
 }
 
 impl Polygon2 {
-    pub fn terminal(&self, terminal: PolygonTerminal) -> Vec2 {
+    /// Returns the terminal vertex of the polygon, or `None` if the polygon is empty.
+    pub fn terminal(&self, terminal: PolygonTerminal) -> Option<Vec2> {
+        if self.vertices.is_empty() {
+            return None;
+        }
+
         match terminal {
-            PolygonTerminal::Start => self.vertices[0],
-            PolygonTerminal::End => self.vertices[self.vertices.len() - 1],
+            PolygonTerminal::Start => Some(self.vertices[0]),
+            PolygonTerminal::End => Some(self.vertices[self.vertices.len() - 1]),
         }
     }
 
+    /// Extends the polygon by a line from the terminal vertex to `other_line_end`.
     pub fn extend_by_line(&mut self, terminal: PolygonTerminal, other_line_end: Vec2) {
         match terminal {
             PolygonTerminal::Start => self.vertices.push_front(other_line_end),
@@ -65,6 +71,7 @@ impl Polygon2 {
         self.vertices = vertices;
     }
 
+    /// Returns `true` if the polygon is closed (the terminal vertex is the same as the first vertex).
     pub fn is_closed(&self) -> bool {
         if let (Some(front), Some(back)) = (self.vertices.front(), self.vertices.back()) {
             front.distance_squared(*back) < 1e-6
@@ -73,12 +80,14 @@ impl Polygon2 {
         }
     }
 
+    /// Closes the polygon by adding the terminal vertex to the front if it is not already closed.
     pub fn close(&mut self) {
         if !self.is_closed() {
             self.vertices.push_back(self.vertices[0]);
         }
     }
 
+    /// Returns the length (cumulative distance between vertices) of the polygon.
     pub fn length(&self) -> f32 {
         self.vertices
             .iter()
@@ -99,6 +108,10 @@ impl Polygon2 {
             .unwrap();
     }
 
+    /// Returns the minimum and maximum coordinates of the polygon.
+    ///
+    /// The minimum is the smallest `x` and `y` values, and the maximum is the largest `x` and `y` values.
+    /// The pair forms an AABB (axis-aligned bounding box) that encloses the polygon.
     pub fn min_max(&self) -> (Vec2, Vec2) {
         let mut min = Vec2::MAX;
         let mut max = Vec2::MIN;
@@ -142,6 +155,7 @@ impl Polygon3 {
         Self { vertices }
     }
 
+    /// Returns the length (cumulative distance between vertices) of the polygon.
     pub fn length(&self) -> f32 {
         self.vertices
             .iter()

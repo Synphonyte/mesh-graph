@@ -20,8 +20,9 @@ impl PointQuery for MeshGraph {
         self.project_local_point_and_get_location(point, solid).0
     }
 
-    fn project_local_point_and_get_feature(&self, _point: Vec3) -> (PointProjection, FeatureId) {
-        unimplemented!("Not available")
+    fn project_local_point_and_get_feature(&self, point: Vec3) -> (PointProjection, FeatureId) {
+        let (proj, face) = self.project_local_point_and_get_location(point, false);
+        (proj, FeatureId::Face(face.index))
     }
 }
 

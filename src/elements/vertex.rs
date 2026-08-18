@@ -192,7 +192,7 @@ impl Vertex {
                     None
                 }
             },
-            usize::MAX,
+            10000,
         )
     }
 }
