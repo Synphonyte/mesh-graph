@@ -58,6 +58,7 @@ impl MeshGraph {
         );
 
         let mut removed_vertices = Vec::with_capacity(3);
+        let mut touched_start_vertices = HashSet::with_capacity(3);
 
         // Update connections from vertices to deleted halfedges
         for &he_id in &removed_halfedges {
@@ -67,6 +68,7 @@ impl MeshGraph {
                 "Start vertex not found",
                 (vec![], vec![])
             );
+            touched_start_vertices.insert(start_v_id);
             if let Some(out_he_ids) = self.outgoing_halfedges.get_mut(start_v_id) {
                 out_he_ids.retain(|&id| id != he_id);
             } else {
@@ -74,20 +76,20 @@ impl MeshGraph {
             }
         }
 
-        for &he_id in &removed_halfedges {
-            // already checked in the previous loop
-            let start_v_id = self.halfedges[he_id].start_vertex(self).unwrap();
+        for start_v_id in touched_start_vertices {
+            // A vertex survives if it still has a live outgoing halfedge; in that
+            // case refresh its seed pointer. Otherwise it is now isolated.
+            let surviving_out_he = self
+                .outgoing_halfedges
+                .get(start_v_id)
+                .and_then(|out_he_ids| out_he_ids.first().copied());
 
-            if let Some(out_he_ids) = self.outgoing_halfedges.get(start_v_id)
-                && let Some(out_he_id) = out_he_ids.first()
-            {
-                let v = unwrap_or_return!(
-                    self.vertices.get_mut(start_v_id),
-                    "Vertex not found",
-                    (vec![], vec![])
-                );
-
-                v.outgoing_halfedge = Some(*out_he_id);
+            if let Some(out_he_id) = surviving_out_he {
+                if let Some(v) = self.vertices.get_mut(start_v_id) {
+                    v.outgoing_halfedge = Some(out_he_id);
+                } else {
+                    error!("Vertex {start_v_id:?} not found");
+                }
             } else {
                 self.remove_only_vertex(start_v_id);
                 removed_vertices.push(start_v_id);
