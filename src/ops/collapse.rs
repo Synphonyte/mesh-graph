@@ -126,6 +126,12 @@ impl MeshGraph {
             }
         }
 
+        // The per-collapse edits keep the cache consistent for local operations, but the
+        // neighborhood cleanup (vertex splitting) can leave halfedges attributed to the
+        // wrong vertex's list. Since `outgoing_halfedges` is derived, reconcile it once from
+        // the halfedge topology after all collapses are done.
+        self.rebuild_outgoing_halfedges();
+
         #[cfg(feature = "rerun")]
         self.log_rerun();
     }
@@ -268,15 +274,6 @@ impl MeshGraph {
         // }
         // TODO : consider border vertices
 
-        let end_outgoing_halfedges =
-            unwrap_or_return!(self.vertices.get(end_v_id), "End vertex not found", result)
-                .outgoing_halfedges(self)
-                .collect::<Vec<_>>();
-        let end_incoming_halfedges =
-            unwrap_or_return!(self.vertices.get(end_v_id), "End vertex not found", result)
-                .incoming_halfedges(self)
-                .collect::<Vec<_>>();
-
         let he = *unwrap_or_return!(
             self.halfedges.get(halfedge_id),
             "Halfedge not found",
@@ -320,35 +317,49 @@ impl MeshGraph {
 
         self.remove_outgoing_halfedge(end_v_id, twin_id);
 
-        let outgoing_end_halfedges = self
+        // Remove the collapsed edge's own halfedges now.
+        self.halfedges.remove(halfedge_id);
+        self.halfedges.remove(twin_id);
+
+        // The end vertex is absorbed into the start vertex. Every surviving halfedge that
+        // still points at the end vertex must be re-pointed at the start vertex, and the end
+        // vertex's outgoing halfedges move onto the start vertex's list. `remove_halfedge_face`
+        // keeps the outgoing lists (including the re-paired twins) in sync, so the end
+        // vertex's list is complete here.
+        let end_outgoing = self
             .outgoing_halfedges
             .get(end_v_id)
             .cloned()
             .unwrap_or_default();
-        self.outgoing_halfedges
-            .entry(start_v_id)
-            .unwrap() // unwrap is safe here because key exists because we accessed it above in self.positions
-            .or_default()
-            .extend(outgoing_end_halfedges);
-
-        for end_incoming_he in end_incoming_halfedges {
-            if let Some(end_incoming_he_mut) = self.halfedges.get_mut(end_incoming_he) {
-                end_incoming_he_mut.end_vertex = start_v_id;
+        for &out_he_id in &end_outgoing {
+            let Some(out_he) = self.halfedges.get(out_he_id) else {
+                continue;
+            };
+            let Some(twin_id) = out_he.twin else {
+                continue;
+            };
+            if let Some(twin) = self.halfedges.get_mut(twin_id) {
+                twin.end_vertex = start_v_id;
             }
         }
+        self.outgoing_halfedges
+            .entry(start_v_id)
+            .unwrap() // key exists because we access positions[start_v_id] below
+            .or_default()
+            .extend(end_outgoing);
 
         self.remove_only_vertex(end_v_id);
         result.removed_vertices.push(end_v_id);
 
-        self.halfedges.remove(halfedge_id);
-        self.halfedges.remove(twin_id);
-
         // key exists. we accessed it above
         self.positions[start_v_id] = center_pos;
 
-        let new_outgoing_he_id = end_outgoing_halfedges
-            .into_iter()
-            .find(|he_id| self.halfedges.contains_key(*he_id));
+        // Pick a surviving outgoing halfedge of the start vertex as its seed pointer.
+        let new_outgoing_he_id = self.outgoing_halfedges.get(start_v_id).and_then(|l| {
+            l.iter()
+                .copied()
+                .find(|he_id| self.halfedges.contains_key(*he_id))
+        });
 
         if let Some(new_outgoing_he_id) = new_outgoing_he_id {
             // key exists. we accessed it above
@@ -514,6 +525,20 @@ impl MeshGraph {
             .or_else(error_none!("Previous twin halfedge not found"))?
             .twin = Some(next_twin_id);
 
+        // Re-linking the twins above changes the *derived* start vertex of `prev_twin`
+        // (`start_vertex == twin.end_vertex`): it used to start at `prev_he.end_vertex` and
+        // now starts at `next_twin.end_vertex`. Keep `outgoing_halfedges` consistent by moving
+        // `prev_twin` between the two lists. (`next_twin`'s derived start is unchanged.)
+        let prev_twin_new_start = self
+            .halfedges
+            .get(next_twin_id)
+            .or_else(error_none!("Next twin halfedge not found"))?
+            .end_vertex;
+        self.remove_outgoing_halfedge(prev_end_v_id, prev_twin_id);
+        if let Some(list) = self.outgoing_halfedges.get_mut(prev_twin_new_start) {
+            list.push(prev_twin_id);
+        }
+
         Some((face_id, [next_he_id, prev_he_id]))
     }
 }
@@ -658,6 +683,133 @@ mod test {
         assert_eq!(mesh_graph.faces.len(), 6);
 
         assert_eq!(mesh_graph.outgoing_halfedges[start_v_id].len(), 6);
+    }
+
+    /// Builds an `(n x n)` grid of quads in the XY plane, each quad split into two
+    /// triangles (CCW when viewed from `+z`), from scratch with the public add APIs.
+    fn build_grid(n: usize) -> MeshGraph {
+        let mut g = MeshGraph::new();
+
+        let cell = 1.0;
+        let mut v = vec![vec![]; n + 1];
+        for j in 0..=n {
+            for i in 0..=n {
+                let id = g.add_vertex(Vec3::new(i as f32 * cell, j as f32 * cell, 0.0));
+                v[j].push(id);
+            }
+        }
+
+        let edge = |g: &mut MeshGraph, a: VertexId, b: VertexId| -> HalfedgeId {
+            g.add_or_get_edge(a, b).unwrap().start_to_end_he_id
+        };
+
+        for j in 0..n {
+            for i in 0..n {
+                let a = v[j][i];
+                let b = v[j][i + 1];
+                let c = v[j + 1][i + 1];
+                let d = v[j + 1][i];
+
+                // triangles a-b-c and a-c-d
+                let he_ab = edge(&mut g, a, b);
+                let he_bc = edge(&mut g, b, c);
+                let he_ca = edge(&mut g, c, a);
+                g.add_face(he_ab, he_bc, he_ca);
+
+                let he_ac = edge(&mut g, a, c);
+                let he_cd = edge(&mut g, c, d);
+                let he_da = edge(&mut g, d, a);
+                g.add_face(he_ac, he_cd, he_da);
+            }
+        }
+
+        g
+    }
+
+    /// Collects invariant violations of the mesh: every halfedge must reference only live
+    /// vertices/faces, and `outgoing_halfedges[V]` must be exactly the halfedges starting at `V`.
+    fn mesh_invariant_violations(mg: &MeshGraph) -> Vec<String> {
+        let mut problems = Vec::new();
+
+        for (he_id, he) in &mg.halfedges {
+            let Some(twin_id) = he.twin else {
+                problems.push(format!("he {he_id:?}: missing twin"));
+                continue;
+            };
+            match mg.halfedges.get(twin_id) {
+                Some(twin) if twin.twin == Some(he_id) => {}
+                _ => problems.push(format!(
+                    "he {he_id:?}: twin {twin_id:?} does not point back"
+                )),
+            }
+
+            let Some(sv) = he.start_vertex(mg) else {
+                problems.push(format!("he {he_id:?}: no start vertex"));
+                continue;
+            };
+            if !mg.vertices.contains_key(sv) || !mg.positions.contains_key(sv) {
+                problems.push(format!("he {he_id:?}: start vertex {sv:?} is dead"));
+            }
+            if !mg.vertices.contains_key(he.end_vertex) || !mg.positions.contains_key(he.end_vertex)
+            {
+                problems.push(format!(
+                    "he {he_id:?}: end vertex {:?} is dead",
+                    he.end_vertex
+                ));
+            }
+            if let Some(f) = he.face
+                && !mg.faces.contains_key(f)
+            {
+                problems.push(format!("he {he_id:?}: face {f:?} is dead"));
+            }
+            if let Some(n) = he.next
+                && !mg.halfedges.contains_key(n)
+            {
+                problems.push(format!("he {he_id:?}: next {n:?} is dead"));
+            }
+
+            // halfedge must be present in its start vertex's outgoing list
+            match mg.outgoing_halfedges.get(sv) {
+                Some(list) if list.contains(&he_id) => {}
+                _ => problems.push(format!("he {he_id:?}: not in outgoing_halfedges[{sv:?}]")),
+            }
+        }
+
+        for (v_id, list) in &mg.outgoing_halfedges {
+            for &he_id in list {
+                let Some(he) = mg.halfedges.get(he_id) else {
+                    problems.push(format!("outgoing_halfedges[{v_id:?}]: stale he {he_id:?}"));
+                    continue;
+                };
+                if he.start_vertex(mg) != Some(v_id) {
+                    problems.push(format!(
+                        "outgoing_halfedges[{v_id:?}]: he {he_id:?} does not start here"
+                    ));
+                }
+            }
+        }
+
+        problems
+    }
+
+    #[test]
+    fn test_collapse_until_min_length_leaves_no_dangling_halfedges() {
+        let mut mg = build_grid(8);
+        assert!(
+            mesh_invariant_violations(&mg).is_empty(),
+            "initial mesh must satisfy invariants"
+        );
+
+        let mut marked = HashSet::new();
+        mg.collapse_until_edges_above_min_length(2.0, &mut marked);
+
+        let problems = mesh_invariant_violations(&mg);
+        assert!(
+            problems.is_empty(),
+            "collapse left {} dangling/inconsistent halfedges, e.g.:\n{}\n",
+            problems.len(),
+            problems.iter().take(10).join("\n")
+        );
     }
 
     #[cfg(feature = "gltf")]
