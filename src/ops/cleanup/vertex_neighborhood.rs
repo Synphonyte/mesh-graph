@@ -246,7 +246,7 @@ impl MeshGraph {
                 + glam::Vec3::new(0.1, 0.0, 0.0),
         );
 
-        tracing::info!("Duplicated {vertex_id:?}: {new_vert_id:?}");
+        tracing::debug!("Duplicated {vertex_id:?}: {new_vert_id:?}");
 
         for &he_id in &outgoing_halfedges {
             let he = self

@@ -1,6 +1,6 @@
 use hashbrown::HashSet;
 use itertools::Itertools;
-use tracing::instrument;
+use tracing::{error, instrument};
 
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, utils::unwrap_or_return};
 
@@ -69,10 +69,17 @@ impl MeshGraph {
             );
             if let Some(out_he_ids) = self.outgoing_halfedges.get_mut(start_v_id) {
                 out_he_ids.retain(|&id| id != he_id);
+            } else {
+                error!("No outgoing halfedges found for vertex {start_v_id:?}");
             }
+        }
+
+        for &he_id in &removed_halfedges {
+            // already checked in the previous loop
+            let start_v_id = self.halfedges[he_id].start_vertex(self).unwrap();
 
             if let Some(out_he_ids) = self.outgoing_halfedges.get(start_v_id)
-                && !out_he_ids.is_empty()
+                && let Some(out_he_id) = out_he_ids.first()
             {
                 let v = unwrap_or_return!(
                     self.vertices.get_mut(start_v_id),
@@ -80,8 +87,7 @@ impl MeshGraph {
                     (vec![], vec![])
                 );
 
-                // both accesses checked above in `if`
-                v.outgoing_halfedge = Some(self.outgoing_halfedges[start_v_id][0]);
+                v.outgoing_halfedge = Some(*out_he_id);
             } else {
                 self.remove_only_vertex(start_v_id);
                 removed_vertices.push(start_v_id);

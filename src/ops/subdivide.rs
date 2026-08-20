@@ -20,11 +20,10 @@ impl MeshGraph {
         max_length_squared: f32,
         marked_halfedge_ids: &mut HashSet<HalfedgeId>,
         marked_vertex_ids: &mut HashSet<VertexId>,
-        max_iterations: usize,
     ) {
         let mut halfedges_to_subdivide = self.halfedges_map(|len_sqr| len_sqr > max_length_squared);
 
-        for _ in 0..max_iterations {
+        for _ in 0..self.halfedges.len() {
             if halfedges_to_subdivide.is_empty() {
                 break;
             }
@@ -32,14 +31,14 @@ impl MeshGraph {
             let mut max_len = 0.0;
             let mut max_he_id = HalfedgeId::default();
 
-            #[cfg(feature = "rerun")]
-            self.log_hes_rerun(
-                "subdivide/selection",
-                &halfedges_to_subdivide
-                    .iter()
-                    .map(|(he, _)| *he)
-                    .collect::<Vec<_>>(),
-            );
+            // #[cfg(feature = "rerun")]
+            // self.log_hes_rerun(
+            //     "subdivide/selection",
+            //     &halfedges_to_subdivide
+            //         .iter()
+            //         .map(|(he, _)| *he)
+            //         .collect::<Vec<_>>(),
+            // );
 
             for (&he, &len) in &halfedges_to_subdivide {
                 if len > max_len {
@@ -171,23 +170,23 @@ impl MeshGraph {
 
         let center_pos = (start_pos + end_pos) * 0.5;
 
-        #[cfg(feature = "rerun")]
-        {
-            crate::RR
-                .log(
-                    "meshgraph/subdivide/edge",
-                    &rerun::Arrows3D::from_vectors([vec3_array(end_pos - start_pos)])
-                        .with_origins([vec3_array(start_pos)]),
-                )
-                .unwrap();
+        // #[cfg(feature = "rerun")]
+        // {
+        //     crate::RR
+        //         .log(
+        //             "meshgraph/subdivide/edge",
+        //             &rerun::Arrows3D::from_vectors([vec3_array(end_pos - start_pos)])
+        //                 .with_origins([vec3_array(start_pos)]),
+        //         )
+        //         .unwrap();
 
-            crate::RR
-                .log(
-                    "meshgraph/subdivide/center",
-                    &rerun::Points3D::new([vec3_array(center_pos)]),
-                )
-                .unwrap();
-        }
+        //     crate::RR
+        //         .log(
+        //             "meshgraph/subdivide/center",
+        //             &rerun::Points3D::new([vec3_array(center_pos)]),
+        //         )
+        //         .unwrap();
+        // }
 
         let center_v = self.add_vertex(center_pos);
         if let Some(normals) = &mut self.vertex_normals {
@@ -291,11 +290,11 @@ impl MeshGraph {
         self.bvh
             .insert_or_update_partially(new_face.aabb(self), new_face.index, 0.0);
 
-        #[cfg(feature = "rerun")]
-        {
-            self.log_he_rerun("subdivide/new_he", new_he);
-            self.log_he_rerun("subdivide/new_twin", new_twin);
-        }
+        // #[cfg(feature = "rerun")]
+        // {
+        //     self.log_he_rerun("subdivide/new_he", new_he);
+        //     self.log_he_rerun("subdivide/new_twin", new_twin);
+        // }
 
         Some(new_he)
     }

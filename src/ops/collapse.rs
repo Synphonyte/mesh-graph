@@ -15,11 +15,10 @@ impl MeshGraph {
         &mut self,
         min_length_squared: f32,
         marked_vertices: &mut HashSet<VertexId>,
-        max_iterations: usize,
     ) {
         let mut halfedges_to_collapse = self.halfedges_map(|len_sqr| len_sqr < min_length_squared);
 
-        for _ in 0..max_iterations {
+        for _ in 0..self.halfedges.len() {
             if halfedges_to_collapse.is_empty() {
                 break;
             }
@@ -263,10 +262,10 @@ impl MeshGraph {
             return result;
         }
 
-        #[cfg(feature = "rerun")]
-        {
-            self.log_he_rerun("collapse/he", halfedge_id);
-        }
+        // #[cfg(feature = "rerun")]
+        // {
+        //     self.log_he_rerun("collapse/he", halfedge_id);
+        // }
         // TODO : consider border vertices
 
         let end_outgoing_halfedges =
@@ -355,13 +354,13 @@ impl MeshGraph {
             // key exists. we accessed it above
             self.vertices[start_v_id].outgoing_halfedge = Some(new_outgoing_he_id);
 
-            #[cfg(feature = "rerun")]
-            {
-                self.log_he_rerun(
-                    "collapse/outgoing",
-                    self.vertices[start_v_id].outgoing_halfedge.unwrap(),
-                );
-            }
+            // #[cfg(feature = "rerun")]
+            // {
+            //     self.log_he_rerun(
+            //         "collapse/outgoing",
+            //         self.vertices[start_v_id].outgoing_halfedge.unwrap(),
+            //     );
+            // }
 
             let cleanup = self.make_vertex_neighborhood_manifold(start_v_id);
 

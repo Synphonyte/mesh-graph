@@ -141,7 +141,7 @@ impl MeshGraph {
             return result;
         }
 
-        tracing::info!("Range pairs to connect: {range_pairs_to_connect:#?}");
+        tracing::debug!("Range pairs to connect: {range_pairs_to_connect:#?}");
 
         let planned_faces =
             self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
@@ -751,7 +751,7 @@ impl MeshGraph {
         let pos2 = *unwrap_or_return!(self.positions.get(other_v_id2), "Position not found", false);
 
         if pos1.distance_squared(pos2) <= flip_threshold_sqr {
-            tracing::info!("Flipping edge {single_shared_he_id:?}");
+            tracing::debug!("Flipping edge {single_shared_he_id:?}");
 
             self.flip_edge(single_shared_he_id);
 
@@ -786,7 +786,7 @@ impl MeshGraph {
 
             let pairings = range_pair_to_connect.compute_pairings();
 
-            tracing::info!("Pairings: {:#?}", pairings);
+            tracing::debug!("Pairings: {:#?}", pairings);
 
             if pairings.is_empty() {
                 continue;
@@ -944,7 +944,7 @@ impl MeshGraph {
             range_pairs_to_connect
         );
 
-        tracing::info!(
+        tracing::debug!(
             "start idx1: {}, start idx2: {}",
             orig_start_idx1,
             orig_start_idx2
