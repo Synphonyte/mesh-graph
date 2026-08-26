@@ -23,7 +23,15 @@ impl MeshGraph {
     ) {
         let mut halfedges_to_subdivide = self.halfedges_map(|len_sqr| len_sqr > max_length_squared);
 
-        for _ in 0..self.halfedges.len() {
+        // Bound the work by the initial problem size, not the mesh size: in stretched
+        // regions (e.g. the punch band) splitting the longest edge of a triangle can
+        // re-create a fan edge above the threshold, so the set can fail to drain and the
+        // old `halfedges.len()` bound let the op burn the whole halfedge count per call
+        // while growing the mesh ~6x per iteration. Healthy meshes drain at ~1.2x the
+        // initial set size, so 2x leaves ample headroom and caps pathological blowups.
+        let budget = halfedges_to_subdivide.len() * 2 + 100;
+
+        for _ in 0..budget {
             if halfedges_to_subdivide.is_empty() {
                 break;
             }

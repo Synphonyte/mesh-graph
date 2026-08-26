@@ -1583,6 +1583,14 @@ impl Pairing {
                 break;
             }
 
+            if other_v_id == prev_other_v_id {
+                // Consecutive duplicates in the "other" ring would produce a
+                // degenerate (V, S, V) self-connected face. Skip the face but
+                // keep advancing so the following triangles stay well-formed.
+                prev_other_v_id = other_v_id;
+                continue;
+            }
+
             // make sure the triangle vertices are CCW
             if self.single_range_idx == 0 {
                 faces.push(PlannedFace::new(
@@ -1705,6 +1713,16 @@ impl PlannedFace {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph", mesh_graph);
 
+        if self.v1 == self.new_he_v1 || self.v1 == self.new_he_v2 || self.new_he_v1 == self.new_he_v2 {
+            // A planned face with a repeated vertex creates a self-loop edge and
+            // zero-area geometry; it must never reach the mesh.
+            error!(
+                "Skipping degenerate planned face with repeated vertices: {:?}",
+                (self.v1, self.new_he_v1, self.new_he_v2)
+            );
+            return None;
+        }
+
         let add_or_get_edge1 = mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1)?;
         let add_or_get_edge2 =
             mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)?;
@@ -1753,6 +1771,14 @@ impl PlannedFace {
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph_and_he", mesh_graph);
+
+        if self.v1 == self.new_he_v1 || self.v1 == self.new_he_v2 || self.new_he_v1 == self.new_he_v2 {
+            error!(
+                "Skipping degenerate planned face with repeated vertices: {:?}",
+                (self.v1, self.new_he_v1, self.new_he_v2)
+            );
+            return None;
+        }
 
         match self.order {
             PlannedFaceOrder::Middle => {

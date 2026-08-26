@@ -69,6 +69,8 @@ use parry3d::partitioning::{Bvh, BvhWorkspace};
 
 use glam::Vec3;
 use slotmap::{SecondaryMap, SlotMap};
+
+use crate::elements::FaceId;
 use tracing::{error, instrument};
 
 use crate::utils::unwrap_or_return;
@@ -395,6 +397,57 @@ impl MeshGraph {
     }
 
     #[instrument(skip_all)]
+    /// Repairs the redundant `Halfedge::face` cache from the halfedge chains, which are
+    /// the ground truth for face membership (just like `rebuild_outgoing_halfedges` is for
+    /// the per-vertex lists). Stale `.face` pointers (e.g. after flap-removal twin
+    /// re-pairs) make later operations subdivide the wrong faces and degenerate the mesh.
+    /// Also clears `.face` on halfedges that are no longer reachable from any face's chain.
+    ///
+    /// O(F + H), meant to be called once per operation that rewires faces.
+    pub fn repair_face_pointers(&mut self) {
+        let face_ids: Vec<FaceId> = self.faces.keys().collect();
+        let mut visited: hashbrown::HashMap<HalfedgeId, FaceId> = hashbrown::HashMap::new();
+
+        for face_id in face_ids {
+            let Some(start_he) = self.faces.get(face_id).map(|f| f.halfedge) else {
+                continue;
+            };
+
+            let mut he_id = start_he;
+            for _ in 0..32 {
+                let Some(he) = self.halfedges.get_mut(he_id) else {
+                    break;
+                };
+                he.face = Some(face_id);
+                visited.insert(he_id, face_id);
+
+                let Some(next) = he.next else {
+                    break;
+                };
+                if next == start_he {
+                    break;
+                }
+                he_id = next;
+            }
+        }
+
+        // Halfedges that claim a face but are not reachable from that face's chain are
+        // orphans left behind by re-links (e.g. flap twin re-pairs). Clear their stale
+        // `.face` so they read as boundary, which all traversals handle.
+        let orphan_ids: Vec<HalfedgeId> = self
+            .halfedges
+            .iter()
+            .filter(|(he_id, he)| he.face.is_some() && !visited.contains_key(he_id))
+            .map(|(he_id, _)| he_id)
+            .collect();
+
+        for he_id in orphan_ids {
+            if let Some(he) = self.halfedges.get_mut(he_id) {
+                he.face = None;
+            }
+        }
+    }
+
     pub fn rebuild_outgoing_halfedges(&mut self) {
         self.outgoing_halfedges.clear();
 
@@ -418,6 +471,18 @@ impl MeshGraph {
             };
 
             entry.or_default().push(twin_id);
+        }
+
+        // Normalize the per-vertex seed pointers (`vertices[v].outgoing_halfedge`). Stale
+        // seeds pointing at removed halfedges make ring traversals (`one_ring`, faces, ...)
+        // yield dead ids, which panics callers that index them. Only replace the seed when
+        // it is dead, to keep ring iteration order stable in the common case.
+        for (v_id, vertex) in &mut self.vertices {
+            let stored_seed = vertex.outgoing_halfedge;
+            let live_seed = stored_seed.filter(|he| self.halfedges.contains_key(*he));
+            vertex.outgoing_halfedge = live_seed.or_else(|| {
+                self.outgoing_halfedges.get(v_id).and_then(|list| list.first().copied())
+            });
         }
     }
 }

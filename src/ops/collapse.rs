@@ -18,7 +18,13 @@ impl MeshGraph {
     ) {
         let mut halfedges_to_collapse = self.halfedges_map(|len_sqr| len_sqr < min_length_squared);
 
-        for _ in 0..self.halfedges.len() {
+        // Bound the work by the initial problem size, not the mesh size: a degenerate
+        // region (e.g. a cluster of zero-length edges after a bad merge) can keep
+        // re-feeding the set, which made this loop burn up to the whole halfedge count
+        // while growing the mesh. Healthy runs drain at ~1.2x the initial set size.
+        let budget = halfedges_to_collapse.len() * 2 + 100;
+
+        for _ in 0..budget {
             if halfedges_to_collapse.is_empty() {
                 break;
             }
