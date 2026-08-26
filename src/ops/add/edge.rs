@@ -145,6 +145,15 @@ impl MeshGraph {
     ///
     /// If you don't want this, consider using [`add_or_get_edge`] instead.
     pub fn add_edge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> Option<AddEdge> {
+        // `add_halfedge` only validates the start vertex, so a stale `end_vertex` (e.g. from
+        // merge planning after a previous step removed the vertex) would panic on the direct
+        // `self.vertices[end_vertex]` index below. Return `None` instead so callers can abort
+        // the insertion gracefully (failed face insertions are expected in merge planning).
+        if !self.vertices.contains_key(start_vertex) || !self.vertices.contains_key(end_vertex) {
+            error!("add_edge: start {start_vertex:?} or end {end_vertex:?} vertex not found");
+            return None;
+        }
+
         let start_to_end_he_id = self.add_halfedge(start_vertex, end_vertex)?;
         let twin_he_id = self.add_halfedge(end_vertex, start_vertex)?;
 
@@ -152,7 +161,7 @@ impl MeshGraph {
         self.halfedges[start_to_end_he_id].twin = Some(twin_he_id);
         self.halfedges[twin_he_id].twin = Some(start_to_end_he_id);
 
-        // Vertex existence already checked in `add_halfedge`
+        // Vertex existence already checked above
         self.vertices[start_vertex].outgoing_halfedge = Some(start_to_end_he_id);
         self.vertices[end_vertex].outgoing_halfedge = Some(twin_he_id);
 

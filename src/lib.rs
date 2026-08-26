@@ -283,7 +283,18 @@ impl MeshGraph {
 
         for face_id in vertex.faces(self) {
             let face = unwrap_or_return!(self.faces.get(face_id), "Face not found");
-            normal += unwrap_or_return!(face.normal(self), "Face normal not found");
+            let face_normal = face.normal(self);
+            if face_normal.is_none() {
+                let vpos: Vec<Option<Vec3>> = face
+                    .vertices(self)
+                    .map(|v| self.positions.get(v).copied())
+                    .collect();
+                eprintln!(
+                    "DEBUG face-normal-none: vertex {vertex_id:?} face {face_id:?} vpos={vpos:?}\nbacktrace={:?}",
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
+            normal += unwrap_or_return!(face_normal, "Face normal not found");
         }
 
         self.vertex_normals
@@ -386,6 +397,14 @@ impl MeshGraph {
     #[instrument(skip_all)]
     pub fn rebuild_outgoing_halfedges(&mut self) {
         self.outgoing_halfedges.clear();
+
+        // Keep an (empty) list entry for every live vertex: a live vertex without any
+        // halfedges (e.g. a leftover isolated vertex after a cleanup) must still have a list
+        // entry so lookups like `halfedge_from_to` answer "no edge" instead of failing with
+        // "Start vertex not found".
+        for vertex_id in self.vertices.keys() {
+            self.outgoing_halfedges.insert(vertex_id, Vec::new());
+        }
 
         for halfedge in self.halfedges.values() {
             let Some(twin_id) = halfedge.twin else {

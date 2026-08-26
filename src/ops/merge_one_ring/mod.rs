@@ -683,6 +683,7 @@ impl MeshGraph {
 
             let Some(inserted) = inserted else {
                 // depending on the topology inserting a face can fail sometimes. this is fine.
+                prev_he = None;
                 continue;
             };
 
@@ -1734,7 +1735,8 @@ impl PlannedFace {
             if matches!(
                 self.order,
                 PlannedFaceOrder::Start | PlannedFaceOrder::Middle
-            ) {
+            ) && mesh_graph.halfedges[add_or_get_edge2.twin_he_id].is_boundary()
+            {
                 Some(add_or_get_edge2.twin_he_id)
             } else {
                 None

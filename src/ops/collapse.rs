@@ -292,8 +292,6 @@ impl MeshGraph {
                 result
             );
 
-            self.remove_outgoing_halfedge(end_v_id, halfedge_ids[0]);
-
             result.removed_faces.push(face_id);
             result.removed_halfedges.extend(halfedge_ids);
         }
@@ -307,8 +305,6 @@ impl MeshGraph {
                 "Failed to remove halfedge face",
                 result
             );
-
-            self.remove_outgoing_halfedge(start_v_id, halfedge_ids[0]);
 
             result.removed_faces.push(face_id);
             result.removed_halfedges.extend(halfedge_ids);
@@ -473,6 +469,38 @@ impl MeshGraph {
         let next_end_v_id = next_he.end_vertex;
         let prev_end_v_id = prev_he.end_vertex;
 
+        // A pre-existing asymmetric twin
+        // pair (e.g. from a flap in a degenerate neighborhood) can make the face-derived
+        // vertices above disagree with the derived starts; removing from the face-derived
+        // vertex then leaves a stale entry behind.
+        let next_he_derived_start = next_he
+            .start_vertex(self)
+            .or_else(error_none!("Next halfedge start vertex not found"))?;
+        let prev_he_derived_start = prev_he
+            .start_vertex(self)
+            .or_else(error_none!("Previous halfedge start vertex not found"))?;
+
+        // `prev_twin`'s and `next_twin`'s derived starts before the re-linking below:
+        // `twin(he).end`. In the symmetric case these are `prev_he.end_vertex` and
+        // `next_he.end_vertex`; with an asymmetric twin pair (or a flap where both faces of
+        // the collapsed edge share all three vertices) they can differ, so derive them from
+        // the topology rather than the face. Must be computed before `next_he`/`prev_he` are
+        // deleted below: they are the twins whose ends define these starts.
+        let prev_twin_old_start = self
+            .halfedges
+            .get(prev_twin_id)
+            .and_then(|he| he.twin)
+            .and_then(|twin_id| self.halfedges.get(twin_id))
+            .or_else(error_none!("Previous twin start vertex not found"))?
+            .end_vertex;
+        let next_twin_old_start = self
+            .halfedges
+            .get(next_twin_id)
+            .and_then(|he| he.twin)
+            .and_then(|twin_id| self.halfedges.get(twin_id))
+            .or_else(error_none!("Next twin start vertex not found"))?
+            .end_vertex;
+
         self.vertices
             .get_mut(next_end_v_id)
             .or_else(error_none!("Next end vertex not found"))?
@@ -509,7 +537,8 @@ impl MeshGraph {
 
         self.halfedges.remove(next_he_id);
         self.halfedges.remove(prev_he_id);
-        self.remove_outgoing_halfedge(next_end_v_id, prev_he_id);
+        self.remove_outgoing_halfedge(next_he_derived_start, next_he_id);
+        self.remove_outgoing_halfedge(prev_he_derived_start, prev_he_id);
 
         if let Some(face) = self.faces.remove(face_id) {
             self.bvh.remove(face.index);
@@ -528,15 +557,30 @@ impl MeshGraph {
         // Re-linking the twins above changes the *derived* start vertex of `prev_twin`
         // (`start_vertex == twin.end_vertex`): it used to start at `prev_he.end_vertex` and
         // now starts at `next_twin.end_vertex`. Keep `outgoing_halfedges` consistent by moving
-        // `prev_twin` between the two lists. (`next_twin`'s derived start is unchanged.)
+        // `prev_twin` between the two lists.
         let prev_twin_new_start = self
             .halfedges
             .get(next_twin_id)
             .or_else(error_none!("Next twin halfedge not found"))?
             .end_vertex;
-        self.remove_outgoing_halfedge(prev_end_v_id, prev_twin_id);
+        self.remove_outgoing_halfedge(prev_twin_old_start, prev_twin_id);
         if let Some(list) = self.outgoing_halfedges.get_mut(prev_twin_new_start) {
             list.push(prev_twin_id);
+        }
+
+        // The re-link above may also change `next_twin`'s derived start (in a flap, where
+        // `prev_twin.end_vertex` differs from `next_he.end_vertex`). Keep its list entry in
+        // sync like `prev_twin`'s: `next_twin`'s new derived start is `prev_twin.end_vertex`.
+        let next_twin_new_start = self
+            .halfedges
+            .get(prev_twin_id)
+            .or_else(error_none!("Previous twin halfedge not found"))?
+            .end_vertex;
+        if next_twin_old_start != next_twin_new_start {
+            self.remove_outgoing_halfedge(next_twin_old_start, next_twin_id);
+            if let Some(list) = self.outgoing_halfedges.get_mut(next_twin_new_start) {
+                list.push(next_twin_id);
+            }
         }
 
         Some((face_id, [next_he_id, prev_he_id]))

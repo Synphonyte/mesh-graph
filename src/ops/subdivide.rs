@@ -207,12 +207,23 @@ impl MeshGraph {
 
         if let Some(new_face_he) = self.subdivide_face(halfedge_id, new_he, center_v) {
             added_halfedges.push(new_face_he);
+        } else {
+            // The face side of the subdivided edge is boundary: `subdivide_face` early-returns
+            // without re-pointing `halfedge_id` at the center vertex. Do it here so the twin
+            // re-pairing below yields a consistent pair (the boundary halfedge of the
+            // subdivided edge) instead of pairing `new_he` with a halfedge that still ends at
+            // the old start vertex (which misattributes `new_he` and breaks the boundary).
+            self.halfedges[halfedge_id].end_vertex = center_v;
         }
 
         let new_twin = self.add_halfedge(center_v, start_v)?;
 
         if let Some(new_face_he) = self.subdivide_face(twin_id, new_twin, center_v) {
             added_halfedges.push(new_face_he);
+        } else {
+            // Same as above for the twin side (the twin of the subdivided edge is a boundary
+            // halfedge without a face).
+            self.halfedges[twin_id].end_vertex = center_v;
         }
 
         // inserted above

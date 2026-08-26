@@ -792,8 +792,18 @@ impl MeshGraph {
                             .or_else(error_none!("Start vertex 2 missing"))?
                             .outgoing_halfedge = Some(twin_id1);
                     }
-                } else {
-                    tracing::warn!("There's only one halfedge left");
+                } else if halfedges_of_faces.len() == 1 {
+                    tracing::debug!("Single orphaned halfedge after flap removal (boundary edge)");
+
+                    if let Some(&single_he_id) = halfedges_of_faces.iter().next() {
+                        if let Some(single_he) = self.halfedges.get(single_he_id) {
+                            if single_he.twin.is_none() {
+                                tracing::error!("Single orphaned halfedge found and has no twin");
+                            }
+                        } else {
+                            tracing::error!("Single orphaned halfedge not found")
+                        }
+                    }
                 }
 
                 return Some(true);
