@@ -286,16 +286,6 @@ impl MeshGraph {
         for face_id in vertex.faces(self) {
             let face = unwrap_or_return!(self.faces.get(face_id), "Face not found");
             let face_normal = face.normal(self);
-            if face_normal.is_none() {
-                let vpos: Vec<Option<Vec3>> = face
-                    .vertices(self)
-                    .map(|v| self.positions.get(v).copied())
-                    .collect();
-                eprintln!(
-                    "DEBUG face-normal-none: vertex {vertex_id:?} face {face_id:?} vpos={vpos:?}\nbacktrace={:?}",
-                    std::backtrace::Backtrace::force_capture()
-                );
-            }
             normal += unwrap_or_return!(face_normal, "Face normal not found");
         }
 
