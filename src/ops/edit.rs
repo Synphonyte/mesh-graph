@@ -127,6 +127,7 @@ impl MeshGraph {
         }
 
         // Remove halfedges
+        self.clear_twins_to(&halfedges_to_remove.iter().copied().collect::<Vec<_>>());
         for &he_id in &halfedges_to_remove {
             self.halfedges.remove(he_id);
         }
@@ -254,19 +255,52 @@ impl MeshGraph {
                     }
                 }
 
-                // Remove duplicate forward halfedges
+                // A duplicate halfedge is a chain member of a live face, so removing it
+                // in place would break that face's chain. Remove the affected faces first
+                // (which detaches all their halfedges), then drop the leftover duplicates.
+                let mut faces_to_drop: Vec<FaceId> = Vec::new();
+                let mut duplicate_ids: Vec<HalfedgeId> = Vec::new();
                 for &he_id in &group {
                     if he_id != best_fwd {
-                        self.halfedges.remove(he_id);
+                        duplicate_ids.push(he_id);
                         removed_halfedges.push(he_id);
+                        if let Some(he) = self.halfedges.get(he_id) {
+                            if let Some(face_id) = he.face && !faces_to_drop.contains(&face_id) {
+                                faces_to_drop.push(face_id);
+                            }
+                        }
                     }
                 }
 
                 // Remove duplicate reverse halfedges
                 for &twin_id in &twins {
                     if Some(twin_id) != best_rev {
-                        self.halfedges.remove(twin_id);
+                        duplicate_ids.push(twin_id);
                         removed_halfedges.push(twin_id);
+                        if let Some(he) = self.halfedges.get(twin_id) {
+                            if let Some(face_id) = he.face && !faces_to_drop.contains(&face_id) {
+                                faces_to_drop.push(face_id);
+                            }
+                        }
+                    }
+                }
+
+                for face_id in faces_to_drop {
+                    let (v_ids, he_ids) = self.remove_face(face_id);
+                    removed_halfedges.extend(he_ids);
+                }
+
+                // Drop any duplicates that survived the face removals (e.g. halfedges a
+                // face removal keeps as detached boundary halves).
+                let remaining: Vec<HalfedgeId> = duplicate_ids
+                    .iter()
+                    .copied()
+                    .filter(|id| self.halfedges.contains_key(*id))
+                    .collect();
+                if !remaining.is_empty() {
+                    self.clear_twins_to(&remaining);
+                    for he_id in remaining {
+                        self.halfedges.remove(he_id);
                     }
                 }
 
@@ -408,11 +442,15 @@ impl MeshGraph {
 
     /// Makes two halfedges twins of each other. Doesn't change anything else
     pub fn make_twins(&mut self, he_id1: HalfedgeId, he_id2: HalfedgeId) {
-        let he1 = unwrap_or_return!(self.halfedges.get_mut(he_id1), "Halfedge not found");
-        he1.twin = Some(he_id2);
+        // Check both halfedges before writing any twin pointer, so a missing id cannot
+        // leave a dangling half-pair behind.
+        if !self.halfedges.contains_key(he_id1) || !self.halfedges.contains_key(he_id2) {
+            error!("Halfedge not found in make_twins");
+            return;
+        }
+        self.halfedges.get_mut(he_id1).unwrap().twin = Some(he_id2);
+        self.halfedges.get_mut(he_id2).unwrap().twin = Some(he_id1);
 
-        let he2 = unwrap_or_return!(self.halfedges.get_mut(he_id2), "Halfedge not found");
-        he2.twin = Some(he_id1);
     }
 
     /// Removes the outgoing halfedge from a vertex. Doesn't change anything else.

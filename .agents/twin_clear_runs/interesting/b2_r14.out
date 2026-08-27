@@ -1,0 +1,51 @@
+
+running 1 test
+[1;33mwarning[0m[1m:[0m [1msome trace filter directives would enable traces that are disabled statically[0m
+ [1;38;5;21m|[0m `info` would enable the INFO level for all targets
+ [1;38;5;21m=[0m [1mnote:[0m the static max level is `off`
+ [1;38;5;21m=[0m [1mhelp:[0m to enable logging, remove the `max_level_off` feature from the `tracing` crate
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(54537v9) (twin HalfedgeId(68143v3)); partner points at Some(HalfedgeId(47341v1)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(118480v1) (twin HalfedgeId(37641v5)); partner points at Some(HalfedgeId(47346v1)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(92698v1) (twin HalfedgeId(47346v1)); partner points at Some(HalfedgeId(37641v5)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(100448v9) (twin HalfedgeId(47341v1)); partner points at Some(HalfedgeId(68143v3)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(32993v15) (twin HalfedgeId(121502v15)); partner points at Some(HalfedgeId(79966v11)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(61982v5) (twin HalfedgeId(79966v11)); partner points at Some(HalfedgeId(121502v15)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(63826v3) (twin HalfedgeId(43063v3)); partner points at Some(HalfedgeId(81425v21)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(3220v11) (twin HalfedgeId(81425v21)); partner points at Some(HalfedgeId(43063v3)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(112689v23) (twin HalfedgeId(37704v11)); partner points at Some(HalfedgeId(46642v9)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(105925v23) (twin HalfedgeId(46642v9)); partner points at Some(HalfedgeId(37704v11)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(38347v5) (twin HalfedgeId(57208v25)); partner points at Some(HalfedgeId(116595v11)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(82053v27) (twin HalfedgeId(116595v11)); partner points at Some(HalfedgeId(57208v25)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(89189v17) (twin HalfedgeId(125249v15)); partner points at Some(HalfedgeId(114037v15)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(65085v13) (twin HalfedgeId(114037v15)); partner points at Some(HalfedgeId(125249v15)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(76853v1) (twin HalfedgeId(76854v1)); partner points at Some(HalfedgeId(101912v1)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(62861v1) (twin HalfedgeId(101912v1)); partner points at Some(HalfedgeId(76854v1)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(122284v13) (twin HalfedgeId(35092v15)); partner points at Some(HalfedgeId(109792v9)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(102188v15) (twin HalfedgeId(109792v9)); partner points at Some(HalfedgeId(35092v15)) instead of back
+TWIN-CLEAR VERIFY-FAIL: surviving halfedge HalfedgeId(65085v19) still points its twin at removed HalfedgeId(90794v11) (batch of 4)
+TWIN-CLEAR VERIFY-FAIL chain: ["HalfedgeId(65085v19).twin=Some(HalfedgeId(90794v11)) end=Some(VertexId(17504v7)) face=None", "HalfedgeId(90794v11).twin=Some(HalfedgeId(66502v19)) end=Some(VertexId(7039v3)) face=Some(FaceId(28225v13))"]
+   0: <std::backtrace::Backtrace>::create
+   1: <mesh_graph::MeshGraph>::clear_twins_to
+   2: <mesh_graph::MeshGraph>::remove_face
+   3: <mesh_graph::MeshGraph>::make_vertex_neighborhood_manifold_inner
+   4: <mesh_graph::MeshGraph>::make_vertex_neighborhood_manifold
+   5: <mesh_graph::MeshGraph>::cleanup_bookkeeping
+   6: <mesh_graph::MeshGraph>::merge_vertices_one_rings
+   7: <freestyle_sculpt::deformation::topology::TopologyManager>::update_collisions_and_merge
+   8: freestyle_sculpt::deformation::cleanup_mesh
+   9: freestyle_sculpt::deformation::fields::hole_punch::punch_hole
+  10: freestyle_sculpt::tests::logs::replay_log
+  11: freestyle_sculpt::tests::logs::log_002
+  12: <freestyle_sculpt::tests::logs::log_002::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+  13: test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>
+  14: test::run_test::{closure#0}
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>
+  16: <std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+  17: <std::sys::thread::unix::Thread>::new::thread_start
+  18: __pthread_cond_wait
+
+replayed 1 entries; final mesh has 17126 vertices
+test tests::logs::log_002 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 23.14s
+

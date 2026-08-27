@@ -1,0 +1,42 @@
+
+running 1 test
+[1;33mwarning[0m[1m:[0m [1msome trace filter directives would enable traces that are disabled statically[0m
+ [1;38;5;21m|[0m `info` would enable the INFO level for all targets
+ [1;38;5;21m=[0m [1mnote:[0m the static max level is `off`
+ [1;38;5;21m=[0m [1mhelp:[0m to enable logging, remove the `max_level_off` feature from the `tracing` crate
+test tests::logs::log_002 has been running for over 60 seconds
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(123646v11) (twin HalfedgeId(105961v7)); partner points at Some(HalfedgeId(10056v5)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(20900v17) (twin HalfedgeId(10056v5)); partner points at Some(HalfedgeId(105961v7)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(63414v5) (twin HalfedgeId(51307v17)); partner points at Some(HalfedgeId(13488v11)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(59652v13) (twin HalfedgeId(13488v11)); partner points at Some(HalfedgeId(51307v17)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(25601v5) (twin HalfedgeId(123339v3)); partner points at Some(HalfedgeId(67802v17)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(17053v9) (twin HalfedgeId(67802v17)); partner points at Some(HalfedgeId(123339v3)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(81987v13) (twin HalfedgeId(73751v11)); partner points at Some(HalfedgeId(25603v5)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(120771v9) (twin HalfedgeId(25603v5)); partner points at Some(HalfedgeId(73751v11)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(72202v9) (twin HalfedgeId(80470v9)); partner points at Some(HalfedgeId(43244v17)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(13451v17) (twin HalfedgeId(43244v17)); partner points at Some(HalfedgeId(80470v9)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(73853v13) (twin HalfedgeId(89455v13)); partner points at Some(HalfedgeId(89455v13)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(73853v13) (twin HalfedgeId(89455v13)); partner points at Some(HalfedgeId(89455v13)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(94817v11) (twin HalfedgeId(15743v13)); partner points at Some(HalfedgeId(40844v15)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(116825v17) (twin HalfedgeId(40844v15)); partner points at Some(HalfedgeId(15743v13)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(42176v19) (twin HalfedgeId(118647v9)); partner points at Some(HalfedgeId(109138v7)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(73221v15) (twin HalfedgeId(109138v7)); partner points at Some(HalfedgeId(118647v9)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(100272v11) (twin HalfedgeId(102765v17)); partner points at Some(HalfedgeId(60953v21)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(70022v11) (twin HalfedgeId(60953v21)); partner points at Some(HalfedgeId(102765v17)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(76757v15) (twin HalfedgeId(122903v17)); partner points at Some(HalfedgeId(107399v19)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(113110v19) (twin HalfedgeId(107399v19)); partner points at Some(HalfedgeId(122903v17)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(58140v9) (twin HalfedgeId(40811v19)); partner points at Some(HalfedgeId(85667v23)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(105329v13) (twin HalfedgeId(85667v23)); partner points at Some(HalfedgeId(40811v19)) instead of back
+
+thread 'tests::logs::log_002' (6450733) panicked at /Users/maccesch/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parry3d-0.30.2/src/bounding_volume/aabb_utils.rs:103:24:
+Vector cloud Aabb construction: the input iterator should yield at least one point.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::logs::log_002 ... FAILED
+
+failures:
+
+failures:
+    tests::logs::log_002
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 93.76s
+

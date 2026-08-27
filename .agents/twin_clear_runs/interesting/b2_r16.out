@@ -1,0 +1,38 @@
+
+running 1 test
+[1;33mwarning[0m[1m:[0m [1msome trace filter directives would enable traces that are disabled statically[0m
+ [1;38;5;21m|[0m `info` would enable the INFO level for all targets
+ [1;38;5;21m=[0m [1mnote:[0m the static max level is `off`
+ [1;38;5;21m=[0m [1mhelp:[0m to enable logging, remove the `max_level_off` feature from the `tracing` crate
+TWIN-CLEAR VERIFY-FAIL: surviving halfedge HalfedgeId(39960v7) still points its twin at removed HalfedgeId(53273v11) (batch of 2)
+TWIN-CLEAR VERIFY-FAIL chain: ["HalfedgeId(39960v7).twin=Some(HalfedgeId(53273v11)) end=Some(VertexId(8482v9)) face=None", "HalfedgeId(53273v11).twin=Some(HalfedgeId(5698v11)) end=Some(VertexId(15996v11)) face=Some(FaceId(36717v3))"]
+   0: <std::backtrace::Backtrace>::create
+   1: <mesh_graph::MeshGraph>::clear_twins_to
+   2: <mesh_graph::MeshGraph>::remove_halfedge_face
+   3: <mesh_graph::MeshGraph>::collapse_edge_inner
+   4: <mesh_graph::MeshGraph>::collapse_until_edges_above_min_length
+   5: freestyle_sculpt::deformation::cleanup_mesh
+   6: freestyle_sculpt::deformation::fields::hole_punch::punch_hole
+   7: freestyle_sculpt::tests::logs::replay_log
+   8: freestyle_sculpt::tests::logs::log_002
+   9: <freestyle_sculpt::tests::logs::log_002::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+  10: test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>
+  11: test::run_test::{closure#0}
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>
+  13: <std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+  14: <std::sys::thread::unix::Thread>::new::thread_start
+  15: __pthread_cond_wait
+
+
+thread 'tests::logs::log_002' (6362604) panicked at /Users/maccesch/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parry3d-0.30.2/src/bounding_volume/aabb_utils.rs:103:24:
+Vector cloud Aabb construction: the input iterator should yield at least one point.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::logs::log_002 ... FAILED
+
+failures:
+
+failures:
+    tests::logs::log_002
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 19.91s
+

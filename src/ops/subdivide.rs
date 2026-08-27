@@ -141,6 +141,7 @@ impl MeshGraph {
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
+
     }
 
     /// Subdivides an edge by computing it's center vertex. This also subdivides any adjacent triangles and

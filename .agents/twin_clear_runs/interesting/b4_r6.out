@@ -1,0 +1,44 @@
+
+running 1 test
+[1;33mwarning[0m[1m:[0m [1msome trace filter directives would enable traces that are disabled statically[0m
+ [1;38;5;21m|[0m `info` would enable the INFO level for all targets
+ [1;38;5;21m=[0m [1mnote:[0m the static max level is `off`
+ [1;38;5;21m=[0m [1mhelp:[0m to enable logging, remove the `max_level_off` feature from the `tracing` crate
+test tests::logs::log_002 has been running for over 60 seconds
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(18v17) (twin HalfedgeId(92405v21)); partner points at Some(HalfedgeId(90708v45)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(62268v37) (twin HalfedgeId(90708v45)); partner points at Some(HalfedgeId(92405v21)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(81526v5) (twin HalfedgeId(42310v11)); partner points at Some(HalfedgeId(88143v7)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(78745v9) (twin HalfedgeId(88143v7)); partner points at Some(HalfedgeId(42310v11)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(31214v11) (twin HalfedgeId(102977v13)); partner points at Some(HalfedgeId(58563v23)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(104097v23) (twin HalfedgeId(58563v23)); partner points at Some(HalfedgeId(102977v13)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(40837v19) (twin HalfedgeId(118428v3)); partner points at Some(HalfedgeId(51432v25)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(82939v21) (twin HalfedgeId(51432v25)); partner points at Some(HalfedgeId(118428v3)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(80729v11) (twin HalfedgeId(25258v25)); partner points at Some(HalfedgeId(61396v1)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(57744v31) (twin HalfedgeId(61396v1)); partner points at Some(HalfedgeId(25258v25)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(121764v15) (twin HalfedgeId(105536v15)); partner points at Some(HalfedgeId(91436v21)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(103952v13) (twin HalfedgeId(91436v21)); partner points at Some(HalfedgeId(105536v15)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(13972v29) (twin HalfedgeId(82781v25)); partner points at Some(HalfedgeId(15732v19)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(50386v9) (twin HalfedgeId(15732v19)); partner points at Some(HalfedgeId(82781v25)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(75268v23) (twin HalfedgeId(116638v31)); partner points at Some(HalfedgeId(116217v13)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(119680v19) (twin HalfedgeId(116217v13)); partner points at Some(HalfedgeId(116638v31)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(121934v15) (twin HalfedgeId(25990v17)); partner points at Some(HalfedgeId(114050v33)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(101805v37) (twin HalfedgeId(114050v33)); partner points at Some(HalfedgeId(25990v17)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(66820v33) (twin HalfedgeId(86821v11)); partner points at Some(HalfedgeId(95951v9)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(104963v13) (twin HalfedgeId(95951v9)); partner points at Some(HalfedgeId(86821v11)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(44352v21) (twin HalfedgeId(60512v11)); partner points at Some(HalfedgeId(3438v35)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(31214v19) (twin HalfedgeId(3438v35)); partner points at Some(HalfedgeId(60512v11)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(88486v3) (twin HalfedgeId(90824v15)); partner points at Some(HalfedgeId(104160v23)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(36997v1) (twin HalfedgeId(104160v23)); partner points at Some(HalfedgeId(90824v15)) instead of back
+
+thread 'tests::logs::log_002' (6450735) panicked at /Users/maccesch/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parry3d-0.30.2/src/bounding_volume/aabb_utils.rs:103:24:
+Vector cloud Aabb construction: the input iterator should yield at least one point.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::logs::log_002 ... FAILED
+
+failures:
+
+failures:
+    tests::logs::log_002
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 96.80s
+

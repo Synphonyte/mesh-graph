@@ -549,7 +549,9 @@ impl MeshGraph {
     }
 
     /// This finds the common edge between the two faces and welds them together by connecting
-    /// the two `twin` relationships. The reverse `twin` pointers of the previous twins are not changed.
+    /// the two `twin` relationships. The old twins are re-paired with each other so
+    /// every halfedge stays paired and the twin relationship stays symmetric (see
+    /// [`Self::weld_faces_at`]).
     ///
     /// `start_vertex_id` is shared by `face_id1` and `face_id2`.
     fn weld_faces(
@@ -616,7 +618,42 @@ impl MeshGraph {
             .halfedge_between(start_vertex_id, other_common_vertex_id, self)
             .or_else(error_none!("Halfedge between vertices not found"))?;
 
-        // all checked above
+        // The face chains can be stale after flap removals, so verify the halfedges are
+        // still present before re-pairing them (a dangling twin write corrupts the mesh).
+        if !self.halfedges.contains_key(he1_id) || !self.halfedges.contains_key(he2_id) {
+            error!("Halfedge not found in weld_faces_at");
+            return None;
+        }
+        // The old twins' back-references must not be left dangling: if `he1_id` was not
+        // already `he2_id`'s twin, the weld re-pairs the two faces' edge halves while
+        // the old partners (`he1_id`'s and `he2_id`'s previous twins) would keep
+        // pointing at the re-paired halfedges, i.e. one-sided references that later
+        // removals cannot see from the removed halfedge's own twin field (the
+        // partner-local `clear_twins_to` relies on twin symmetry). When both old
+        // partners are clean symmetric partners they are re-paired with each other,
+        // which keeps every halfedge paired (no twinless survivors, no one-sided
+        // twins); a partner that cannot be re-paired is severed instead.
+        let t1 = self.halfedges.get(he1_id).and_then(|h| h.twin);
+        let t2 = self.halfedges.get(he2_id).and_then(|h| h.twin);
+        let t1_swappable = t1.is_some_and(|t1| {
+            t1 != he2_id && self.halfedges.get(t1).is_some_and(|t| t.twin == Some(he1_id))
+        });
+        let t2_swappable = t2.is_some_and(|t2| {
+            t2 != he1_id && self.halfedges.get(t2).is_some_and(|t| t.twin == Some(he2_id))
+        });
+        match (t1_swappable, t2_swappable) {
+            (true, true) => {
+                // Both old partners are clean: re-pair them with each other (the two
+                // duplicate edges swap partners), keeping all four halfedges paired.
+                let t1 = t1.unwrap();
+                let t2 = t2.unwrap();
+                self.halfedges.get_mut(t1).unwrap().twin = Some(t2);
+                self.halfedges.get_mut(t2).unwrap().twin = Some(t1);
+            }
+            (true, false) => self.halfedges.get_mut(t1.unwrap()).unwrap().twin = None,
+            (false, true) => self.halfedges.get_mut(t2.unwrap()).unwrap().twin = None,
+            _ => {}
+        }
         self.halfedges[he1_id].twin = Some(he2_id);
         self.halfedges[he2_id].twin = Some(he1_id);
 
@@ -766,31 +803,47 @@ impl MeshGraph {
                         removed_halfedges.push(he_id1);
                         removed_halfedges.push(he_id2);
 
+                        if !self.halfedges.contains_key(twin_id1) {
+                            error!("Twin 1 missing");
+                            return None;
+                        }
+                        if !self.halfedges.contains_key(twin_id2) {
+                            error!("Twin 2 missing");
+                            return None;
+                        }
+                        // Sever any remaining one-sided back-references to the re-paired
+                        // halfedges (see `weld_faces_at`): the removals above cleared the
+                        // twins' back-pointers to the removed halfedges, but a pre-existing
+                        // asymmetric pair can still reference `twin_id1`/`twin_id2` from
+                        // elsewhere, which the partner-local `clear_twins_to` cannot see.
+                        if let Some(t1) = self.halfedges.get(twin_id1).and_then(|h| h.twin)
+                            && t1 != twin_id2
+                            && let Some(t1_he) = self.halfedges.get(t1)
+                            && t1_he.twin == Some(twin_id1)
                         {
-                            let twin1 = self
-                                .halfedges
-                                .get_mut(twin_id1)
-                                .or_else(error_none!("Twin 1 missing"))?;
-                            twin1.twin = Some(twin_id2);
-                        };
-
+                            self.halfedges.get_mut(t1).unwrap().twin = None;
+                        }
+                        if let Some(t2) = self.halfedges.get(twin_id2).and_then(|h| h.twin)
+                            && t2 != twin_id1
+                            && let Some(t2_he) = self.halfedges.get(t2)
+                            && t2_he.twin == Some(twin_id2)
                         {
-                            let twin2 = self
-                                .halfedges
-                                .get_mut(twin_id2)
-                                .or_else(error_none!("Twin 2 missing"))?;
-                            twin2.twin = Some(twin_id1);
+                            self.halfedges.get_mut(t2).unwrap().twin = None;
+                        }
+                        self.halfedges.get_mut(twin_id1).unwrap().twin = Some(twin_id2);
+                        self.halfedges.get_mut(twin_id2).unwrap().twin = Some(twin_id1);
+
+                        let Some(start_v1) = self.vertices.get_mut(start_v_id1) else {
+                            error!("Start vertex 1 missing");
+                            return None;
                         };
+                        start_v1.outgoing_halfedge = Some(twin_id2);
 
-                        self.vertices
-                            .get_mut(start_v_id1)
-                            .or_else(error_none!("Start vertex 1 missing"))?
-                            .outgoing_halfedge = Some(twin_id2);
-
-                        self.vertices
-                            .get_mut(start_v_id2)
-                            .or_else(error_none!("Start vertex 2 missing"))?
-                            .outgoing_halfedge = Some(twin_id1);
+                        let Some(start_v2) = self.vertices.get_mut(start_v_id2) else {
+                            error!("Start vertex 2 missing");
+                            return None;
+                        };
+                        start_v2.outgoing_halfedge = Some(twin_id1);
                     }
                 } else if halfedges_of_faces.len() == 1 {
                     tracing::debug!("Single orphaned halfedge after flap removal (boundary edge)");

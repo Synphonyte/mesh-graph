@@ -273,6 +273,81 @@ impl MeshGraph {
         (mesh_graph, vertex_ids)
     }
 
+    /// Nulls the `twin` field of every surviving halfedge pointing at one of the
+    /// `removed_ids`. Removing a halfedge must never leave a dangling twin reference
+    /// behind.
+    ///
+    /// Local O(|removed_ids|) implementation (replaces the previous O(H) full scan):
+    /// twin pointers are only ever written as symmetric pairs (`make_twins`,
+    /// `add_or_get_edge`, the weld/flap re-pairs, ...) and every re-pair severs the
+    /// old partners' back-references, so for every removed halfedge its own twin
+    /// partner is the only surviving halfedge whose `twin` field can reference it.
+    /// The partner's back-pointer is nulled here; a back-pointer is only cleared
+    /// when it provably points at the removed id, which keeps the effect identical
+    /// to the full scan. Removed halfedges must still be present at the call site
+    /// (all callers clear before removing) except for `remove_only_halfedge_and_twin`
+    /// whose partner is already gone.
+    ///
+    /// Debug probe (keep for the layer-4 hunt): with `MESH_GRAPH_DANGLING_CHECK=1`
+    /// reports once when a removal takes a halfedge that still belongs to a live face
+    /// whose other members survive, i.e. a removal that breaks a face chain.
+    pub(crate) fn clear_twins_to(&mut self, removed_ids: &[HalfedgeId]) {
+        if removed_ids.is_empty() {
+            return;
+        }
+
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static REPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *ENABLED.get_or_init(|| std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_some())
+            && !*REPORTED.get_or_init(|| false)
+        {
+            // Mark as reported *before* scanning so this expensive probe runs at most once.
+            let _ = REPORTED.set(true);
+            for id in removed_ids {
+                if let Some(he) = self.halfedges.get(*id)
+                    && let Some(face_id) = he.face
+                    && self.faces.contains_key(face_id)
+                {
+                    let other_members: Vec<HalfedgeId> = self
+                        .halfedges
+                        .iter()
+                        .filter(|(h_id, h)| {
+                            h.face == Some(face_id)
+                                && *h_id != *id
+                                && !removed_ids.contains(h_id)
+                        })
+                        .map(|(h_id, _)| h_id)
+                        .take(4)
+                        .collect();
+                    if !other_members.is_empty() {
+                        eprintln!(
+                            "REMOVING LIVE-FACE MEMBER {id:?} of face {face_id:?} (surviving members {other_members:?})"
+                        );
+                        eprintln!("{}", std::backtrace::Backtrace::force_capture());
+                    }
+                }
+            }
+        }
+
+        for &removed_id in removed_ids {
+            let Some(he) = self.halfedges.get(removed_id) else {
+                continue; // already removed (`remove_only_halfedge_and_twin` clears after its partner)
+            };
+            let Some(twin_id) = he.twin else {
+                continue;
+            };
+            if removed_ids.contains(&twin_id) {
+                continue; // the partner is being removed in the same batch, nothing survives to clear
+            }
+            let Some(twin) = self.halfedges.get_mut(twin_id) else {
+                continue;
+            };
+            if twin.twin == Some(removed_id) {
+                twin.twin = None;
+            }
+        }
+    }
+
     /// Computes the vertex normal from neighboring faces
     pub fn compute_vertex_normal(&mut self, vertex_id: VertexId) {
         if self.vertex_normals.is_none() {

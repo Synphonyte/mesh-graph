@@ -1,0 +1,19 @@
+
+running 1 test
+[1;33mwarning[0m[1m:[0m [1msome trace filter directives would enable traces that are disabled statically[0m
+ [1;38;5;21m|[0m `info` would enable the INFO level for all targets
+ [1;38;5;21m=[0m [1mnote:[0m the static max level is `off`
+ [1;38;5;21m=[0m [1mhelp:[0m to enable logging, remove the `max_level_off` feature from the `tracing` crate
+
+thread 'tests::logs::log_002' (6673270) panicked at /Users/maccesch/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parry3d-0.30.2/src/bounding_volume/aabb_utils.rs:103:24:
+Vector cloud Aabb construction: the input iterator should yield at least one point.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::logs::log_002 ... FAILED
+
+failures:
+
+failures:
+    tests::logs::log_002
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 12.67s
+

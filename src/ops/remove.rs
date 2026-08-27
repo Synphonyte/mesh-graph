@@ -32,13 +32,17 @@ impl MeshGraph {
         let mut removed_halfedges = HashSet::with_capacity(4);
 
         for (he_id, he) in halfedges {
-            let twin_id = unwrap_or_return!(he.twin, "Twin not found", (vec![], vec![]));
-
-            let twin = unwrap_or_return!(
-                self.halfedges.get(twin_id),
-                "Twin halfedge not found",
-                (vec![], vec![])
-            );
+            // A twinless member (left over by a re-pair sever or a dangling-twin clear)
+            // must not abort the face removal: remove the member itself. Same for a
+            // member whose twin reference is dead.
+            let Some(twin_id) = he.twin else {
+                removed_halfedges.insert(he_id);
+                continue;
+            };
+            let Some(twin) = self.halfedges.get(twin_id) else {
+                removed_halfedges.insert(he_id);
+                continue;
+            };
             if twin.is_boundary() {
                 removed_halfedges.insert(he_id);
                 removed_halfedges.insert(twin_id);
@@ -96,6 +100,8 @@ impl MeshGraph {
             }
         }
 
+        self.clear_twins_to(&removed_halfedges.iter().copied().collect::<Vec<_>>());
+
         for he_id in &removed_halfedges {
             self.halfedges.remove(*he_id);
         }
@@ -127,6 +133,7 @@ impl MeshGraph {
                 hes.retain(|out_he_id| *out_he_id != he_id);
             }
 
+            self.clear_twins_to(&[he_id]);
             self.halfedges.remove(he_id);
         }
     }
@@ -143,6 +150,7 @@ impl MeshGraph {
                 self.remove_only_halfedge(twin_he_id);
             }
 
+            self.clear_twins_to(&[he_id]);
             self.halfedges.remove(he_id);
         }
     }

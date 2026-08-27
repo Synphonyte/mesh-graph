@@ -1,0 +1,19 @@
+
+running 1 test
+[1;33mwarning[0m[1m:[0m [1msome trace filter directives would enable traces that are disabled statically[0m
+ [1;38;5;21m|[0m `info` would enable the INFO level for all targets
+ [1;38;5;21m=[0m [1mnote:[0m the static max level is `off`
+ [1;38;5;21m=[0m [1mhelp:[0m to enable logging, remove the `max_level_off` feature from the `tracing` crate
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(98883v27) (twin HalfedgeId(51563v41)); partner points at Some(HalfedgeId(52481v11)) instead of back
+TWIN-CLEAR VERIFY-FAIL: surviving halfedge HalfedgeId(59307v19) still points its twin at removed HalfedgeId(52481v11) (batch of 2)
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(101915v23) (twin HalfedgeId(785v17)); partner points at Some(HalfedgeId(66211v13)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(117433v7) (twin HalfedgeId(122892v21)); partner points at Some(HalfedgeId(71593v23)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(114633v23) (twin HalfedgeId(71593v23)); partner points at Some(HalfedgeId(122892v21)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(39668v25) (twin HalfedgeId(66211v13)); partner points at Some(HalfedgeId(785v17)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(31177v17) (twin HalfedgeId(50510v21)); partner points at Some(HalfedgeId(58418v29)) instead of back
+TWIN-CLEAR ASYMMETRIC: removing HalfedgeId(111948v11) (twin HalfedgeId(58418v29)); partner points at Some(HalfedgeId(50510v21)) instead of back
+replayed 1 entries; final mesh has 17373 vertices
+test tests::logs::log_002 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 24.25s
+
