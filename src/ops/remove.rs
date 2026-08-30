@@ -2,7 +2,7 @@ use hashbrown::HashSet;
 use itertools::Itertools;
 use tracing::{error, instrument};
 
-use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, utils::unwrap_or_return};
+use crate::{FaceId, HalfedgeId, MeshGraph, VertexId};
 
 impl MeshGraph {
     /// Deletes a face from the mesh graph.
@@ -66,12 +66,15 @@ impl MeshGraph {
 
         // Update connections from vertices to deleted halfedges
         for &he_id in &removed_halfedges {
-            // checked when inserted into deleted_halfedges
-            let start_v_id = unwrap_or_return!(
-                self.halfedges[he_id].start_vertex(self),
-                "Start vertex not found",
-                (vec![], vec![])
-            );
+            // The start of a removed member is derived from its twin; for a member
+            // whose twin is missing/dead/twinless it cannot be resolved. Skipping the
+            // cleanup leaves a stale entry in `outgoing_halfedges` that the periodic
+            // `contains_key` retain passes purge; aborting the removal instead would
+            // leave the face half-detached (some members already nulled) and break
+            // its chain, which is the layer-4 corruption.
+            let Some(start_v_id) = self.halfedges[he_id].start_vertex(self) else {
+                continue;
+            };
             touched_start_vertices.insert(start_v_id);
             if let Some(out_he_ids) = self.outgoing_halfedges.get_mut(start_v_id) {
                 out_he_ids.retain(|&id| id != he_id);
@@ -100,7 +103,10 @@ impl MeshGraph {
             }
         }
 
-        self.clear_twins_to(&removed_halfedges.iter().copied().collect::<Vec<_>>());
+        self.probe_live_face_removal(
+            &removed_halfedges.iter().copied().collect::<Vec<_>>(),
+            "remove_face_tail",
+        );
 
         for he_id in &removed_halfedges {
             self.halfedges.remove(*he_id);
@@ -124,7 +130,9 @@ impl MeshGraph {
     }
 
     /// Deletes only a halfedge, without deleting any faces or vertices connected to it.
-    /// This also doesn't delete or update any twin
+    /// No other halfedge is modified: the twin (if any) keeps its `twin` pointer,
+    /// which now refers to a removed halfedge. The caller must re-pair the twin or
+    /// remove it before its operation terminates (flap cleanup does both below).
     pub fn remove_only_halfedge(&mut self, he_id: HalfedgeId) {
         if let Some(he) = self.halfedges.get(he_id) {
             if let Some(start_v_id) = he.start_vertex(self)
@@ -133,7 +141,7 @@ impl MeshGraph {
                 hes.retain(|out_he_id| *out_he_id != he_id);
             }
 
-            self.clear_twins_to(&[he_id]);
+            self.probe_live_face_removal(&[he_id], "remove_only_halfedge");
             self.halfedges.remove(he_id);
         }
     }
@@ -150,7 +158,9 @@ impl MeshGraph {
                 self.remove_only_halfedge(twin_he_id);
             }
 
-            self.clear_twins_to(&[he_id]);
+            // The twin was just removed. `he_id`'s own twin pointer is left as-is
+            // (dead reference inside this call); nothing else survives to re-pair.
+            self.probe_live_face_removal(&[he_id], "remove_only_halfedge_and_twin");
             self.halfedges.remove(he_id);
         }
     }

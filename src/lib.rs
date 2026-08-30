@@ -70,7 +70,6 @@ use parry3d::partitioning::{Bvh, BvhWorkspace};
 use glam::Vec3;
 use slotmap::{SecondaryMap, SlotMap};
 
-use crate::elements::FaceId;
 use tracing::{error, instrument};
 
 use crate::utils::unwrap_or_return;
@@ -273,36 +272,81 @@ impl MeshGraph {
         (mesh_graph, vertex_ids)
     }
 
-    /// Nulls the `twin` field of every surviving halfedge pointing at one of the
-    /// `removed_ids`. Removing a halfedge must never leave a dangling twin reference
-    /// behind.
+    /// Pairs a surviving halfedge with a freshly created boundary halfedge so a
+    /// halfedge is never left twinless after its partner is removed or re-paired
+    /// elsewhere (every halfedge must have a twin in a valid state; boundary edges
+    /// are represented as a pair of a face member and a detached half).
     ///
-    /// Local O(|removed_ids|) implementation (replaces the previous O(H) full scan):
-    /// twin pointers are only ever written as symmetric pairs (`make_twins`,
-    /// `add_or_get_edge`, the weld/flap re-pairs, ...) and every re-pair severs the
-    /// old partners' back-references, so for every removed halfedge its own twin
-    /// partner is the only surviving halfedge whose `twin` field can reference it.
-    /// The partner's back-pointer is nulled here; a back-pointer is only cleared
-    /// when it provably points at the removed id, which keeps the effect identical
-    /// to the full scan. Removed halfedges must still be present at the call site
-    /// (all callers clear before removing) except for `remove_only_halfedge_and_twin`
-    /// whose partner is already gone.
+    /// `survivor_start_v` is the survivor's start vertex (derived by the caller,
+    /// since the survivor's own twin may already be gone). The new halfedge claims
+    /// no face and is registered in `outgoing_halfedges` under its start vertex
+    /// (= the survivor's end vertex). Returns the new boundary halfedge.
+    #[instrument(skip(self))]
+    fn pair_with_fresh_boundary_half(
+        &mut self,
+        survivor_id: HalfedgeId,
+        survivor_start_v: VertexId,
+    ) -> Option<HalfedgeId> {
+        let survivor = self.halfedges.get(survivor_id).or_else(error_none!("survivor he not found"))?;
+        let survivor_end = survivor.end_vertex;
+        // `add_halfedge` already registers `boundary_id` in `outgoing_halfedges`
+        // under its start vertex (= `survivor_end`), so do not push it again here.
+        let boundary_id = self.add_halfedge(survivor_end, survivor_start_v)?;
+        // just checked above that the survivor exists
+        self.halfedges[survivor_id].twin = Some(boundary_id);
+        // just added above
+        self.halfedges[boundary_id].twin = Some(survivor_id);
+
+        Some(boundary_id)
+    }
+
+    /// Repairs a vertex's `outgoing_halfedge` seed when it points at a halfedge that
+    /// no longer exists. Ring traversals (`one_ring`, faces, ...) start from this seed,
+    /// so a dead seed makes them yield removed ids. Replaces it with any live outgoing
+    /// halfedge of the vertex, or `None` if the vertex has become isolated. A live seed
+    /// is left untouched to keep ring iteration order stable in the common case.
+    fn reseed_outgoing_if_dead(&mut self, vertex_id: VertexId) {
+        let Some(vertex) = self.vertices.get(vertex_id) else {
+            return;
+        };
+        if vertex
+            .outgoing_halfedge
+            .is_some_and(|he| self.halfedges.contains_key(he))
+        {
+            return;
+        }
+        let new_seed = self
+            .outgoing_halfedges
+            .get(vertex_id)
+            .and_then(|list| list.iter().copied().find(|he| self.halfedges.contains_key(*he)));
+        if let Some(v) = self.vertices.get_mut(vertex_id) {
+            v.outgoing_halfedge = new_seed;
+        }
+    }
+
+    /// Debug probe for the layer-4 corruption hunt: with `MESH_GRAPH_DANGLING_CHECK=1`
+    /// reports once (per process) when a halfedge removal takes a halfedge that still
+    /// belongs to a *live* face — a face that is not being dismantled by the same call
+    /// (`op` is not `remove_face_tail` / `remove_halfedge_face`) — and whose other
+    /// members survive. Such a removal breaks the face chain and corrupts the mesh.
     ///
-    /// Debug probe (keep for the layer-4 hunt): with `MESH_GRAPH_DANGLING_CHECK=1`
-    /// reports once when a removal takes a halfedge that still belongs to a live face
-    /// whose other members survive, i.e. a removal that breaks a face chain.
-    pub(crate) fn clear_twins_to(&mut self, removed_ids: &[HalfedgeId]) {
+    /// Pure instrumentation: it never mutates the mesh. Removal sites used to funnel
+    /// through `clear_twins_to`, which nulled the surviving partner's `twin` before
+    /// the `halfedges.remove(...)`. Re-pairing is now done locally at each removal
+    /// site, so no `.twin = None` write exists in the codebase anymore: every surviving
+    /// halfedge is re-paired (fresh boundary half, partner swap) or removed in the same
+    /// batch as its partner before its operation terminates.
+    pub(crate) fn probe_live_face_removal(&self, removed_ids: &[HalfedgeId], op: &str) {
         if removed_ids.is_empty() {
             return;
         }
 
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        static REPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         if *ENABLED.get_or_init(|| std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_some())
-            && !*REPORTED.get_or_init(|| false)
+            && !matches!(op, "remove_face_tail" | "remove_halfedge_face")
+            && REPORTED.set(()).is_ok()
         {
-            // Mark as reported *before* scanning so this expensive probe runs at most once.
-            let _ = REPORTED.set(true);
             for id in removed_ids {
                 if let Some(he) = self.halfedges.get(*id)
                     && let Some(face_id) = he.face
@@ -326,24 +370,6 @@ impl MeshGraph {
                         eprintln!("{}", std::backtrace::Backtrace::force_capture());
                     }
                 }
-            }
-        }
-
-        for &removed_id in removed_ids {
-            let Some(he) = self.halfedges.get(removed_id) else {
-                continue; // already removed (`remove_only_halfedge_and_twin` clears after its partner)
-            };
-            let Some(twin_id) = he.twin else {
-                continue;
-            };
-            if removed_ids.contains(&twin_id) {
-                continue; // the partner is being removed in the same batch, nothing survives to clear
-            }
-            let Some(twin) = self.halfedges.get_mut(twin_id) else {
-                continue;
-            };
-            if twin.twin == Some(removed_id) {
-                twin.twin = None;
             }
         }
     }

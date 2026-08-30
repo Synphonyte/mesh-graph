@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::{f32, ops::RangeInclusive};
+use std::ops::RangeInclusive;
 
 use hashbrown::HashSet;
 use itertools::Itertools;
@@ -56,9 +56,11 @@ impl MeshGraph {
             // halfedges are reversed, so twin halfedges are actually the next halfedges.
             // also existence is checked in `one_ring()`.
             .filter_map(|he_id| {
-                self.halfedges[he_id]
-                    .twin
-                    .or_else(error_none!("Twin not found"))
+                // `one_ring` derives the ids from the outgoing star of the vertex via
+                // twins; a dead id here (stale seed or dangling twin) would panic on
+                // the index below, so skip it defensively.
+                let he = self.halfedges.get(he_id)?;
+                he.twin.or_else(error_none!("Twin not found"))
             })
             .collect_vec();
         one_ring_he_ids2.reverse();
@@ -676,9 +678,9 @@ impl MeshGraph {
 
         for planned_face in planned_faces {
             let inserted = if let Some(prev_he) = prev_he {
-                planned_face.add_to_mesh_graph_and_he(self, prev_he)
+                planned_face.add_to_mesh_graph_and_he(self, prev_he, result)
             } else {
-                planned_face.add_to_mesh_graph(self)
+                planned_face.add_to_mesh_graph(self, result)
             };
 
             let Some(inserted) = inserted else {
@@ -724,6 +726,25 @@ impl MeshGraph {
             result.removed_faces.push(face_id);
             result.removed_vertices.extend(del_v);
             result.removed_halfedges.extend(del_he);
+        }
+    }
+
+    /// Dismantles the face (if any) that still claims `he_id` as a chain member.
+    /// Planned bridge faces re-file halfedges that an overlapping earlier merge's
+    /// bridge/fan may still own; re-filing a live chain member corrupts the old
+    /// face's chain (face-stealing), so such faces are dismantled before the
+    /// re-file. Only faces inside the merged region are affected: a halfedge that
+    /// is re-filed by a planned face always has its other side owned by a face of
+    /// the same region, never by an outside surface.
+    fn dismantle_faced_member(&mut self, he_id: HalfedgeId, result: &mut MergeVerticesOneRing) {
+        if let Some(he) = self.halfedges.get(he_id)
+            && let Some(face_id) = he.face
+            && self.faces.contains_key(face_id)
+        {
+            let (del_v, del_he) = self.remove_face(face_id);
+            result.removed_faces.push(face_id);
+            result.removed_halfedges.extend(del_he);
+            result.removed_vertices.extend(del_v);
         }
     }
 
@@ -1705,17 +1726,19 @@ impl PlannedFace {
         }
     }
 
-    #[instrument(skip(mesh_graph))]
+    #[instrument(skip(mesh_graph, result))]
     fn add_to_mesh_graph(
         &self,
         mesh_graph: &mut MeshGraph,
+        result: &mut MergeVerticesOneRing,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph", mesh_graph);
 
-        if self.v1 == self.new_he_v1 || self.v1 == self.new_he_v2 || self.new_he_v1 == self.new_he_v2 {
-            // A planned face with a repeated vertex creates a self-loop edge and
-            // zero-area geometry; it must never reach the mesh.
+        if self.v1 == self.new_he_v1
+            || self.v1 == self.new_he_v2
+            || self.new_he_v1 == self.new_he_v2
+        {
             error!(
                 "Skipping degenerate planned face with repeated vertices: {:?}",
                 (self.v1, self.new_he_v1, self.new_he_v2)
@@ -1726,6 +1749,18 @@ impl PlannedFace {
         let add_or_get_edge1 = mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1)?;
         let add_or_get_edge2 =
             mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)?;
+
+        // The re-filed halfedges may still belong to a live face (an overlapping
+        // earlier merge's bridge or fan). Re-filing a live chain member would leave
+        // the old face's chain referencing a halfedge that now claims a different
+        // face (face-stealing corruption); dismantle such faces up front. They lie
+        // inside the merged region and are rebuilt by the new faces.
+        for he_id in [
+            add_or_get_edge1.start_to_end_he_id,
+            add_or_get_edge2.start_to_end_he_id,
+        ] {
+            mesh_graph.dismantle_faced_member(he_id, result);
+        }
 
         let mut add_face = mesh_graph.add_face_from_halfedges(
             add_or_get_edge1.start_to_end_he_id,
@@ -1763,16 +1798,20 @@ impl PlannedFace {
         ))
     }
 
-    #[instrument(skip(mesh_graph))]
+    #[instrument(skip(mesh_graph, result))]
     fn add_to_mesh_graph_and_he(
         &self,
         mesh_graph: &mut MeshGraph,
         existing_he_id: HalfedgeId,
+        result: &mut MergeVerticesOneRing,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph_and_he", mesh_graph);
 
-        if self.v1 == self.new_he_v1 || self.v1 == self.new_he_v2 || self.new_he_v1 == self.new_he_v2 {
+        if self.v1 == self.new_he_v1
+            || self.v1 == self.new_he_v2
+            || self.new_he_v1 == self.new_he_v2
+        {
             error!(
                 "Skipping degenerate planned face with repeated vertices: {:?}",
                 (self.v1, self.new_he_v1, self.new_he_v2)
@@ -1787,6 +1826,15 @@ impl PlannedFace {
                     twin_he_id,
                 } = mesh_graph.add_edge(self.new_he_v1, self.new_he_v2)?;
 
+                // The edge may already exist (created by the previous planned face
+                // of this merge or an overlapping earlier merge): its halfedge still
+                // belongs to that face's chain. Dismantle the claiming face before
+                // re-filing, and the existing edge (the other side of the shared
+                // border) likewise, so no live chain keeps referencing a re-filed
+                // halfedge.
+                mesh_graph.dismantle_faced_member(existing_he_id, result);
+                mesh_graph.dismantle_faced_member(start_to_end_he_id, result);
+
                 let mut add_face =
                     mesh_graph.add_face_from_halfedges(existing_he_id, start_to_end_he_id)?;
                 add_face.halfedge_ids.push(start_to_end_he_id);
@@ -1797,6 +1845,9 @@ impl PlannedFace {
             PlannedFaceOrder::End => {
                 let add_or_get_edge =
                     mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)?;
+
+                mesh_graph.dismantle_faced_member(existing_he_id, result);
+                mesh_graph.dismantle_faced_member(add_or_get_edge.start_to_end_he_id, result);
 
                 let mut add_face = mesh_graph
                     .add_face_from_halfedges(existing_he_id, add_or_get_edge.start_to_end_he_id)?;

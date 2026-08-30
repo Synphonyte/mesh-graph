@@ -286,6 +286,22 @@ impl MeshGraph {
             .next
             .or_else(error_none!("Last halfedge not found"))?;
 
+        // Validate everything that can fail *before* mutating. The re-wiring below
+        // splices a new halfedge into the face chain and creates `new_he`;
+        // aborting in between (e.g. `add_halfedge(next_he.end, ...)` needs
+        // `next_he.end` to be a live vertex) would leave the chain spliced with an
+        // unpaired halfedge and the old `next_he` orphaned — the layer-4 corruption.
+        if !self.vertices.contains_key(self.halfedges[next_he].end_vertex) {
+            tracing::error!(
+                "subdivide_face: next halfedge {next_he:?} ends at a missing vertex"
+            );
+            return None;
+        }
+        if !self.vertices.contains_key(center_v) {
+            tracing::error!("subdivide_face: center vertex {center_v:?} is missing");
+            return None;
+        }
+
         // rewire existing face
         let new_he = self.add_halfedge(center_v, self.halfedges[next_he].end_vertex)?; // checked above
 

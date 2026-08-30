@@ -1,2 +1,6 @@
 target
 Cargo.lock
+
+# Debug run logs from the layer-4 twin-clear hunt
+.agents/**/*.out
+*agents/**/*.sh

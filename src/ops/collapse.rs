@@ -319,8 +319,10 @@ impl MeshGraph {
 
         self.remove_outgoing_halfedge(end_v_id, twin_id);
 
-        // Remove the collapsed edge's own halfedges now.
-        self.clear_twins_to(&[halfedge_id, twin_id]);
+        // Remove the collapsed edge's own halfedges now. Their twins are each
+        // other, so both partners go in the same batch: nothing survives with a
+        // reference to them, no re-pairing needed.
+        self.probe_live_face_removal(&[halfedge_id, twin_id], "collapse_own");
         self.halfedges.remove(halfedge_id);
         self.halfedges.remove(twin_id);
 
@@ -542,7 +544,7 @@ impl MeshGraph {
                 .index,
         );
 
-        self.clear_twins_to(&[next_he_id, prev_he_id]);
+        self.probe_live_face_removal(&[next_he_id, prev_he_id], "remove_halfedge_face");
         self.halfedges.remove(next_he_id);
         self.halfedges.remove(prev_he_id);
         self.remove_outgoing_halfedge(next_he_derived_start, next_he_id);
@@ -584,10 +586,24 @@ impl MeshGraph {
                     list.push(next_twin_id);
                 }
             }
+        } else {
+            // One or both twins are gone (degenerate neighborhood where a twin was
+            // another halfedge of the same removed face, or a self-twinned member).
+            // Whichever twin partner survives must not be left twinless: re-pair it
+            // with a fresh boundary half so the invariant (every halfedge has a
+            // twin) holds when the op terminates.
+            if self.halfedges.contains_key(next_twin_id)
+                && self.pair_with_fresh_boundary_half(next_twin_id, next_end_v_id).is_none()
+            {
+                error!("remove_halfedge_face: could not re-pair next twin {next_twin_id:?}");
+            }
+            if self.halfedges.contains_key(prev_twin_id)
+                && prev_twin_id != next_twin_id
+                && self.pair_with_fresh_boundary_half(prev_twin_id, prev_end_v_id).is_none()
+            {
+                error!("remove_halfedge_face: could not re-pair prev twin {prev_twin_id:?}");
+            }
         }
-        // If the twins are gone (degenerate neighborhood where a twin was another halfedge of
-        // the same removed face), the re-pair cannot run; `clear_twins_to` above already nulled
-        // dangling references to the removed halfedges, so the mesh stays consistent.
 
         Some((face_id, [next_he_id, prev_he_id]))
     }

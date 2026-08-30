@@ -92,6 +92,7 @@ impl MeshGraph {
                         halfedges_to_remove.insert(he_id);
                         halfedges_to_remove.insert(twin_id);
                     } else {
+                        // detach the surviving halfedge: it keeps its twin but no face
                         if let Some(he_mut) = self.halfedges.get_mut(he_id) {
                             he_mut.face = None;
                             he_mut.next = None;
@@ -126,8 +127,13 @@ impl MeshGraph {
             }
         }
 
-        // Remove halfedges
-        self.clear_twins_to(&halfedges_to_remove.iter().copied().collect::<Vec<_>>());
+        // Remove halfedges. The batch is symmetric: every removed halfedge's twin is
+        // also in the batch (collected pairwise above), so no survivor references a
+        // removed id.
+        self.probe_live_face_removal(
+            &halfedges_to_remove.iter().copied().collect::<Vec<_>>(),
+            "merge_batch",
+        );
         for &he_id in &halfedges_to_remove {
             self.halfedges.remove(he_id);
         }
@@ -238,8 +244,10 @@ impl MeshGraph {
                     })
                     .collect();
 
-                // Pick best reverse halfedge (prefer non-boundary)
-                let best_rev = twins.iter().copied().max_by_key(|&id| {
+                // Pick best reverse halfedge (prefer non-boundary), but never the
+                // forward halfedge itself: pairing a halfedge with itself writes a
+                // self-twin, which strands it in later collapse re-pairs.
+                let best_rev = twins.iter().copied().filter(|&r| r != best_fwd).max_by_key(|&id| {
                     self.halfedges
                         .get(id)
                         .map_or(0u8, |h| if h.face.is_some() { 1 } else { 0 })
@@ -258,10 +266,16 @@ impl MeshGraph {
                 // A duplicate halfedge is a chain member of a live face, so removing it
                 // in place would break that face's chain. Remove the affected faces first
                 // (which detaches all their halfedges), then drop the leftover duplicates.
+                //
+                // `best_fwd`/`best_rev` are the survivors of the re-pair and must never
+                // be dropped: after a merge re-points `end_vertex`s, a halfedge and its
+                // own twin can share a group (zero-length edge), which puts the forward
+                // halfedge into the twins list and the reverse halfedge into the group;
+                // dropping either would strand the re-paired survivor twinless.
                 let mut faces_to_drop: Vec<FaceId> = Vec::new();
                 let mut duplicate_ids: Vec<HalfedgeId> = Vec::new();
                 for &he_id in &group {
-                    if he_id != best_fwd {
+                    if he_id != best_fwd && Some(he_id) != best_rev {
                         duplicate_ids.push(he_id);
                         removed_halfedges.push(he_id);
                         if let Some(he) = self.halfedges.get(he_id) {
@@ -274,7 +288,7 @@ impl MeshGraph {
 
                 // Remove duplicate reverse halfedges
                 for &twin_id in &twins {
-                    if Some(twin_id) != best_rev {
+                    if Some(twin_id) != best_rev && twin_id != best_fwd {
                         duplicate_ids.push(twin_id);
                         removed_halfedges.push(twin_id);
                         if let Some(he) = self.halfedges.get(twin_id) {
@@ -286,7 +300,7 @@ impl MeshGraph {
                 }
 
                 for face_id in faces_to_drop {
-                    let (v_ids, he_ids) = self.remove_face(face_id);
+                    let (_v_ids, he_ids) = self.remove_face(face_id);
                     removed_halfedges.extend(he_ids);
                 }
 
@@ -298,7 +312,10 @@ impl MeshGraph {
                     .filter(|id| self.halfedges.contains_key(*id))
                     .collect();
                 if !remaining.is_empty() {
-                    self.clear_twins_to(&remaining);
+                    // Duplicates whose partners are other duplicates in this same
+                    // batch, or the re-paired `best_fwd`/`best_rev` pair (which point
+                    // at each other) — nothing survives referencing a removed id.
+                    self.probe_live_face_removal(&remaining, "merge_remaining");
                     for he_id in remaining {
                         self.halfedges.remove(he_id);
                     }

@@ -624,15 +624,23 @@ impl MeshGraph {
             error!("Halfedge not found in weld_faces_at");
             return None;
         }
+        // Two coincident faces on the same chain share the same halfedge(s): re-pairing
+        // would write a self-twin (`he1.twin = he1`), which later makes the collapse's
+        // `remove_halfedge_face` re-pair fail and strands live face members twinless.
+        // Leave the pairing untouched; coincident faces are handled by the flap cleanup.
+        if he1_id == he2_id {
+            error!("weld_faces_at: faces share the same halfedge {he1_id:?}");
+            return None;
+        }
         // The old twins' back-references must not be left dangling: if `he1_id` was not
         // already `he2_id`'s twin, the weld re-pairs the two faces' edge halves while
         // the old partners (`he1_id`'s and `he2_id`'s previous twins) would keep
-        // pointing at the re-paired halfedges, i.e. one-sided references that later
-        // removals cannot see from the removed halfedge's own twin field (the
-        // partner-local `clear_twins_to` relies on twin symmetry). When both old
-        // partners are clean symmetric partners they are re-paired with each other,
-        // which keeps every halfedge paired (no twinless survivors, no one-sided
-        // twins); a partner that cannot be re-paired is severed instead.
+        // pointing at the re-paired halfedges — one-sided references that later
+        // removals cannot see from the removed halfedge's own twin field and that no
+        // cleanup pass repairs anymore. When both old partners are clean symmetric
+        // partners they are re-paired with each other, which keeps every halfedge
+        // paired (no twinless survivors, no one-sided twins); a partner that cannot
+        // be re-paired is severed instead.
         let t1 = self.halfedges.get(he1_id).and_then(|h| h.twin);
         let t2 = self.halfedges.get(he2_id).and_then(|h| h.twin);
         let t1_swappable = t1.is_some_and(|t1| {
@@ -647,11 +655,42 @@ impl MeshGraph {
                 // duplicate edges swap partners), keeping all four halfedges paired.
                 let t1 = t1.unwrap();
                 let t2 = t2.unwrap();
-                self.halfedges.get_mut(t1).unwrap().twin = Some(t2);
-                self.halfedges.get_mut(t2).unwrap().twin = Some(t1);
+                if t1 == t2 {
+                    // Both sides are the same halfedge (identical faces); pairing it
+                    // with itself is a self-twin. Leave it as-is.
+                    error!("weld_faces_at: old partners are identical {t1:?}");
+                } else {
+                    self.halfedges.get_mut(t1).unwrap().twin = Some(t2);
+                    self.halfedges.get_mut(t2).unwrap().twin = Some(t1);
+                }
             }
-            (true, false) => self.halfedges.get_mut(t1.unwrap()).unwrap().twin = None,
-            (false, true) => self.halfedges.get_mut(t2.unwrap()).unwrap().twin = None,
+            (true, false) => {
+                // `he2`'s old partner is gone/unpaired: `t1` loses its partner when
+                // `he1` is re-paired below. Give it a fresh boundary partner instead
+                // of leaving it twinless.
+                let t1 = t1.unwrap();
+                // `t1` is `he1`'s twin, so `t1.start == he1.end_vertex`.
+                let t1_start = self
+                    .halfedges
+                    .get(he1_id)
+                    .map(|h| h.end_vertex)
+                    .or_else(error_none!("Weld sever start vertex not found"))?;
+                if self.pair_with_fresh_boundary_half(t1, t1_start).is_none() {
+                    error!("weld_faces_at: could not re-pair severed partner {t1:?}");
+                }
+            }
+            (false, true) => {
+                // `t2` is `he2`'s twin, so `t2.start == he2.end_vertex`.
+                let t2 = t2.unwrap();
+                let t2_start = self
+                    .halfedges
+                    .get(he2_id)
+                    .map(|h| h.end_vertex)
+                    .or_else(error_none!("Weld sever start vertex not found"))?;
+                if self.pair_with_fresh_boundary_half(t2, t2_start).is_none() {
+                    error!("weld_faces_at: could not re-pair severed partner {t2:?}");
+                }
+            }
             _ => {}
         }
         self.halfedges[he1_id].twin = Some(he2_id);
@@ -798,52 +837,118 @@ impl MeshGraph {
                         // the twin edges of the neighboring faces of the deleted faces are still there
                         // we need to remove them and re-connect (twin) their twin edges
 
+                        let he1_end_v = he1.end_vertex;
+                        let he2_end_v = he2.end_vertex;
+
                         self.remove_only_halfedge(he_id1);
                         self.remove_only_halfedge(he_id2);
                         removed_halfedges.push(he_id1);
                         removed_halfedges.push(he_id2);
 
-                        if !self.halfedges.contains_key(twin_id1) {
-                            error!("Twin 1 missing");
-                            return None;
-                        }
-                        if !self.halfedges.contains_key(twin_id2) {
-                            error!("Twin 2 missing");
-                            return None;
-                        }
+                        // `remove_only_halfedge` above cleared the twins' back-pointers, so
+                        // `twin_id1`/`twin_id2` are temporarily twinless. Re-pair them with
+                        // each other below; if one is already gone (dangling twin in a
+                        // degenerate neighborhood) the other must still get a partner — never
+                        // leave a surviving halfedge twinless (that would later make
+                        // `remove_face` of its face abort mid-detach and break the chain).
+                        let twin1_alive = self.halfedges.contains_key(twin_id1);
+                        let twin2_alive = self.halfedges.contains_key(twin_id2);
+
                         // Sever any remaining one-sided back-references to the re-paired
-                        // halfedges (see `weld_faces_at`): the removals above cleared the
-                        // twins' back-pointers to the removed halfedges, but a pre-existing
-                        // asymmetric pair can still reference `twin_id1`/`twin_id2` from
-                        // elsewhere, which the partner-local `clear_twins_to` cannot see.
-                        if let Some(t1) = self.halfedges.get(twin_id1).and_then(|h| h.twin)
-                            && t1 != twin_id2
-                            && let Some(t1_he) = self.halfedges.get(t1)
-                            && t1_he.twin == Some(twin_id1)
-                        {
-                            self.halfedges.get_mut(t1).unwrap().twin = None;
+                        // halfedges (see `weld_faces_at`): removing the two halves below
+                        // touches no other twin pointer, so a pre-existing asymmetric
+                        // pair can still reference `twin_id1`/`twin_id2` from elsewhere.
+                        // Re-pair such a stray referencer with a fresh boundary half
+                        // instead of leaving it twinless.
+                        if twin1_alive {
+                            if let Some(t1) = self.halfedges.get(twin_id1).and_then(|h| h.twin)
+                                && t1 != twin_id2
+                                && let Some(t1_he) = self.halfedges.get(t1)
+                                && t1_he.twin == Some(twin_id1)
+                                && self
+                                    .pair_with_fresh_boundary_half(
+                                        t1,
+                                        self.halfedges[twin_id1].end_vertex,
+                                    )
+                                    .is_none()
+                            {
+                                error!("remove_neighboring_flaps: could not re-pair {t1:?}");
+                            }
                         }
-                        if let Some(t2) = self.halfedges.get(twin_id2).and_then(|h| h.twin)
-                            && t2 != twin_id1
-                            && let Some(t2_he) = self.halfedges.get(t2)
-                            && t2_he.twin == Some(twin_id2)
-                        {
-                            self.halfedges.get_mut(t2).unwrap().twin = None;
+                        if twin2_alive {
+                            if let Some(t2) = self.halfedges.get(twin_id2).and_then(|h| h.twin)
+                                && t2 != twin_id1
+                                && let Some(t2_he) = self.halfedges.get(t2)
+                                && t2_he.twin == Some(twin_id2)
+                                && self
+                                    .pair_with_fresh_boundary_half(
+                                        t2,
+                                        self.halfedges[twin_id2].end_vertex,
+                                    )
+                                    .is_none()
+                            {
+                                error!("remove_neighboring_flaps: could not re-pair {t2:?}");
+                            }
                         }
-                        self.halfedges.get_mut(twin_id1).unwrap().twin = Some(twin_id2);
-                        self.halfedges.get_mut(twin_id2).unwrap().twin = Some(twin_id1);
 
-                        let Some(start_v1) = self.vertices.get_mut(start_v_id1) else {
-                            error!("Start vertex 1 missing");
-                            return None;
-                        };
-                        start_v1.outgoing_halfedge = Some(twin_id2);
-
-                        let Some(start_v2) = self.vertices.get_mut(start_v_id2) else {
-                            error!("Start vertex 2 missing");
-                            return None;
-                        };
-                        start_v2.outgoing_halfedge = Some(twin_id1);
+                        // The removed halves are opposite halves of one edge (`he1.end ==
+                        // start_v_id2`), so the survivors take over as the vertex seeds:
+                        // `twin_id1` is outgoing from `start_v_id2`, `twin_id2` from
+                        // `start_v_id1`. When a survivor gets a fresh partner, that fresh
+                        // half occupies the survivor's own start side instead.
+                        match (twin1_alive, twin2_alive) {
+                            (true, true) => {
+                                self.halfedges.get_mut(twin_id1).unwrap().twin = Some(twin_id2);
+                                self.halfedges.get_mut(twin_id2).unwrap().twin = Some(twin_id1);
+                                if let Some(v) = self.vertices.get_mut(start_v_id1) {
+                                    v.outgoing_halfedge = Some(twin_id2);
+                                }
+                                if let Some(v) = self.vertices.get_mut(start_v_id2) {
+                                    v.outgoing_halfedge = Some(twin_id1);
+                                }
+                            }
+                            (true, false) => {
+                                // `twin_id2` is gone; re-pair `twin_id1` with a fresh
+                                // boundary half (outgoing from `start_v_id1`).
+                                match self.pair_with_fresh_boundary_half(twin_id1, he1_end_v) {
+                                    Some(fresh) => {
+                                        if let Some(v) = self.vertices.get_mut(start_v_id1) {
+                                            v.outgoing_halfedge = Some(fresh);
+                                        }
+                                        if let Some(v) = self.vertices.get_mut(start_v_id2) {
+                                            v.outgoing_halfedge = Some(twin_id1);
+                                        }
+                                    }
+                                    None => error!(
+                                        "remove_neighboring_flaps: could not re-pair twin {twin_id1:?}"
+                                    ),
+                                }
+                            }
+                            (false, true) => {
+                                match self.pair_with_fresh_boundary_half(twin_id2, he2_end_v) {
+                                    Some(fresh) => {
+                                        if let Some(v) = self.vertices.get_mut(start_v_id1) {
+                                            v.outgoing_halfedge = Some(twin_id2);
+                                        }
+                                        if let Some(v) = self.vertices.get_mut(start_v_id2) {
+                                            v.outgoing_halfedge = Some(fresh);
+                                        }
+                                    }
+                                    None => error!(
+                                        "remove_neighboring_flaps: could not re-pair twin {twin_id2:?}"
+                                    ),
+                                }
+                            }
+                            (false, false) => {
+                                // Both twins of this edge are already gone, so nothing
+                                // survives to take over as either endpoint's vertex seed.
+                                // If a `outgoing_halfedge` seed still points at one of the
+                                // just-removed halfedges, repair it so ring traversals
+                                // don't start from a dead id.
+                                self.reseed_outgoing_if_dead(start_v_id1);
+                                self.reseed_outgoing_if_dead(start_v_id2);
+                            }
+                        }
                     }
                 } else if halfedges_of_faces.len() == 1 {
                     tracing::debug!("Single orphaned halfedge after flap removal (boundary edge)");
