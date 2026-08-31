@@ -19,6 +19,8 @@ impl MeshGraph {
         &mut self,
         vertices: impl IntoIterator<Item = VertexId>,
     ) -> MergeVertices {
+        #[cfg(feature = "instrumentation")]
+        crate::set_current_op("merge_vertices");
         let vertex_ids: Vec<VertexId> = vertices
             .into_iter()
             .filter(|v| self.vertices.contains_key(*v))
@@ -130,6 +132,7 @@ impl MeshGraph {
         // Remove halfedges. The batch is symmetric: every removed halfedge's twin is
         // also in the batch (collected pairwise above), so no survivor references a
         // removed id.
+        #[cfg(feature = "instrumentation")]
         self.probe_live_face_removal(
             &halfedges_to_remove.iter().copied().collect::<Vec<_>>(),
             "merge_batch",
@@ -247,11 +250,15 @@ impl MeshGraph {
                 // Pick best reverse halfedge (prefer non-boundary), but never the
                 // forward halfedge itself: pairing a halfedge with itself writes a
                 // self-twin, which strands it in later collapse re-pairs.
-                let best_rev = twins.iter().copied().filter(|&r| r != best_fwd).max_by_key(|&id| {
-                    self.halfedges
-                        .get(id)
-                        .map_or(0u8, |h| if h.face.is_some() { 1 } else { 0 })
-                });
+                let best_rev = twins
+                    .iter()
+                    .copied()
+                    .filter(|&r| r != best_fwd)
+                    .max_by_key(|&id| {
+                        self.halfedges
+                            .get(id)
+                            .map_or(0u8, |h| if h.face.is_some() { 1 } else { 0 })
+                    });
 
                 // Update twin pointers
                 if let Some(rev_id) = best_rev {
@@ -279,7 +286,9 @@ impl MeshGraph {
                         duplicate_ids.push(he_id);
                         removed_halfedges.push(he_id);
                         if let Some(he) = self.halfedges.get(he_id) {
-                            if let Some(face_id) = he.face && !faces_to_drop.contains(&face_id) {
+                            if let Some(face_id) = he.face
+                                && !faces_to_drop.contains(&face_id)
+                            {
                                 faces_to_drop.push(face_id);
                             }
                         }
@@ -292,7 +301,9 @@ impl MeshGraph {
                         duplicate_ids.push(twin_id);
                         removed_halfedges.push(twin_id);
                         if let Some(he) = self.halfedges.get(twin_id) {
-                            if let Some(face_id) = he.face && !faces_to_drop.contains(&face_id) {
+                            if let Some(face_id) = he.face
+                                && !faces_to_drop.contains(&face_id)
+                            {
                                 faces_to_drop.push(face_id);
                             }
                         }
@@ -315,6 +326,7 @@ impl MeshGraph {
                     // Duplicates whose partners are other duplicates in this same
                     // batch, or the re-paired `best_fwd`/`best_rev` pair (which point
                     // at each other) — nothing survives referencing a removed id.
+                    #[cfg(feature = "instrumentation")]
                     self.probe_live_face_removal(&remaining, "merge_remaining");
                     for he_id in remaining {
                         self.halfedges.remove(he_id);
@@ -356,6 +368,14 @@ impl MeshGraph {
 
         self.make_outgoing_halfedge_boundary_if_possible(survivor_id);
         self.compute_vertex_normal(survivor_id);
+
+        // Note: `merge_vertices` runs inside `merge_vertices_one_rings`; it is
+        // validated but deliberately not pushed as a state-history step, so the
+        // ring entries stay 1:1 with the host's journal steps (one
+        // `merge_vertices_one_rings` = one step) and resume positions map
+        // unambiguously to journal entries.
+        #[cfg(feature = "instrumentation")]
+        self.probe_chain_integrity("merge_vertices");
 
         MergeVertices {
             removed_vertices,
@@ -467,7 +487,6 @@ impl MeshGraph {
         }
         self.halfedges.get_mut(he_id1).unwrap().twin = Some(he_id2);
         self.halfedges.get_mut(he_id2).unwrap().twin = Some(he_id1);
-
     }
 
     /// Removes the outgoing halfedge from a vertex. Doesn't change anything else.

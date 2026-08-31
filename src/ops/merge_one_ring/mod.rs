@@ -40,6 +40,8 @@ impl MeshGraph {
         marked_halfedges: &mut HashSet<HalfedgeId>,
         marked_vertices: &mut HashSet<VertexId>,
     ) -> MergeVerticesOneRing {
+        #[cfg(feature = "instrumentation")]
+        crate::set_current_op("merge_one_ring");
         let mut result = MergeVerticesOneRing::default();
 
         let vertex1 = *unwrap_or_return!(self.vertices.get(vertex_id1), "Vertex not found", result);
@@ -77,12 +79,27 @@ impl MeshGraph {
         // halfedges' existence already checked in `one_ring()`.
         let mut one_ring_v_ids1 = one_ring_he_ids1
             .iter()
-            .map(|he_id| self.halfedges[*he_id].end_vertex)
+            .filter_map(|he_id| {
+                // `one_ring` derives the ids from the outgoing star of the vertex via
+                // twins; a dead id here (stale seed or dangling twin) would panic on
+                // the index below, so skip it defensively.
+                if self.halfedges.contains_key(*he_id) {
+                    Some(self.halfedges[*he_id].end_vertex)
+                } else {
+                    None
+                }
+            })
             .collect_vec();
         one_ring_v_ids1.rotate_right(1);
         let mut one_ring_v_ids2 = one_ring_he_ids2
             .iter()
-            .map(|he_id| self.halfedges[*he_id].end_vertex)
+            .filter_map(|he_id| {
+                if self.halfedges.contains_key(*he_id) {
+                    Some(self.halfedges[*he_id].end_vertex)
+                } else {
+                    None
+                }
+            })
             .collect_vec();
         one_ring_v_ids2.rotate_right(1);
 
@@ -187,6 +204,11 @@ impl MeshGraph {
                 .chain(&result.added_vertices)
                 .copied(),
         );
+
+        #[cfg(feature = "instrumentation")]
+        if self.probe_chain_integrity("merge_vertices_one_rings") {
+            crate::state_history_push(self, "merge_vertices_one_rings");
+        }
 
         result
     }

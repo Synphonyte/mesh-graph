@@ -29,6 +29,7 @@ rerun = { version = "0.36", default-features = false, optional = true, features 
     "sdk",
 ] }
 serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 slotmap = "1"
 tracing = { version = "0.1", features = ["release_max_level_off"] }
 tracing-subscriber = { version = "0.3", features = [
@@ -43,8 +44,12 @@ bevy = ["dep:bevy"]
 default = []
 gltf = ["dep:gltf"]
 rerun = ["dep:cfg-if", "dep:lazy_static", "dep:rerun"]
-serde = ["dep:serde", "glam/serde", "hashbrown/serde", "slotmap/serde"]
+serde = ["dep:serde", "dep:serde_json", "glam/serde", "hashbrown/serde", "slotmap/serde"]
 manifold = ["dep:manifold-csg"]
+# Layer-4 corruption-hunt instrumentation: debug probes, the state-history ring,
+# state dump/resume support. Requires `serde` (state files are JSON). Off in
+# release builds; `MESH_GRAPH_DANGLING_CHECK=1` activates it at runtime.
+instrumentation = ["serde"]
 
 [[bin]]
 name = "vertex-neighborhood"

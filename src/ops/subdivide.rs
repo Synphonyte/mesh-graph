@@ -21,6 +21,8 @@ impl MeshGraph {
         marked_halfedge_ids: &mut HashSet<HalfedgeId>,
         marked_vertex_ids: &mut HashSet<VertexId>,
     ) {
+        #[cfg(feature = "instrumentation")]
+        crate::set_current_op("subdivide");
         let mut halfedges_to_subdivide = self.halfedges_map(|len_sqr| len_sqr > max_length_squared);
 
         // Bound the work by the initial problem size, not the mesh size: in stretched
@@ -139,9 +141,13 @@ impl MeshGraph {
             }
         }
 
+        #[cfg(feature = "instrumentation")]
+        if self.probe_chain_integrity("subdivide_until_edges_below_max_length") {
+            crate::state_history_push(self, "subdivide_until_edges_below_max_length");
+        }
+
         #[cfg(feature = "rerun")]
         self.log_rerun();
-
     }
 
     /// Subdivides an edge by computing it's center vertex. This also subdivides any adjacent triangles and
@@ -291,10 +297,11 @@ impl MeshGraph {
         // aborting in between (e.g. `add_halfedge(next_he.end, ...)` needs
         // `next_he.end` to be a live vertex) would leave the chain spliced with an
         // unpaired halfedge and the old `next_he` orphaned — the layer-4 corruption.
-        if !self.vertices.contains_key(self.halfedges[next_he].end_vertex) {
-            tracing::error!(
-                "subdivide_face: next halfedge {next_he:?} ends at a missing vertex"
-            );
+        if !self
+            .vertices
+            .contains_key(self.halfedges[next_he].end_vertex)
+        {
+            tracing::error!("subdivide_face: next halfedge {next_he:?} ends at a missing vertex");
             return None;
         }
         if !self.vertices.contains_key(center_v) {

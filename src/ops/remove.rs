@@ -103,6 +103,7 @@ impl MeshGraph {
             }
         }
 
+        #[cfg(feature = "instrumentation")]
         self.probe_live_face_removal(
             &removed_halfedges.iter().copied().collect::<Vec<_>>(),
             "remove_face_tail",
@@ -115,6 +116,8 @@ impl MeshGraph {
         // already checked at the start of the function
         self.bvh.remove(self.faces[face_id].index);
         self.faces.remove(face_id);
+        #[cfg(feature = "instrumentation")]
+        crate::record_face_death(face_id);
 
         (removed_vertices, Vec::from_iter(removed_halfedges))
     }
@@ -141,6 +144,7 @@ impl MeshGraph {
                 hes.retain(|out_he_id| *out_he_id != he_id);
             }
 
+            #[cfg(feature = "instrumentation")]
             self.probe_live_face_removal(&[he_id], "remove_only_halfedge");
             self.halfedges.remove(he_id);
         }
@@ -160,6 +164,7 @@ impl MeshGraph {
 
             // The twin was just removed. `he_id`'s own twin pointer is left as-is
             // (dead reference inside this call); nothing else survives to re-pair.
+            #[cfg(feature = "instrumentation")]
             self.probe_live_face_removal(&[he_id], "remove_only_halfedge_and_twin");
             self.halfedges.remove(he_id);
         }

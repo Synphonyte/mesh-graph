@@ -74,6 +74,287 @@ use tracing::{error, instrument};
 
 use crate::utils::unwrap_or_return;
 
+#[cfg(feature = "instrumentation")]
+// Debug support for the layer-4 corruption hunt (`MESH_GRAPH_DANGLING_CHECK=1`):
+// the name of the operation currently running on this thread. Set by the public
+// ops (collapse/subdivide/merge/...) and recorded next to every face removal in
+// [`record_face_death`], so a corruption report can name the op that killed a face.
+thread_local! {
+    static CURRENT_OP: std::cell::Cell<&'static str> = const { std::cell::Cell::new("unknown") };
+}
+
+/// Records the current op name on this thread (see [`CURRENT_OP`]).
+#[cfg(feature = "instrumentation")]
+#[inline]
+pub(crate) fn set_current_op(op: &'static str) {
+    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_some() {
+        CURRENT_OP.with(|cell| cell.set(op));
+    }
+}
+
+/// A small ring of the most recent face removals: `(op that removed it, face id)`.
+/// Only populated when `MESH_GRAPH_DANGLING_CHECK=1` (see [`record_face_death`]).
+#[cfg(feature = "instrumentation")]
+static FACE_DEATH_LEDGER: std::sync::Mutex<std::collections::VecDeque<(FaceId, &'static str)>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+#[cfg(feature = "instrumentation")]
+const FACE_DEATH_LEDGER_CAP: usize = 64;
+
+/// Records a face removal for the corruption hunt. Cheap when the env flag is unset.
+#[cfg(feature = "instrumentation")]
+#[inline]
+pub(crate) fn record_face_death(face_id: FaceId) {
+    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
+        return;
+    }
+    let op = CURRENT_OP.with(|cell| cell.get());
+    if let Ok(mut ledger) = FACE_DEATH_LEDGER.lock() {
+        ledger.push_back((face_id, op));
+        if ledger.len() > FACE_DEATH_LEDGER_CAP {
+            ledger.pop_front();
+        }
+    }
+}
+
+/// Prints the face-death ledger (most recent last).
+#[cfg(feature = "instrumentation")]
+pub(crate) fn dump_face_death_ledger() {
+    if let Ok(ledger) = FACE_DEATH_LEDGER.lock() {
+        for (face_id, op) in ledger.iter() {
+            eprintln!("    face {face_id:?} removed by '{op}'");
+        }
+    }
+}
+
+/// Called when `collapse_until_edges_above_min_length`'s neighborhood check picks a
+/// dead halfedge id (inserted via `he.twin` of a live halfedge without a liveness
+/// check on the twin). Scans the neighborhood for the twin violator — the live
+/// halfedge whose `twin` references the dead id — and dumps it.
+#[cfg(feature = "instrumentation")]
+#[inline]
+pub(crate) fn report_dead_halfedge_in_collapse_check(mesh_graph: &MeshGraph, dead_id: HalfedgeId) {
+    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
+        return;
+    }
+
+    static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if REPORTED.set(()).is_err() {
+        return;
+    }
+    eprintln!("DEAD ID IN COLLAPSE CHECK: {dead_id:?} was inserted via a live halfedge's twin");
+    for (he_id, he) in &mesh_graph.halfedges {
+        if he.twin == Some(dead_id) {
+            let face_alive = he.face.is_some_and(|f| mesh_graph.faces.contains_key(f));
+            eprintln!(
+                "  violator {he_id:?}: face={:?} (alive={face_alive}) next={:?} twin={:?} end={:?}",
+                he.face, he.next, he.twin, he.end_vertex
+            );
+        }
+    }
+    eprintln!("{}", std::backtrace::Backtrace::force_capture());
+    eprintln!("recent face deaths (oldest first):");
+    dump_face_death_ledger();
+    state_history_dump(
+        "dead_id_in_collapse_check",
+        Some(mesh_graph),
+        Some(&dead_id),
+    );
+}
+
+// -- state history (clone ring + resume) ----------------------------------------
+//
+// Debug support for the layer-4 corruption hunt, compiled only with the
+// `instrumentation` feature and gated at runtime on `MESH_GRAPH_DANGLING_CHECK=1`:
+// after every op end that passes the chain-integrity validator a clone of the mesh
+// is pushed onto a small ring (default 10 entries). When a corruption probe fires,
+// the ring is written to disk so the op that introduced the corruption can be
+// diagnosed from the states leading up to it, and the run can be resumed from any
+// of them via `MeshGraph::load_state`.
+//
+// Env vars:
+//   MESH_GRAPH_DANGLING_CHECK        – enable the whole hunt instrumentation
+//   MESH_GRAPH_STATE_HISTORY_LEN     – ring capacity (default 10)
+//   MESH_GRAPH_STATE_DUMP_DIR        – dump directory (default `mesh_graph_state_dump_<pid>`)
+//   MESH_GRAPH_STATE_DUMP_AT_POS     – dump the ring (once) when the replay position
+//                                      reaches this value (capture-on-demand for tests)
+//
+// The replay position is a *step index*: the host reports one step per mesh-graph
+// topology op call (collapse / subdivide / individual merge_one_ring) via
+// [`MeshGraph::set_replay_position`], so ring snapshots map 1:1 to the host's
+// operation journal and a run can be resumed from any dumped state by replaying
+// the remaining journal steps (freestyle-sculpt: `MESH_GRAPH_RESUME_STATE` +
+// `MESH_GRAPH_RESUME_INDEX`).
+
+/// The replay position (input-log entry index) reported by the host application
+/// through [`MeshGraph::set_replay_position`]. Stored with every state snapshot so
+/// a dumped state can be resumed at the exact spot it was captured.
+#[cfg(feature = "instrumentation")]
+static REPLAY_POSITION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Reports the host's current replay position (input-log entry index). The host
+/// calls [`MeshGraph::set_replay_position`] for every consumed entry; state
+/// snapshots record it so a dumped state can be resumed at the exact spot it was
+/// captured.
+#[cfg(feature = "instrumentation")]
+pub fn set_replay_position(pos: u64) {
+    REPLAY_POSITION.store(pos, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(feature = "instrumentation")]
+fn replay_position() -> u64 {
+    REPLAY_POSITION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One verified mesh state: the mesh clone plus the position/op it was captured at.
+#[cfg(feature = "instrumentation")]
+struct StateSnapshot {
+    pos: u64,
+    op: &'static str,
+    mesh: MeshGraph,
+}
+
+/// The ring of the most recent verified states (oldest first).
+#[cfg(feature = "instrumentation")]
+pub(crate) static STATE_RING: std::sync::Mutex<std::collections::VecDeque<StateSnapshot>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+#[cfg(feature = "instrumentation")]
+pub(crate) const STATE_RING_DEFAULT_CAP: usize = 10;
+
+/// Set once the state history has been dumped, so hosts can write sidecar data
+/// (e.g. an operation journal) into the same directory.
+#[cfg(feature = "instrumentation")]
+static STATE_DUMP_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// The directory the state history was dumped to (if a dump happened in this
+/// process). Hosts can use it to write sidecar files (like an operation journal)
+/// next to the dumped states.
+#[cfg(feature = "instrumentation")]
+pub fn state_dump_dir() -> Option<std::path::PathBuf> {
+    STATE_DUMP_DIR.get().cloned()
+}
+
+#[cfg(feature = "instrumentation")]
+fn state_ring_cap() -> usize {
+    std::env::var_os("MESH_GRAPH_STATE_HISTORY_LEN")
+        .and_then(|s| s.to_str().and_then(|s| s.parse::<usize>().ok()))
+        // 0 disables the ring entirely (faster hunt runs that only probe).
+        .unwrap_or(STATE_RING_DEFAULT_CAP)
+}
+
+/// Pushes a clone of the current mesh onto the state-history ring. Only called at
+/// op ends that passed the chain-integrity validator. Env-gated: no-op when the
+/// hunt instrumentation is disabled.
+#[cfg(feature = "instrumentation")]
+#[inline]
+pub(crate) fn state_history_push(mesh: &MeshGraph, op: &'static str) {
+    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
+        return;
+    }
+
+    let snapshot = StateSnapshot {
+        pos: replay_position(),
+        op,
+        mesh: mesh.clone(),
+    };
+    if let Ok(mut ring) = STATE_RING.lock() {
+        let cap = state_ring_cap();
+        if cap == 0 {
+            ring.clear();
+            return;
+        }
+        ring.push_back(snapshot);
+        while ring.len() > cap {
+            ring.pop_front();
+        }
+    }
+
+    // Capture-on-demand: dump the ring (once) once the boom position is reached.
+    if let Some(target) = std::env::var_os("MESH_GRAPH_STATE_DUMP_AT_POS")
+        && let Some(target) = target.to_str().and_then(|s| s.parse::<u64>().ok())
+        && replay_position() >= target
+    {
+        state_history_dump("at_position", Some(mesh), None);
+    }
+}
+
+/// Writes the state-history ring to disk (plus an optional `current` state), so
+/// the states leading up to a corruption event can be inspected/resumed from.
+/// Fires at most once per process. Needs the `serde` feature (JSON state files).
+#[cfg(feature = "instrumentation")]
+pub(crate) fn state_history_dump(
+    reason: &str,
+    current: Option<&MeshGraph>,
+    context: Option<&dyn std::fmt::Debug>,
+) {
+    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
+        return;
+    }
+
+    static DUMPED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if DUMPED.set(()).is_err() {
+        return;
+    }
+
+    let dir = std::env::var_os("MESH_GRAPH_STATE_DUMP_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(format!("mesh_graph_state_dump_{}", std::process::id()))
+        });
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("state dump: could not create {}: {e:?}", dir.display());
+        return;
+    }
+    // Advertise the dump directory so hosts can write sidecars (e.g. the op
+    // journal) into it.
+    let _ = STATE_DUMP_DIR.set(dir.clone());
+
+    let mut meta = String::new();
+    meta.push_str(&format!(
+        "reason: {reason}\ncurrent replay position: {}\n",
+        replay_position()
+    ));
+    if let Some(context) = context {
+        meta.push_str(&format!("context: {context:?}\n"));
+    }
+
+    if let Ok(ring) = STATE_RING.lock() {
+        meta.push_str(&format!("ring entries (oldest first):\n"));
+        for (i, snap) in ring.iter().enumerate() {
+            meta.push_str(&format!(
+                "  state_{i:02}: pos={} op={}\n",
+                snap.pos, snap.op
+            ));
+        }
+    }
+
+    if let Some(current) = current {
+        let path = dir.join("current.json");
+        if let Err(e) = current.save_state(&path) {
+            eprintln!("state dump: could not write {}: {e:?}", path.display());
+        }
+        meta.push_str(&format!(
+            "current.json: current broken state (pos {})\n",
+            replay_position()
+        ));
+    }
+
+    if let Ok(ring) = STATE_RING.lock() {
+        for (i, snap) in ring.iter().enumerate() {
+            let path = dir.join(format!("state_{i:02}_pos_{:06}_{}.json", snap.pos, snap.op));
+            if let Err(e) = snap.mesh.save_state(&path) {
+                eprintln!("state dump: could not write {}: {e:?}", path.display());
+            }
+        }
+    }
+
+    if let Err(e) = std::fs::write(dir.join("meta.txt"), meta) {
+        eprintln!("state dump: could not write meta.txt: {e:?}");
+    }
+    eprintln!("state history dumped to {}", dir.display());
+}
+
 #[cfg(feature = "rerun")]
 lazy_static::lazy_static! {
     pub static ref RR: rerun::RecordingStream = rerun::RecordingStreamBuilder::new("mesh_graph").spawn().unwrap();
@@ -287,7 +568,10 @@ impl MeshGraph {
         survivor_id: HalfedgeId,
         survivor_start_v: VertexId,
     ) -> Option<HalfedgeId> {
-        let survivor = self.halfedges.get(survivor_id).or_else(error_none!("survivor he not found"))?;
+        let survivor = self
+            .halfedges
+            .get(survivor_id)
+            .or_else(error_none!("survivor he not found"))?;
         let survivor_end = survivor.end_vertex;
         // `add_halfedge` already registers `boundary_id` in `outgoing_halfedges`
         // under its start vertex (= `survivor_end`), so do not push it again here.
@@ -315,10 +599,11 @@ impl MeshGraph {
         {
             return;
         }
-        let new_seed = self
-            .outgoing_halfedges
-            .get(vertex_id)
-            .and_then(|list| list.iter().copied().find(|he| self.halfedges.contains_key(*he)));
+        let new_seed = self.outgoing_halfedges.get(vertex_id).and_then(|list| {
+            list.iter()
+                .copied()
+                .find(|he| self.halfedges.contains_key(*he))
+        });
         if let Some(v) = self.vertices.get_mut(vertex_id) {
             v.outgoing_halfedge = new_seed;
         }
@@ -336,6 +621,7 @@ impl MeshGraph {
     /// site, so no `.twin = None` write exists in the codebase anymore: every surviving
     /// halfedge is re-paired (fresh boundary half, partner swap) or removed in the same
     /// batch as its partner before its operation terminates.
+    #[cfg(feature = "instrumentation")]
     pub(crate) fn probe_live_face_removal(&self, removed_ids: &[HalfedgeId], op: &str) {
         if removed_ids.is_empty() {
             return;
@@ -345,7 +631,6 @@ impl MeshGraph {
         static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         if *ENABLED.get_or_init(|| std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_some())
             && !matches!(op, "remove_face_tail" | "remove_halfedge_face")
-            && REPORTED.set(()).is_ok()
         {
             for id in removed_ids {
                 if let Some(he) = self.halfedges.get(*id)
@@ -356,22 +641,197 @@ impl MeshGraph {
                         .halfedges
                         .iter()
                         .filter(|(h_id, h)| {
-                            h.face == Some(face_id)
-                                && *h_id != *id
-                                && !removed_ids.contains(h_id)
+                            h.face == Some(face_id) && *h_id != *id && !removed_ids.contains(h_id)
                         })
                         .map(|(h_id, _)| h_id)
                         .take(4)
                         .collect();
-                    if !other_members.is_empty() {
+                    if !other_members.is_empty() && REPORTED.set(()).is_ok() {
                         eprintln!(
                             "REMOVING LIVE-FACE MEMBER {id:?} of face {face_id:?} (surviving members {other_members:?})"
                         );
                         eprintln!("{}", std::backtrace::Backtrace::force_capture());
+                        state_history_dump("live_face_member_removal", Some(self), Some(&id));
                     }
                 }
             }
         }
+    }
+
+    /// Debug probe for the layer-4 corruption hunt: with `MESH_GRAPH_DANGLING_CHECK=1`
+    /// reports once (per process) the first operation that terminates with a broken
+    /// face chain — a live halfedge whose `next` is `None`, references a removed
+    /// halfedge, or references a halfedge claimed by a different (or no) face.
+    ///
+    /// Such a chain is what later yields dead ids into `one_ring` walks and
+    /// subdivide/collapse bookkeeping (which panic on the stale SlotMap key), long
+    /// after the op that actually broke the chain. Checking at op boundaries catches
+    /// the writer instead of the walker.
+    ///
+    /// Pure instrumentation: it never mutates the mesh. Returns `true` when the
+    /// mesh passed all checks; on the first corruption the state-history ring is
+    /// dumped to disk (see [`state_history_dump`]).
+    #[cfg(feature = "instrumentation")]
+    pub(crate) fn probe_chain_integrity(&self, op: &str) -> bool {
+        if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
+            return true;
+        }
+
+        static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+        let mut violations: Vec<(HalfedgeId, &'static str)> = Vec::new();
+        let mut dead_face_siblings: Vec<FaceId> = Vec::new();
+        for (he_id, he) in &self.halfedges {
+            let Some(face_id) = he.face else {
+                continue;
+            };
+
+            let verdict = if !self.faces.contains_key(face_id) {
+                if !dead_face_siblings.contains(&face_id) {
+                    dead_face_siblings.push(face_id);
+                }
+                Some("member of a removed face")
+            } else {
+                match he.next {
+                    None => Some("member of a live face with next=None"),
+                    Some(next_id) => match self.halfedges.get(next_id) {
+                        None => Some("next references a removed halfedge"),
+                        Some(next_he) if next_he.face != Some(face_id) => {
+                            Some("next references a halfedge of another/no face")
+                        }
+                        Some(_) => None,
+                    },
+                }
+            };
+
+            if let Some(reason) = verdict {
+                violations.push((he_id, reason));
+                if violations.len() >= 12 {
+                    break;
+                }
+            }
+        }
+
+        // Family-vs-chain fork check: every halfedge that claims a live face (its
+        // member family) must also be reachable through the face's `next` chain.
+        // A face whose family contains halfedges outside its chain is the face-steal
+        // residue: `add_face` re-filed the stray while the face's own chain re-uses
+        // (or lost) it elsewhere.
+        let mut fork: Option<(FaceId, Vec<HalfedgeId>, Vec<HalfedgeId>)> = None;
+        let mut family_by_face: hashbrown::HashMap<FaceId, Vec<HalfedgeId>> =
+            hashbrown::HashMap::new();
+        for (h_id, h) in &self.halfedges {
+            if let Some(f) = h.face {
+                family_by_face.entry(f).or_default().push(h_id);
+            }
+        }
+        for (face_id, face) in &self.faces {
+            let Some(family) = family_by_face.get(&face_id) else {
+                continue;
+            };
+            if family.len() < 3 {
+                // Not a proper triangle face; the other verdicts cover the broken cases.
+                continue;
+            }
+            let mut chain = Vec::with_capacity(family.len());
+            let mut cur = Some(face.halfedge);
+            let mut steps = 0;
+            while let Some(he_id) = cur {
+                if !self.halfedges.contains_key(he_id) || chain.len() > family.len() + 2 {
+                    break;
+                }
+                if chain.contains(&he_id) {
+                    break;
+                }
+                chain.push(he_id);
+                cur = self.halfedges[he_id].next;
+                steps += 1;
+                if steps > 16 {
+                    break;
+                }
+            }
+            if chain.len() != family.len() || family.iter().any(|h_id| !chain.contains(h_id)) {
+                fork = Some((face_id, family.clone(), chain));
+                break;
+            }
+        }
+
+        let clean = violations.is_empty();
+
+        if !clean && REPORTED.set(()).is_ok() {
+            eprintln!(
+                "CHAIN CORRUPTION detected at end of op '{op}' ({} violations shown):",
+                violations.len()
+            );
+            for (he_id, reason) in violations {
+                let detail = self.halfedges.get(he_id).map(|he| {
+                    format!(
+                        "face={:?} next={:?} twin={:?} end={:?}",
+                        he.face, he.next, he.twin, he.end_vertex
+                    )
+                });
+                eprintln!("  halfedge {he_id:?}: {reason}; {detail:?}");
+                // Neighborhood dump: the halfedge's next target, twin, and the
+                // start vertex's outgoing star, so the ghost's surroundings are
+                // visible (which live faces/edges it connects to).
+                if let Some(he) = self.halfedges.get(he_id) {
+                    if let Some(next_id) = he.next
+                        && let Some(next_he) = self.halfedges.get(next_id)
+                    {
+                        eprintln!(
+                            "    next {next_id:?}: face={:?} next={:?} twin={:?} end={:?}",
+                            next_he.face, next_he.next, next_he.twin, next_he.end_vertex
+                        );
+                    }
+                    if let Some(twin_id) = he.twin
+                        && let Some(twin_he) = self.halfedges.get(twin_id)
+                    {
+                        eprintln!(
+                            "    twin {twin_id:?}: face={:?} next={:?} twin={:?} end={:?}",
+                            twin_he.face, twin_he.next, twin_he.twin, twin_he.end_vertex
+                        );
+                    }
+                    if let Some(start_v) = he.start_vertex(self) {
+                        let out: Vec<HalfedgeId> = self
+                            .outgoing_halfedges
+                            .get(start_v)
+                            .map(|l| l.iter().copied().take(6).collect())
+                            .unwrap_or_default();
+                        let out_desc: Vec<String> = out
+                            .iter()
+                            .filter_map(|id| {
+                                self.halfedges
+                                    .get(*id)
+                                    .map(|h| format!("{id:?}(face={:?},next={:?})", h.face, h.next))
+                            })
+                            .collect();
+                        eprintln!("    start vertex {start_v:?} outgoing: {out_desc:?}");
+                    }
+                }
+            }
+            // For halfedges that claim a removed face, print the other live halfedges
+            // claiming the same dead face (the family that escaped the removal).
+            for dead_face_id in &dead_face_siblings {
+                let family: Vec<HalfedgeId> = self
+                    .halfedges
+                    .iter()
+                    .filter(|(_, h)| h.face == Some(*dead_face_id))
+                    .map(|(h_id, _)| h_id)
+                    .collect();
+                eprintln!("  halfedges claiming removed face {dead_face_id:?}: {family:?}");
+            }
+            eprintln!("{}", std::backtrace::Backtrace::force_capture());
+            eprintln!("recent face deaths (oldest first):");
+            dump_face_death_ledger();
+            if let Some((fork_face, fork_family, fork_chain)) = fork {
+                eprintln!("family-vs-chain for face {fork_face:?}:");
+                eprintln!("  chain  (walked): {fork_chain:?}");
+                eprintln!("  family (face field): {fork_family:?}");
+            }
+            state_history_dump("chain_integrity", Some(self), Some(&op));
+        }
+
+        clean
     }
 
     /// Computes the vertex normal from neighboring faces
@@ -572,7 +1032,9 @@ impl MeshGraph {
             let stored_seed = vertex.outgoing_halfedge;
             let live_seed = stored_seed.filter(|he| self.halfedges.contains_key(*he));
             vertex.outgoing_halfedge = live_seed.or_else(|| {
-                self.outgoing_halfedges.get(v_id).and_then(|list| list.first().copied())
+                self.outgoing_halfedges
+                    .get(v_id)
+                    .and_then(|list| list.first().copied())
             });
         }
     }

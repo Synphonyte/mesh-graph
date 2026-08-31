@@ -16,6 +16,8 @@ impl MeshGraph {
         min_length_squared: f32,
         marked_vertices: &mut HashSet<VertexId>,
     ) {
+        #[cfg(feature = "instrumentation")]
+        crate::set_current_op("collapse");
         let mut halfedges_to_collapse = self.halfedges_map(|len_sqr| len_sqr < min_length_squared);
 
         // Bound the work by the initial problem size, not the mesh size: a degenerate
@@ -120,7 +122,16 @@ impl MeshGraph {
             }
 
             for he_id in halfedges_to_check {
-                let he = self.halfedges[he_id]; // already checked above
+                let Some(he) = self.halfedges.get(he_id) else {
+                    // The pair `min` inserted this id: either the halfedge itself or
+                    // its twin was dead when the pair was collected (the twin is not
+                    // liveness-checked at the `min` site). Skip and report once so the
+                    // collision of stale SlotMap keys can be diagnosed instead of
+                    // aborting the run.
+                    #[cfg(feature = "instrumentation")]
+                    crate::report_dead_halfedge_in_collapse_check(self, he_id);
+                    continue;
+                };
 
                 let len_sqr = he.length_squared(self);
 
@@ -137,6 +148,11 @@ impl MeshGraph {
         // wrong vertex's list. Since `outgoing_halfedges` is derived, reconcile it once from
         // the halfedge topology after all collapses are done.
         self.rebuild_outgoing_halfedges();
+
+        #[cfg(feature = "instrumentation")]
+        if self.probe_chain_integrity("collapse_until_edges_above_min_length") {
+            crate::state_history_push(self, "collapse_until_edges_above_min_length");
+        }
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
@@ -306,11 +322,25 @@ impl MeshGraph {
         self.remove_outgoing_halfedge(start_v_id, halfedge_id);
 
         if !twin.is_boundary() {
-            let (face_id, halfedge_ids) = unwrap_or_return!(
-                self.remove_halfedge_face(twin_id),
-                "Failed to remove halfedge face",
-                result
-            );
+            let twin_face_removal = self.remove_halfedge_face(twin_id);
+            if twin_face_removal.is_none() {
+                // The twin-side dismantling failed — typically because the twin was
+                // already removed by the start-side dismantling (a degenerate fold
+                // whose start-side face chain contains the collapsed edge's own
+                // twin). Aborting right away would strand `halfedge_id` with a face
+                // pointer to the already-removed start-side face (the layer-4 ghost:
+                // a live halfedge claiming a removed face). Heal the survivor first:
+                // detach it from the dead face and re-pair it with a fresh boundary
+                // half so no invariant is violated when the op terminates.
+                if let Some(he_mut) = self.halfedges.get_mut(halfedge_id) {
+                    he_mut.face = None;
+                    he_mut.next = None;
+                }
+                self.pair_with_fresh_boundary_half(halfedge_id, start_v_id);
+                return result;
+            }
+            let (face_id, halfedge_ids) =
+                unwrap_or_return!(twin_face_removal, "Failed to remove halfedge face", result);
 
             result.removed_faces.push(face_id);
             result.removed_halfedges.extend(halfedge_ids);
@@ -322,6 +352,7 @@ impl MeshGraph {
         // Remove the collapsed edge's own halfedges now. Their twins are each
         // other, so both partners go in the same batch: nothing survives with a
         // reference to them, no re-pairing needed.
+        #[cfg(feature = "instrumentation")]
         self.probe_live_face_removal(&[halfedge_id, twin_id], "collapse_own");
         self.halfedges.remove(halfedge_id);
         self.halfedges.remove(twin_id);
@@ -544,6 +575,7 @@ impl MeshGraph {
                 .index,
         );
 
+        #[cfg(feature = "instrumentation")]
         self.probe_live_face_removal(&[next_he_id, prev_he_id], "remove_halfedge_face");
         self.halfedges.remove(next_he_id);
         self.halfedges.remove(prev_he_id);
@@ -553,6 +585,8 @@ impl MeshGraph {
         if let Some(face) = self.faces.remove(face_id) {
             self.bvh.remove(face.index);
         }
+        #[cfg(feature = "instrumentation")]
+        crate::record_face_death(face_id);
 
         if self.halfedges.contains_key(next_twin_id) && self.halfedges.contains_key(prev_twin_id) {
             self.halfedges.get_mut(next_twin_id).unwrap().twin = Some(prev_twin_id);
@@ -593,13 +627,17 @@ impl MeshGraph {
             // with a fresh boundary half so the invariant (every halfedge has a
             // twin) holds when the op terminates.
             if self.halfedges.contains_key(next_twin_id)
-                && self.pair_with_fresh_boundary_half(next_twin_id, next_end_v_id).is_none()
+                && self
+                    .pair_with_fresh_boundary_half(next_twin_id, next_end_v_id)
+                    .is_none()
             {
                 error!("remove_halfedge_face: could not re-pair next twin {next_twin_id:?}");
             }
             if self.halfedges.contains_key(prev_twin_id)
                 && prev_twin_id != next_twin_id
-                && self.pair_with_fresh_boundary_half(prev_twin_id, prev_end_v_id).is_none()
+                && self
+                    .pair_with_fresh_boundary_half(prev_twin_id, prev_end_v_id)
+                    .is_none()
             {
                 error!("remove_halfedge_face: could not re-pair prev twin {prev_twin_id:?}");
             }
