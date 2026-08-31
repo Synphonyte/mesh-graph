@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::{f32, ops::RangeInclusive};
+use std::ops::RangeInclusive;
 
 use hashbrown::HashSet;
 use itertools::Itertools;
