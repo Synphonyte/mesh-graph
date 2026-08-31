@@ -3,6 +3,10 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-31
+
+- Updated dependencies `manifold-csg` to `0.4`, `parry3d` to `0.30` and `rerun` to `0.36`
+
 ## [0.8.0] - 2026-07-27
 
 - Update dependencies `bevy` to `0.19` and `parry3d` to `0.29`
