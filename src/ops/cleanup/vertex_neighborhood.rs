@@ -201,7 +201,27 @@ impl MeshGraph {
                     .or_else(error_none!("Halfedge not found"))?;
 
                 let Some(next_he_id) = cur_he.cw_rotated_neighbour(self) else {
-                    // TODO : handle boundary edges?
+                    // The fan runs into a boundary, so rotating clockwise can't
+                    // reach the rest of it. Whether the walk started in the
+                    // middle of the fan or at its end decides how much is left,
+                    // so collect the remainder by rotating the other way around
+                    // the vertex, back from `start_he_id`. Otherwise a perfectly
+                    // connected boundary neighborhood looks disconnected and the
+                    // vertex gets split for no reason.
+                    let mut back_he_id = start_he_id;
+                    while let Some(prev_he_id) = self
+                        .halfedges
+                        .get(back_he_id)
+                        .or_else(error_none!("Halfedge not found"))?
+                        .ccw_rotated_neighbour(self)
+                    {
+                        if !outgoing_halfedges.remove(&prev_he_id) {
+                            break;
+                        }
+                        current_outgoing_halfedges.push(prev_he_id);
+                        back_he_id = prev_he_id;
+                    }
+
                     break;
                 };
 
@@ -399,13 +419,15 @@ impl MeshGraph {
             side_two[side_two.len() - 1],
         );
 
-        // checked above
-        self.outgoing_halfedges[vertex_id] =
-            self.vertices[vertex_id].outgoing_halfedges(self).collect();
-        // checked above
-        self.outgoing_halfedges[new_vertex_id] = self.vertices[new_vertex_id]
-            .outgoing_halfedges(self)
-            .collect();
+        // Ground-truth rebuild: a seed-walk rebuild could miss halfedges behind a
+        // temporarily detached fan (the re-points above already partitioned the
+        // star), which would silently drop live outgoing entries.
+        #[cfg(feature = "instrumentation")]
+        crate::record_op_trace!(
+            "split_regions_at_edge({vertex_id:?}, {other_vertex_id:?}): new {new_vertex_id:?}"
+        );
+        self.rebuild_vertex_outgoing_list(vertex_id);
+        self.rebuild_vertex_outgoing_list(new_vertex_id);
 
         Some(new_vertex_id)
     }
@@ -537,13 +559,11 @@ impl MeshGraph {
         self.weld_faces(vertex_id, side_one[side_one.len() - 1], side_one[0]);
         self.weld_faces(new_vertex_id, side_two[0], side_two[side_two.len() - 1]);
 
-        // checked above
-        self.outgoing_halfedges[vertex_id] =
-            self.vertices[vertex_id].outgoing_halfedges(self).collect();
-        // inserted above
-        self.outgoing_halfedges[new_vertex_id] = self.vertices[new_vertex_id]
-            .outgoing_halfedges(self)
-            .collect();
+        // Ground-truth rebuild: see `split_regions_at_edge`.
+        #[cfg(feature = "instrumentation")]
+        crate::record_op_trace!("split_regions_at_vertex({vertex_id:?}): new {new_vertex_id:?}");
+        self.rebuild_vertex_outgoing_list(vertex_id);
+        self.rebuild_vertex_outgoing_list(new_vertex_id);
 
         Some(new_vertex_id)
     }
@@ -644,10 +664,18 @@ impl MeshGraph {
         let t1 = self.halfedges.get(he1_id).and_then(|h| h.twin);
         let t2 = self.halfedges.get(he2_id).and_then(|h| h.twin);
         let t1_swappable = t1.is_some_and(|t1| {
-            t1 != he2_id && self.halfedges.get(t1).is_some_and(|t| t.twin == Some(he1_id))
+            t1 != he2_id
+                && self
+                    .halfedges
+                    .get(t1)
+                    .is_some_and(|t| t.twin == Some(he1_id))
         });
         let t2_swappable = t2.is_some_and(|t2| {
-            t2 != he1_id && self.halfedges.get(t2).is_some_and(|t| t.twin == Some(he2_id))
+            t2 != he1_id
+                && self
+                    .halfedges
+                    .get(t2)
+                    .is_some_and(|t| t.twin == Some(he2_id))
         });
         match (t1_swappable, t2_swappable) {
             (true, true) => {
@@ -845,6 +873,11 @@ impl MeshGraph {
                         removed_halfedges.push(he_id1);
                         removed_halfedges.push(he_id2);
 
+                        #[cfg(feature = "instrumentation")]
+                        crate::record_op_trace!(
+                            "flap removal: removed {he_id1:?}+{he_id2:?} (edge {start_v_id1:?}-{start_v_id2:?}); twins {twin_id1:?}/{twin_id2:?}"
+                        );
+
                         // `remove_only_halfedge` above cleared the twins' back-pointers, so
                         // `twin_id1`/`twin_id2` are temporarily twinless. Re-pair them with
                         // each other below; if one is already gone (dangling twin in a
@@ -860,35 +893,33 @@ impl MeshGraph {
                         // pair can still reference `twin_id1`/`twin_id2` from elsewhere.
                         // Re-pair such a stray referencer with a fresh boundary half
                         // instead of leaving it twinless.
-                        if twin1_alive {
-                            if let Some(t1) = self.halfedges.get(twin_id1).and_then(|h| h.twin)
-                                && t1 != twin_id2
-                                && let Some(t1_he) = self.halfedges.get(t1)
-                                && t1_he.twin == Some(twin_id1)
-                                && self
-                                    .pair_with_fresh_boundary_half(
-                                        t1,
-                                        self.halfedges[twin_id1].end_vertex,
-                                    )
-                                    .is_none()
-                            {
-                                error!("remove_neighboring_flaps: could not re-pair {t1:?}");
-                            }
+                        if twin1_alive
+                            && let Some(t1) = self.halfedges.get(twin_id1).and_then(|h| h.twin)
+                            && t1 != twin_id2
+                            && let Some(t1_he) = self.halfedges.get(t1)
+                            && t1_he.twin == Some(twin_id1)
+                            && self
+                                .pair_with_fresh_boundary_half(
+                                    t1,
+                                    self.halfedges[twin_id1].end_vertex,
+                                )
+                                .is_none()
+                        {
+                            error!("remove_neighboring_flaps: could not re-pair {t1:?}");
                         }
-                        if twin2_alive {
-                            if let Some(t2) = self.halfedges.get(twin_id2).and_then(|h| h.twin)
-                                && t2 != twin_id1
-                                && let Some(t2_he) = self.halfedges.get(t2)
-                                && t2_he.twin == Some(twin_id2)
-                                && self
-                                    .pair_with_fresh_boundary_half(
-                                        t2,
-                                        self.halfedges[twin_id2].end_vertex,
-                                    )
-                                    .is_none()
-                            {
-                                error!("remove_neighboring_flaps: could not re-pair {t2:?}");
-                            }
+                        if twin2_alive
+                            && let Some(t2) = self.halfedges.get(twin_id2).and_then(|h| h.twin)
+                            && t2 != twin_id1
+                            && let Some(t2_he) = self.halfedges.get(t2)
+                            && t2_he.twin == Some(twin_id2)
+                            && self
+                                .pair_with_fresh_boundary_half(
+                                    t2,
+                                    self.halfedges[twin_id2].end_vertex,
+                                )
+                                .is_none()
+                        {
+                            error!("remove_neighboring_flaps: could not re-pair {t2:?}");
                         }
 
                         // The removed halves are opposite halves of one edge (`he1.end ==
@@ -900,6 +931,10 @@ impl MeshGraph {
                             (true, true) => {
                                 self.halfedges.get_mut(twin_id1).unwrap().twin = Some(twin_id2);
                                 self.halfedges.get_mut(twin_id2).unwrap().twin = Some(twin_id1);
+                                #[cfg(feature = "instrumentation")]
+                                crate::record_op_trace!(
+                                    "flap removal: re-paired {twin_id1:?}<->{twin_id2:?}"
+                                );
                                 if let Some(v) = self.vertices.get_mut(start_v_id1) {
                                     v.outgoing_halfedge = Some(twin_id2);
                                 }

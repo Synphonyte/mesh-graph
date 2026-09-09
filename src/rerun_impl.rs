@@ -90,8 +90,7 @@ impl MeshGraph {
             .filter_map(|(&v_id, labl)| {
                 self.positions
                     .get(v_id)
-                    .map(vec3_array)
-                    .and_then(|a| Some((a, labl.as_ref())))
+                    .map(|pos| (vec3_array(pos), labl.as_ref()))
             })
             .unzip();
 

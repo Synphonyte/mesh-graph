@@ -117,6 +117,54 @@ pub(crate) fn record_face_death(face_id: FaceId) {
     }
 }
 
+// Per-op boundary capture for the hole-delta probe (`MESH_GRAPH_HOLE_CHECK=1`
+// on top of `MESH_GRAPH_DANGLING_CHECK`): the undirected `(he, twin)` pairs of
+// all live halfedges with `face = None`, snapshotted at the entry of each probed
+// op (collapse/subdivide/merge/...). Every probed op is required to leave this
+// exact set untouched — a topology op that opens or closes the surface mid-op is
+// corruption (see `probe_chain_integrity`). Thread-local because the unit tests
+// run ops of independent meshes on parallel threads.
+#[cfg(feature = "instrumentation")]
+thread_local! {
+    static OP_BOUNDARY: std::cell::RefCell<Option<hashbrown::HashSet<(HalfedgeId, HalfedgeId)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Must be called at the entry of every probed op (next to [`set_current_op`]).
+/// Snapshots the boundary edge set so the op-end probe can compare against it.
+/// Unprobed ops in between (the `remove_face`-family punch cuts) never update the
+/// snapshot, so a hole cut between two probed ops is never blamed on either of
+/// them — each probed op is only held accountable for its own delta.
+#[cfg(feature = "instrumentation")]
+#[inline]
+pub(crate) fn probe_chain_begin(mesh: &MeshGraph) {
+    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none()
+        || std::env::var_os("MESH_GRAPH_HOLE_CHECK").is_none()
+    {
+        return;
+    }
+    let boundary = mesh.boundary_edge_set();
+    OP_BOUNDARY.with(|b| *b.borrow_mut() = Some(boundary));
+}
+
+/// Prints the added/removed boundary edges of a boundary-set delta (hole-delta
+/// probes). Up to 8 samples of each side.
+#[cfg(feature = "instrumentation")]
+fn dump_boundary_delta(added: &[(HalfedgeId, HalfedgeId)], removed: &[(HalfedgeId, HalfedgeId)]) {
+    if !added.is_empty() {
+        eprintln!("  added {}:", added.len());
+        for (a, b) in added.iter().take(8) {
+            eprintln!("    edge ({a:?}, {b:?})");
+        }
+    }
+    if !removed.is_empty() {
+        eprintln!("  removed {}:", removed.len());
+        for (a, b) in removed.iter().take(8) {
+            eprintln!("    edge ({a:?}, {b:?})");
+        }
+    }
+}
+
 /// Prints the face-death ledger (most recent last).
 #[cfg(feature = "instrumentation")]
 pub(crate) fn dump_face_death_ledger() {
@@ -142,6 +190,7 @@ pub(crate) fn report_dead_halfedge_in_collapse_check(mesh_graph: &MeshGraph, dea
     if REPORTED.set(()).is_err() {
         return;
     }
+    mark_integrity_violation();
     eprintln!("DEAD ID IN COLLAPSE CHECK: {dead_id:?} was inserted via a live halfedge's twin");
     for (he_id, he) in &mesh_graph.halfedges {
         if he.twin == Some(dead_id) {
@@ -178,6 +227,11 @@ pub(crate) fn report_dead_halfedge_in_collapse_check(mesh_graph: &MeshGraph, dea
 //   MESH_GRAPH_STATE_DUMP_DIR        – dump directory (default `mesh_graph_state_dump_<pid>`)
 //   MESH_GRAPH_STATE_DUMP_AT_POS     – dump the ring (once) when the replay position
 //                                      reaches this value (capture-on-demand for tests)
+//   MESH_GRAPH_HOLE_CHECK            – boundary-delta probe: each probed op must leave
+//                                      the boundary edge set unchanged vs. its own entry
+//                                      (per-op snapshot by `probe_chain_begin`); closed
+//                                      regions mark violations, open (punch-rim) regions
+//                                      only report
 //
 // The replay position is a *step index*: the host reports one step per mesh-graph
 // topology op call (collapse / subdivide / individual merge_one_ring) via
@@ -185,6 +239,53 @@ pub(crate) fn report_dead_halfedge_in_collapse_check(mesh_graph: &MeshGraph, dea
 // operation journal and a run can be resumed from any dumped state by replaying
 // the remaining journal steps (freestyle-sculpt: `MESH_GRAPH_RESUME_STATE` +
 // `MESH_GRAPH_RESUME_INDEX`).
+
+/// A short trace of the structural re-wiring events (flips, flap removals, fresh
+/// boundary pairings, ...) that led up to a corruption report. Each entry records
+/// the event kind plus the halfedges/vertices it touched, so the corruption report
+/// can show which writer produced the violated ids instead of guessing from the
+/// mesh diff. Ring of the last [`OP_TRACE_CAP`] events; printed by the corruption
+/// report on demand.
+#[cfg(feature = "instrumentation")]
+pub(crate) static OP_TRACE: std::sync::Mutex<std::collections::VecDeque<String>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+#[cfg(feature = "instrumentation")]
+pub(crate) const OP_TRACE_CAP: usize = 2000;
+
+/// Whether the op trace records events. Enabled at runtime with
+/// `MESH_GRAPH_TRACE=1` (on top of `MESH_GRAPH_DANGLING_CHECK`).
+#[cfg(feature = "instrumentation")]
+pub(crate) fn op_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_some()
+            && std::env::var_os("MESH_GRAPH_TRACE").is_some()
+    })
+}
+
+/// Records one structural re-wiring event into [`OP_TRACE`] (no-op when the hunt
+/// instrumentation is disabled at runtime, including the `format!` itself).
+#[cfg(feature = "instrumentation")]
+#[macro_export]
+macro_rules! record_op_trace {
+    ($($arg:tt)*) => {
+        if $crate::op_trace_enabled() {
+            $crate::record_op_trace_impl(format_args!($($arg)*).to_string());
+        }
+    };
+}
+
+#[cfg(feature = "instrumentation")]
+#[inline]
+pub(crate) fn record_op_trace_impl(event: String) {
+    if let Ok(mut trace) = OP_TRACE.lock() {
+        trace.push_back(event);
+        while trace.len() > OP_TRACE_CAP {
+            trace.pop_front();
+        }
+    }
+}
 
 /// The replay position (input-log entry index) reported by the host application
 /// through [`MeshGraph::set_replay_position`]. Stored with every state snapshot so
@@ -204,6 +305,25 @@ pub fn set_replay_position(pos: u64) {
 #[cfg(feature = "instrumentation")]
 fn replay_position() -> u64 {
     REPLAY_POSITION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Set on the first integrity-violation report in this process, so hosts and
+/// tests can assert that a replay of a dumped state stayed clean.
+#[cfg(feature = "instrumentation")]
+static INTEGRITY_VIOLATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Marks the first detected integrity violation (see [`integrity_violation_reported`]).
+#[cfg(feature = "instrumentation")]
+pub(crate) fn mark_integrity_violation() {
+    INTEGRITY_VIOLATION.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Returns `true` once any corruption report has fired in this process. Hunt
+/// instrumentation only; always `false` without the `instrumentation` feature.
+#[cfg(feature = "instrumentation")]
+pub fn integrity_violation_reported() -> bool {
+    INTEGRITY_VIOLATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// One verified mesh state: the mesh clone plus the position/op it was captured at.
@@ -320,7 +440,7 @@ pub(crate) fn state_history_dump(
     }
 
     if let Ok(ring) = STATE_RING.lock() {
-        meta.push_str(&format!("ring entries (oldest first):\n"));
+        meta.push_str("ring entries (oldest first):\n");
         for (i, snap) in ring.iter().enumerate() {
             meta.push_str(&format!(
                 "  state_{i:02}: pos={} op={}\n",
@@ -581,6 +701,11 @@ impl MeshGraph {
         // just added above
         self.halfedges[boundary_id].twin = Some(survivor_id);
 
+        #[cfg(feature = "instrumentation")]
+        crate::record_op_trace!(
+            "fresh boundary {boundary_id:?} ({survivor_end:?}->{survivor_start_v:?}) paired with survivor {survivor_id:?}"
+        );
+
         Some(boundary_id)
     }
 
@@ -647,6 +772,7 @@ impl MeshGraph {
                         .take(4)
                         .collect();
                     if !other_members.is_empty() && REPORTED.set(()).is_ok() {
+                        mark_integrity_violation();
                         eprintln!(
                             "REMOVING LIVE-FACE MEMBER {id:?} of face {face_id:?} (surviving members {other_members:?})"
                         );
@@ -667,6 +793,19 @@ impl MeshGraph {
     /// subdivide/collapse bookkeeping (which panic on the stale SlotMap key), long
     /// after the op that actually broke the chain. Checking at op boundaries catches
     /// the writer instead of the walker.
+    ///
+    /// Beyond the chains, the probe also verifies the two other bookkeeping
+    /// invariants against their rebuild ground truth:
+    ///
+    /// - **Twin invariant** (every live halfedge, incl. boundary halves, must have a
+    ///   live mutual twin at op end) and
+    /// - **outgoing lists**: `outgoing_halfedges[V]` must contain exactly the twins
+    ///   of the live halfedges ending at `V` (what [`rebuild_outgoing_halfedges`]
+    ///   produces). Missing/extra ids are corruption.
+    ///
+    /// Both are state-dumped on first violation. List *order* and per-vertex seed
+    /// deviations have legitimate alternatives (ops may re-order lists; the rebuild
+    /// keeps live seeds), so those are reported once without consuming the dump.
     ///
     /// Pure instrumentation: it never mutates the mesh. Returns `true` when the
     /// mesh passed all checks; on the first corruption the state-history ring is
@@ -756,9 +895,141 @@ impl MeshGraph {
             }
         }
 
-        let clean = violations.is_empty();
+        // --- Twin invariant + outgoing-halfedge ground truth ---
+        // `rebuild_outgoing_halfedges` is the definite ground truth for the
+        // per-vertex lists: `outgoing_halfedges[V]` must contain exactly the twins
+        // of the live halfedges ending at V, in halfedge-iteration order. This
+        // sweep checks every live halfedge (incl. boundary halves, which the chain
+        // check above skips): a halfedge without a live mutual twin, or a list with
+        // missing/extra ids at op end, is corruption.
+        let fmt_ids = |ids: &[HalfedgeId]| -> String {
+            if ids.len() <= 8 {
+                format!("{ids:?}")
+            } else {
+                format!("{:?}... ({} ids)", &ids[..8], ids.len())
+            }
+        };
+        let mut twin_problems: Vec<String> = Vec::new();
+        let mut membership_problems: Vec<String> = Vec::new();
+        // Order deviations are expected to be pervasive (ops re-order lists), so
+        // only a counter plus the first sample is kept.
+        let mut order_deviation_count: usize = 0;
+        let mut first_order_sample: Option<String> = None;
+        // Reusable scratch buffers: the probe runs at every op end (~1600x per
+        // log replay), so allocations are retained across calls instead of
+        // churning the allocator (which showed up as minutes of sys time).
+        struct OutScratch {
+            expected: hashbrown::HashMap<VertexId, Vec<HalfedgeId>>,
+            counts: hashbrown::HashMap<HalfedgeId, usize>,
+        }
+        static OUT_SCRATCH: std::sync::Mutex<Option<OutScratch>> = std::sync::Mutex::new(None);
+        let mut scratch = OUT_SCRATCH.lock().unwrap();
+        let scratch = scratch.get_or_insert_with(|| OutScratch {
+            expected: hashbrown::HashMap::new(),
+            counts: hashbrown::HashMap::new(),
+        });
+        for list in scratch.expected.values_mut() {
+            list.clear();
+        }
+        scratch.expected.clear();
+        scratch.counts.clear();
+
+        for (he_id, he) in &self.halfedges {
+            match he.twin {
+                None => twin_problems.push(format!("halfedge {he_id:?} has twin=None")),
+                Some(twin_id) => {
+                    if !self.halfedges.contains_key(twin_id) {
+                        twin_problems.push(format!(
+                            "halfedge {he_id:?} has twin {twin_id:?} which is removed"
+                        ));
+                    } else if self.halfedges[twin_id].twin != Some(he_id) {
+                        twin_problems.push(format!(
+                            "halfedge {he_id:?} has twin {twin_id:?} which does not point back"
+                        ));
+                    }
+                }
+            }
+            if let Some(twin_id) = he.twin {
+                scratch
+                    .expected
+                    .entry(he.end_vertex)
+                    .or_default()
+                    .push(twin_id);
+            }
+        }
+
+        for (v_id, expected) in scratch.expected.iter() {
+            let actual: &[HalfedgeId] = self
+                .outgoing_halfedges
+                .get(*v_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            // Multiset difference in O(|actual| + |expected|) via a count map.
+            scratch.counts.clear();
+            for &a in actual {
+                *scratch.counts.entry(a).or_default() += 1;
+            }
+            let mut missing: Vec<HalfedgeId> = Vec::new();
+            for &exp in expected {
+                match scratch.counts.get_mut(&exp) {
+                    Some(c) if *c > 0 => *c -= 1,
+                    _ => missing.push(exp),
+                }
+            }
+            let mut extra: Vec<HalfedgeId> = Vec::new();
+            for &a in actual {
+                if scratch.counts.get(&a) != Some(&0) {
+                    extra.push(a);
+                }
+            }
+            if !missing.is_empty() || !extra.is_empty() {
+                let mut msg = format!("vertex {v_id:?}: outgoing deviates from ground truth");
+                if !missing.is_empty() {
+                    msg += &format!(", missing {}", fmt_ids(&missing));
+                }
+                if !extra.is_empty() {
+                    msg += &format!(", extra {}", fmt_ids(&extra));
+                }
+                membership_problems.push(msg);
+            } else if actual != expected.as_slice() {
+                order_deviation_count += 1;
+                if first_order_sample.is_none() {
+                    first_order_sample = Some(format!(
+                        "vertex {v_id:?}: outgoing order differs from rebuild order"
+                    ));
+                }
+            }
+        }
+        // Vertices holding list entries although no live halfedge ends at them.
+        for (v_id, actual) in &self.outgoing_halfedges {
+            if !scratch.expected.contains_key(&v_id) && !actual.is_empty() {
+                membership_problems.push(format!(
+                    "vertex {v_id:?}: outgoing {} but no live halfedge ends at it",
+                    fmt_ids(actual)
+                ));
+            }
+        }
+
+        // Per-vertex seed normalization, simulated from `rebuild_outgoing_halfedges`:
+        // a live seed is kept, a dead seed is replaced with the first list entry.
+        let mut seed_deviations: Vec<String> = Vec::new();
+        for (v_id, vertex) in &self.vertices {
+            let stored = vertex.outgoing_halfedge;
+            let rebuilt_seed = stored
+                .filter(|he| self.halfedges.contains_key(*he))
+                .or_else(|| scratch.expected.get(&v_id).and_then(|l| l.first().copied()));
+            if stored != rebuilt_seed {
+                seed_deviations.push(format!(
+                    "vertex {v_id:?}: seed {stored:?} != rebuilt {rebuilt_seed:?}"
+                ));
+            }
+        }
+
+        let clean =
+            violations.is_empty() && twin_problems.is_empty() && membership_problems.is_empty();
 
         if !clean && REPORTED.set(()).is_ok() {
+            mark_integrity_violation();
             eprintln!(
                 "CHAIN CORRUPTION detected at end of op '{op}' ({} violations shown):",
                 violations.len()
@@ -828,10 +1099,162 @@ impl MeshGraph {
                 eprintln!("  chain  (walked): {fork_chain:?}");
                 eprintln!("  family (face field): {fork_family:?}");
             }
+            for problem in &twin_problems {
+                eprintln!("TWIN: {problem}");
+            }
+            for problem in membership_problems.iter().take(12) {
+                eprintln!("OUTGOING: {problem}");
+            }
+            if let Ok(trace) = OP_TRACE.lock() {
+                eprintln!("op trace (oldest first):");
+                for event in trace.iter() {
+                    eprintln!("  {event}");
+                }
+            }
             state_history_dump("chain_integrity", Some(self), Some(&op));
         }
 
+        // Hole-delta detector (`MESH_GRAPH_HOLE_CHECK=1` on top of
+        // `MESH_GRAPH_DANGLING_CHECK`): each probed op (collapse/subdivide/merge/...)
+        // must leave the boundary edge set exactly as it was at its own entry (see
+        // [`crate::probe_chain_begin`]).
+        //
+        // Two levels, split by the op's own entry boundary: an op that starts on a
+        // closed region (weld runs) must stay closed — any boundary change marks an
+        // integrity violation. An op that starts next to a punch-hole rim may
+        // legitimately swap rim edges (cleanup collapses can consume a rim edge and
+        // re-pair its twin with the new fan edge, a 1:1 boundary swap) — that is
+        // reported informationally only, so the integrity flag can't be contaminated
+        // by expected rim evolution; a real defect there would additionally trip the
+        // chain/twin probes. `remove_face`-family ops are not probed, so the
+        // intentional punch itself is never blamed. Reported once per process,
+        // separately from the chain corruption report so the two signals don't mask
+        // each other.
+        if std::env::var_os("MESH_GRAPH_HOLE_CHECK").is_some() {
+            static HOLE_REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            static RIM_REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            let current = self.boundary_edge_set();
+            let begin = OP_BOUNDARY.with(|b| b.borrow().clone());
+            if let Some(begin) = begin {
+                let added: Vec<(HalfedgeId, HalfedgeId)> =
+                    current.difference(&begin).copied().collect();
+                let removed: Vec<(HalfedgeId, HalfedgeId)> =
+                    begin.difference(&current).copied().collect();
+                if !added.is_empty() || !removed.is_empty() {
+                    let boundary_count =
+                        self.halfedges.values().filter(|h| h.face.is_none()).count();
+                    if begin.is_empty() {
+                        // The op started on a closed region: any boundary change is a
+                        // defect.
+                        if HOLE_REPORTED.set(()).is_ok() {
+                            mark_integrity_violation();
+                            eprintln!(
+                                "HOLE DELTA: op '{op}' changed the boundary edge set of a closed region (now {boundary_count} boundary halfedges):"
+                            );
+                            dump_boundary_delta(&added, &removed);
+                            eprintln!("{}", std::backtrace::Backtrace::force_capture());
+                            if let Ok(trace) = OP_TRACE.lock() {
+                                eprintln!("op trace (oldest first):");
+                                for event in trace.iter() {
+                                    eprintln!("  {event}");
+                                }
+                            }
+                            state_history_dump("hole", Some(self), Some(&op));
+                        }
+                    } else if RIM_REPORTED.set(()).is_ok() {
+                        // The op started next to a punch rim: boundary swaps are
+                        // expected during punch cleanup; only informational.
+                        eprintln!(
+                            "RIM DELTA: op '{op}' changed the boundary edge set of an open region (now {boundary_count} boundary halfedges) — expected during punch cleanup:"
+                        );
+                        dump_boundary_delta(&added, &removed);
+                    }
+                }
+            }
+        }
+
+        // Possibly-legitimate alternatives to the rebuild ground truth (list order,
+        // seed choice): reported once per process with counts, without consuming
+        // the once-per-process corruption dump above.
+        if order_deviation_count > 0 {
+            static ORDER_REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            if ORDER_REPORTED.set(()).is_ok() {
+                eprintln!(
+                    "OUTGOING ORDER deviates from rebuild order at {order_deviation_count} vertices (first: {})",
+                    first_order_sample.as_deref().unwrap_or("")
+                );
+            }
+        }
+        if !seed_deviations.is_empty() {
+            static SEED_REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            if SEED_REPORTED.set(()).is_ok() {
+                eprintln!(
+                    "SEED deviates from rebuild at op '{op}' at {} vertices (first: {})",
+                    seed_deviations.len(),
+                    seed_deviations[0]
+                );
+            }
+        }
+
         clean
+    }
+
+    /// Undirected boundary edge set: the normalized `(min, max)` pairs of the
+    /// twin couple of every live halfedge with `face = None`. Two meshes with the
+    /// same open edges produce equal sets regardless of fan order, so a
+    /// before/after comparison detects boundary changes without being sensitive
+    /// to halfedge iteration order. Only used by the hole-delta probe.
+    #[cfg(feature = "instrumentation")]
+    fn boundary_edge_set(&self) -> hashbrown::HashSet<(HalfedgeId, HalfedgeId)> {
+        let mut edges = hashbrown::HashSet::new();
+        for (he_id, he) in &self.halfedges {
+            if he.face.is_none()
+                && let Some(twin_id) = he.twin
+            {
+                edges.insert(if twin_id < he_id {
+                    (twin_id, he_id)
+                } else {
+                    (he_id, twin_id)
+                });
+            }
+        }
+        edges
+    }
+
+    /// Ground-truth rebuild of a single vertex's outgoing list: the halfedges
+    /// whose twins end at the vertex (the inverse of `rebuild_outgoing_halfedges`,
+    /// which derives the lists from the halfedge iteration). Unlike a seed-based
+    /// ring walk, this is immune to a dead or stale seed and to temporarily
+    /// detached (face-less) halfedges, so it never shrinks a vertex's list below
+    /// its true star.
+    ///
+    /// The seed is refreshed with `rebuild_outgoing_halfedges` semantics: a live
+    /// seed is kept, otherwise the first list entry is used.
+    pub fn rebuild_vertex_outgoing_list(&mut self, vertex_id: VertexId) {
+        let mut list: Vec<HalfedgeId> = Vec::new();
+        for (_, he) in &self.halfedges {
+            if he.end_vertex == vertex_id
+                && let Some(twin_id) = he.twin
+                && self.halfedges.contains_key(twin_id)
+            {
+                list.push(twin_id);
+            }
+        }
+
+        if let Some(entry) = self.outgoing_halfedges.get_mut(vertex_id) {
+            *entry = list;
+        }
+
+        if let Some(vertex) = self.vertices.get_mut(vertex_id)
+            && !vertex
+                .outgoing_halfedge
+                .is_some_and(|he| self.halfedges.contains_key(he))
+        {
+            vertex.outgoing_halfedge = self
+                .outgoing_halfedges
+                .get(vertex_id)
+                .and_then(|l| l.first().copied());
+        }
     }
 
     /// Computes the vertex normal from neighboring faces

@@ -21,6 +21,8 @@ impl MeshGraph {
     ) -> MergeVertices {
         #[cfg(feature = "instrumentation")]
         crate::set_current_op("merge_vertices");
+        #[cfg(feature = "instrumentation")]
+        crate::probe_chain_begin(self);
         let vertex_ids: Vec<VertexId> = vertices
             .into_iter()
             .filter(|v| self.vertices.contains_key(*v))
@@ -69,6 +71,13 @@ impl MeshGraph {
                 }
             }
         }
+
+        #[cfg(feature = "instrumentation")]
+        crate::record_op_trace!(
+            "merge_vertices({:?}): faces_to_remove={:?}",
+            vertex_ids,
+            faces_to_remove
+        );
 
         // Determine which halfedges to remove vs make boundary
         let mut halfedges_to_remove = HashSet::new();
@@ -165,6 +174,10 @@ impl MeshGraph {
 
             for he_id in incoming_he_ids {
                 if let Some(he) = self.halfedges.get_mut(he_id) {
+                    #[cfg(feature = "instrumentation")]
+                    crate::record_op_trace!(
+                        "merge_vertices: repoint end of {he_id:?} to {survivor_id:?}"
+                    );
                     he.end_vertex = survivor_id;
                 }
             }
@@ -285,12 +298,11 @@ impl MeshGraph {
                     if he_id != best_fwd && Some(he_id) != best_rev {
                         duplicate_ids.push(he_id);
                         removed_halfedges.push(he_id);
-                        if let Some(he) = self.halfedges.get(he_id) {
-                            if let Some(face_id) = he.face
-                                && !faces_to_drop.contains(&face_id)
-                            {
-                                faces_to_drop.push(face_id);
-                            }
+                        if let Some(he) = self.halfedges.get(he_id)
+                            && let Some(face_id) = he.face
+                            && !faces_to_drop.contains(&face_id)
+                        {
+                            faces_to_drop.push(face_id);
                         }
                     }
                 }
@@ -300,12 +312,11 @@ impl MeshGraph {
                     if Some(twin_id) != best_rev && twin_id != best_fwd {
                         duplicate_ids.push(twin_id);
                         removed_halfedges.push(twin_id);
-                        if let Some(he) = self.halfedges.get(twin_id) {
-                            if let Some(face_id) = he.face
-                                && !faces_to_drop.contains(&face_id)
-                            {
-                                faces_to_drop.push(face_id);
-                            }
+                        if let Some(he) = self.halfedges.get(twin_id)
+                            && let Some(face_id) = he.face
+                            && !faces_to_drop.contains(&face_id)
+                        {
+                            faces_to_drop.push(face_id);
                         }
                     }
                 }
@@ -401,6 +412,9 @@ impl MeshGraph {
     pub fn flip_edge(&mut self, halfedge_id: HalfedgeId) {
         #[cfg(feature = "rerun")]
         self.log_he_rerun("flip", halfedge_id);
+
+        #[cfg(feature = "instrumentation")]
+        crate::record_op_trace!("flip_edge({halfedge_id:?})");
 
         let he = unwrap_or_return!(self.halfedges.get(halfedge_id), "Halfedge not found");
 

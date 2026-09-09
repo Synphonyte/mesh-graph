@@ -36,8 +36,8 @@
 		"command": "cargo",
 		"args": [
 			"test",
-			"ops::merge_one_ring",
-			// "test_vertex_merge_common_one_ring",
+			// "ops::merge_one_ring",
+			"test_merge_one_ring_punch_cleanup_hole_reproduction",
 			"--lib",
 			// "--release",
 			"--features",

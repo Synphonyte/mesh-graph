@@ -42,6 +42,8 @@ impl MeshGraph {
     ) -> MergeVerticesOneRing {
         #[cfg(feature = "instrumentation")]
         crate::set_current_op("merge_one_ring");
+        #[cfg(feature = "instrumentation")]
+        crate::probe_chain_begin(self);
         let mut result = MergeVerticesOneRing::default();
 
         let vertex1 = *unwrap_or_return!(self.vertices.get(vertex_id1), "Vertex not found", result);
@@ -119,8 +121,12 @@ impl MeshGraph {
         let shared_v_ids =
             HashSet::<VertexId>::from_iter(one_ring_v_set1.intersection(&one_ring_v_set2).copied());
 
+        tracing::debug!("ring1 (v_ids): {one_ring_v_ids1:?}");
+        tracing::debug!("ring2 (v_ids): {one_ring_v_ids2:?}");
+        tracing::debug!("shared_v_ids: {shared_v_ids:?}");
+
         if self.check_and_flip_single_shared_he(&shared_he_ids, flip_threshold_sqr, &mut result) {
-            return result;
+            return self.finish_merge(result);
         }
 
         self.remove_neighbor_faces(&vertex1, &vertex2, &mut result);
@@ -128,15 +134,15 @@ impl MeshGraph {
         #[cfg(feature = "rerun")]
         self.log_rerun();
 
-        let (already_connected_face_ids, connected_v_ids, connected_he_ids) = unwrap_or_return!(
-            self.find_already_connected_pairings(
-                &one_ring_v_ids1,
-                &one_ring_v_ids2,
-                &shared_v_ids,
-            ),
-            "Error in find_already_connected_pairings",
-            result
-        );
+        let (already_connected_face_ids, connected_v_ids, connected_he_ids) = match self
+            .find_already_connected_pairings(&one_ring_v_ids1, &one_ring_v_ids2, &shared_v_ids)
+        {
+            Some(pairings) => pairings,
+            None => {
+                tracing::error!("Error in find_already_connected_pairings");
+                return self.finish_merge(result);
+            }
+        };
 
         #[cfg(feature = "rerun")]
         {
@@ -157,13 +163,14 @@ impl MeshGraph {
 
         if range_pairs_to_connect.is_empty() {
             error!("No range pairs to connect");
-            return result;
+            return self.finish_merge(result);
         }
 
         tracing::debug!("Range pairs to connect: {range_pairs_to_connect:#?}");
 
         let planned_faces =
             self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
+        tracing::debug!("planned faces: {planned_faces:#?}");
 
         for face_id in already_connected_face_ids {
             let (v_ids, he_ids) = self.remove_face(face_id);
@@ -205,11 +212,24 @@ impl MeshGraph {
                 .copied(),
         );
 
-        #[cfg(feature = "instrumentation")]
+        self.finish_merge(result)
+    }
+
+    /// Common op-end path: run the integrity/hole inspectors and push the mesh
+    /// onto the state-history ring (hunt instrumentation), then return the result.
+    /// Every exit of the op goes through here (including the early failure
+    /// exits), so the ring stays continuous with the journal (resume
+    /// continuity) and no corruption can skip the checks.
+    #[cfg(feature = "instrumentation")]
+    fn finish_merge(&self, result: MergeVerticesOneRing) -> MergeVerticesOneRing {
         if self.probe_chain_integrity("merge_vertices_one_rings") {
             crate::state_history_push(self, "merge_vertices_one_rings");
         }
+        result
+    }
 
+    #[cfg(not(feature = "instrumentation"))]
+    fn finish_merge(&self, result: MergeVerticesOneRing) -> MergeVerticesOneRing {
         result
     }
 
@@ -262,6 +282,14 @@ impl MeshGraph {
         let mut connected_he_ids = HashSet::new();
         let mut already_connected_face_ids = vec![];
 
+        // Only the first strip of already existing faces is taken. A second one
+        // that isn't contiguous with it would mark its ring vertices as connected
+        // too, and the ranges to connect are the complement of that: the region
+        // between the two strips ends up in neither. Since the faces of both
+        // strips are removed to make room for the new faces, that region is then
+        // left as a hole. See `strip_found` below.
+        let mut strip_found = false;
+
         for ((idx1, &v_id1), (idx2, &v_id2)) in one_ring_v_ids1
             .iter()
             .enumerate()
@@ -280,8 +308,16 @@ impl MeshGraph {
                 continue;
             }
 
+            // The fan of the first strip is already extended over the whole strip
+            // by `find_connected_triangle_fans` below, so any fan found from here
+            // on belongs to a separate strip. Leave its faces in place and let the
+            // new faces span it instead.
+            if strip_found {
+                continue;
+            }
+
             if let Some(he_id) = self.halfedge_from_to(v_id1, v_id2) {
-                let pairing = self.find_triangle_fan(
+                let pairing = match self.find_triangle_fan(
                     he_id,
                     idx1,
                     idx2,
@@ -289,7 +325,13 @@ impl MeshGraph {
                     one_ring_v_ids2,
                     &mut connected_he_ids,
                     &mut already_connected_face_ids,
-                )?;
+                ) {
+                    TriangleFan::Spanning(pairing) => pairing,
+                    // The halfedge only touches the rings from the outside, so it
+                    // doesn't connect them.
+                    TriangleFan::NotSpanning => continue,
+                    TriangleFan::Failed => return None,
+                };
 
                 #[cfg(feature = "rerun")]
                 pairing.log_rerun(
@@ -323,6 +365,8 @@ impl MeshGraph {
                         connected_v_ids.insert(v_id);
                     }
                 }
+
+                strip_found = true;
             }
         }
 
@@ -408,6 +452,9 @@ impl MeshGraph {
         pairings
     }
 
+    /// Finds the fan of already existing faces that connects the two one rings
+    /// across the halfedge `he_id` (which runs from a ring 1 vertex to a ring 2
+    /// vertex). See [`TriangleFan`] for the possible outcomes.
     #[allow(clippy::too_many_arguments)]
     fn find_triangle_fan(
         &self,
@@ -418,11 +465,12 @@ impl MeshGraph {
         one_ring_v_ids2: &[VertexId],
         connected_he_ids: &mut HashSet<HalfedgeId>,
         connected_face_ids: &mut Vec<FaceId>,
-    ) -> Option<Pairing> {
-        let he = self
-            .halfedges
-            .get(he_id)
-            .or_else(error_none!("Halfedge not found"))?;
+    ) -> TriangleFan {
+        let he = unwrap_or_return!(
+            self.halfedges.get(he_id),
+            "Halfedge not found",
+            TriangleFan::Failed
+        );
 
         let mut current_pairing = Pairing {
             single_range_idx: 0,
@@ -432,7 +480,9 @@ impl MeshGraph {
 
         // might not exist. we removed some faces (neighbors).
         let Some(opposite_v_id) = he.opposite_vertex(self) else {
-            return Some(current_pairing);
+            // The face on this side was one of the removed neighbor faces, so the
+            // halfedge does span the region between the rings.
+            return TriangleFan::Spanning(current_pairing);
         };
 
         if !self.create_triangle_pairing(
@@ -443,15 +493,16 @@ impl MeshGraph {
             opposite_v_id,
             &mut current_pairing,
         ) {
-            let twin_id = he.twin.or_else(error_none!("Twin not found"))?;
-            let twin = self
-                .halfedges
-                .get(twin_id)
-                .or_else(error_none!("Twin not found"))?;
+            let twin_id = unwrap_or_return!(he.twin, "Twin not found", TriangleFan::Failed);
+            let twin = unwrap_or_return!(
+                self.halfedges.get(twin_id),
+                "Twin not found",
+                TriangleFan::Failed
+            );
 
             // might not exist. we removed some faces (neighbors).
             let Some(opposite_v_id) = twin.opposite_vertex(self) else {
-                return Some(current_pairing);
+                return TriangleFan::Spanning(current_pairing);
             };
 
             if !self.create_triangle_pairing(
@@ -462,8 +513,7 @@ impl MeshGraph {
                 opposite_v_id,
                 &mut current_pairing,
             ) {
-                // Return single halfedge current pairing
-                return Some(current_pairing);
+                return TriangleFan::NotSpanning;
             }
         }
 
@@ -475,7 +525,7 @@ impl MeshGraph {
             connected_face_ids,
         );
 
-        Some(current_pairing)
+        TriangleFan::Spanning(current_pairing)
     }
 
     fn add_face_to_connected_he_ids(
@@ -1515,6 +1565,23 @@ impl ConnectPair {
 
         pairings
     }
+}
+
+/// The outcome of [`MeshGraph::find_triangle_fan`].
+enum TriangleFan {
+    /// The halfedge spans the region between the two one rings. Holds the pairing
+    /// of the fan of already existing faces around it.
+    Spanning(Pairing),
+
+    /// The halfedge doesn't span the region between the two one rings: both of its
+    /// faces are intact and neither of them has its third vertex on one of the
+    /// rings, so the halfedge runs along the outside of the rings instead of
+    /// across the region between them. The vertices it joins must not count as
+    /// connected.
+    NotSpanning,
+
+    /// The mesh connectivity around the halfedge is broken. The merge is aborted.
+    Failed,
 }
 
 /// Pairs one element from one range with one or more elements from the other range.

@@ -5,9 +5,6 @@ use crate::{
     HalfedgeId, MeshGraph, Selection, SelectionOps, VertexId, error_none, utils::unwrap_or_return,
 };
 
-#[cfg(feature = "rerun")]
-use crate::utils::vec3_array;
-
 impl MeshGraph {
     /// Subdivide all edges until all of them are <= max_length.
     /// Please note that you have to provide the squared value of max_length.
@@ -23,6 +20,8 @@ impl MeshGraph {
     ) {
         #[cfg(feature = "instrumentation")]
         crate::set_current_op("subdivide");
+        #[cfg(feature = "instrumentation")]
+        crate::probe_chain_begin(self);
         let mut halfedges_to_subdivide = self.halfedges_map(|len_sqr| len_sqr > max_length_squared);
 
         // Bound the work by the initial problem size, not the mesh size: in stretched

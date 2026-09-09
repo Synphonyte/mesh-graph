@@ -18,6 +18,8 @@ impl MeshGraph {
     ) {
         #[cfg(feature = "instrumentation")]
         crate::set_current_op("collapse");
+        #[cfg(feature = "instrumentation")]
+        crate::probe_chain_begin(self);
         let mut halfedges_to_collapse = self.halfedges_map(|len_sqr| len_sqr < min_length_squared);
 
         // Bound the work by the initial problem size, not the mesh size: a degenerate
@@ -323,6 +325,10 @@ impl MeshGraph {
 
         if !twin.is_boundary() {
             let twin_face_removal = self.remove_halfedge_face(twin_id);
+            #[cfg(feature = "instrumentation")]
+            crate::record_op_trace!(
+                "collapse_edge_inner({halfedge_id:?}): twin-side face removal {twin_face_removal:?}"
+            );
             if twin_face_removal.is_none() {
                 // The twin-side dismantling failed — typically because the twin was
                 // already removed by the start-side dismantling (a degenerate fold

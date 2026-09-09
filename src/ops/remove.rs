@@ -29,6 +29,12 @@ impl MeshGraph {
             })
             .collect_vec();
 
+        #[cfg(feature = "instrumentation")]
+        crate::record_op_trace!(
+            "remove_face({face_id:?}) members={:?}",
+            halfedges.iter().map(|(id, _)| id).collect_vec()
+        );
+
         let mut removed_halfedges = HashSet::with_capacity(4);
 
         for (he_id, he) in halfedges {
