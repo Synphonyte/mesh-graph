@@ -1316,12 +1316,12 @@ fn test_vertex_merge_6_6_tube() {
     assert_eq!(marked_vertices.len(), 4);
 }
 
-/// Clean reproduction of the weld-hole defect: `merge_vertices_one_rings` ends
-/// its op with boundary halfedges (face = None) — holes in a mesh that must
+/// Regression test for the weld-hole defect: `merge_vertices_one_rings` used to
+/// end its op with boundary halfedges (face = None) — holes in a mesh that must
 /// stay closed.
 ///
-/// The region below is captured with the hunt instrumentation
-/// (`MESH_GRAPH_DUMP_MERGE_REGION=1`) from the `weld_hole_dump` snapshot replay
+/// The region below was captured with a one-off region dump (no longer in the
+/// tree) from the `weld_hole_dump` snapshot replay
 /// (freestyle-sculpt `snapshot_replay_weld_hole`): the exact state around
 /// vertices 1487 and 1490 right before their one-rings are merged — the two
 /// vertices, both one-rings and every face incident to either of them (the
@@ -1331,9 +1331,8 @@ fn test_vertex_merge_6_6_tube() {
 /// The test rebuilds that region and replays the single merge
 /// `merge_vertices_one_rings(1487, 1490)`. A watertight merge must not create
 /// boundary halfedges: the boundary edges after the op must be exactly the
-/// region's pre-existing outer cut against the rest of the mesh. Currently the
-/// merge detaches leftover strip halfedges (the weld hole), so this test
-/// fails; it passes once the defect is fixed.
+/// region's pre-existing outer cut against the rest of the mesh. The merge used
+/// to detach leftover strip halfedges (the weld hole); this test guards the fix.
 #[test]
 fn test_merge_one_ring_weld_hole_reproduction() {
     get_tracing_subscriber();

@@ -30,7 +30,6 @@ impl TryFrom<MeshGraph> for manifold_csg::Manifold {
 impl From<&manifold_csg::Manifold> for MeshGraph {
     fn from(value: &manifold_csg::Manifold) -> Self {
         let (vert_props, n_props, tri_indices) = value.to_mesh_f32();
-        println!("n_props: {}", n_props);
 
         Self::indexed_triangles(
             &vert_props

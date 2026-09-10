@@ -3,16 +3,27 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 
+## [0.10.0] - 2026-09-10
 
 - Hardened against panics and infinite loops.
+- Fixed topology corruption in `collapse_until_edges_above_min_length`,
+  `subdivide_until_edges_below_max_length` and `merge_vertices_one_rings`: dangling
+  halfedge twins, faces with broken chains and holes left behind by one-ring merges.
+- Added the optional `instrumentation` Cargo feature: topology validators, an op
+  trace, a state-history ring and JSON state dump/resume (`MeshGraph::save_state` /
+  `MeshGraph::load_state`) for debugging mesh corruption. Off by default; enabling
+  the feature enables the validators. The costlier extras are opt-in at runtime with
+  `MESH_GRAPH_STATE_HISTORY_LEN`, `MESH_GRAPH_HOLE_CHECK` and `MESH_GRAPH_TRACE`.
 
 ### Breaking Changes
 
 - `MeshGraph::triangles` now returns `Option<Self>` instead of `Self`. It returns `None` if the number of vertex positions is not a multiple of 3 instead of panicking.
 - `Face::normal_from_positions` now returns `Option<Vec3>` instead of `Vec3`. It returns `None` if there are fewer than 3 positions or the normal cannot be normalized.
 - `Polygon2::terminal` now returns `Option<Vec2>` instead of `Vec2`. It returns `None` if the polygon is empty.
-- Updated dependencies `manifold-csg` to `0.4`, `parry3d` to `0.30` and `rerun` to `0.36`.
+
+## [0.9.0] - 2026-08-31
+
+- Updated dependencies `manifold-csg` to `0.4`, `parry3d` to `0.30` and `rerun` to `0.36`
 
 ## [0.8.0] - 2026-07-27
 

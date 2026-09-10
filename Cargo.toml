@@ -2,13 +2,13 @@
 categories = ["algorithms", "graphics", "mathematics"]
 description = "Fast halfedge triangle mesh graph in pure Rust "
 edition = "2024"
-exclude = ["examples/", "tests/"]
+exclude = [".agents/", ".github/", ".idea/", ".zed/", "examples/", "tests/"]
 keywords = ["3D", "halfedge-graph", "mesh", "real-time", "topology"]
 license = "MIT"
 name = "mesh-graph"
 readme = "README.md"
 repository = "https://github.com/Synphonyte/mesh-graph"
-version = "0.9.0"
+version = "0.10.0"
 
 [dependencies]
 anyhow = "1"
@@ -46,12 +46,15 @@ gltf = ["dep:gltf"]
 rerun = ["dep:cfg-if", "dep:lazy_static", "dep:rerun"]
 serde = ["dep:serde", "dep:serde_json", "glam/serde", "hashbrown/serde", "slotmap/serde"]
 manifold = ["dep:manifold-csg"]
-# Layer-4 corruption-hunt instrumentation: debug probes, the state-history ring,
-# state dump/resume support. Requires `serde` (state files are JSON). Off in
-# release builds; `MESH_GRAPH_DANGLING_CHECK=1` activates it at runtime.
+# Topology-corruption instrumentation: chain/twin/outgoing-list validators at every
+# op end, optional state-history ring, state dump/resume. Requires `serde` (state
+# files are JSON). Enabling the feature enables the probes; expect a much slower
+# build. Only for debugging mesh corruption — never enable for a release.
 instrumentation = ["serde"]
 
+# Dev-only debug binary: also needs the implicit `tracing-subscriber` feature
+# (the optional dependency) for its tracing setup.
 [[bin]]
 name = "vertex-neighborhood"
 path = "src/bin/vn.rs"
-required-features = ["gltf"]
+required-features = ["gltf", "tracing-subscriber"]

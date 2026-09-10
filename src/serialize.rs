@@ -37,13 +37,41 @@ impl MeshGraph {
     }
 }
 
-#[cfg(test)]
+impl From<MeshGraphIntermediate> for MeshGraph {
+    fn from(value: MeshGraphIntermediate) -> Self {
+        let mut mesh_graph = Self {
+            bvh: Default::default(),
+            bvh_workspace: Default::default(),
+            index_to_face_id: Default::default(),
+            next_index: 0,
+            vertices: value.vertices,
+            halfedges: value.halfedges,
+            faces: value.faces,
+            positions: value.positions,
+            vertex_normals: value.vertex_normals,
+            outgoing_halfedges: Default::default(),
+        };
+
+        for (id, face) in &mut mesh_graph.faces {
+            face.index = mesh_graph.next_index;
+            mesh_graph.next_index += 1;
+
+            mesh_graph.index_to_face_id.insert(face.index, id);
+        }
+
+        mesh_graph.rebuild_bvh();
+        mesh_graph.rebuild_outgoing_halfedges();
+
+        mesh_graph
+    }
+}
+
+#[cfg(all(test, feature = "instrumentation"))]
 mod tests {
     use super::*;
     use glam::vec3;
 
     #[test]
-    #[cfg(feature = "instrumentation")]
     fn test_save_load_state_round_trip() {
         let mut mesh_graph = MeshGraph::new();
         // Two adjacent triangles so halfedges get twins and faces exist.
@@ -92,12 +120,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "instrumentation")]
     fn test_state_history_ring_cap() {
-        // The ring is gated on the hunt env var; enable it for this test only.
-        unsafe {
-            std::env::set_var("MESH_GRAPH_DANGLING_CHECK", "1");
-        }
+        const CAP: usize = 10;
+
+        // The ring is opt-in and its capacity is per-thread, so enabling it here
+        // cannot make the other tests (running on their own threads) push into it.
+        crate::set_state_history_len(CAP);
 
         let mut mesh_graph = MeshGraph::new();
         mesh_graph.add_face_from_positions(
@@ -106,44 +134,15 @@ mod tests {
             vec3(0.0, 1.0, 0.0),
         );
 
-        for _ in 0..15 {
+        for _ in 0..CAP + 5 {
             crate::state_history_push(&mesh_graph, "test_op");
         }
 
-        let len = crate::STATE_RING.lock().unwrap().len();
-        assert_eq!(len, crate::STATE_RING_DEFAULT_CAP);
+        assert_eq!(crate::STATE_RING.lock().unwrap().len(), CAP);
 
-        unsafe {
-            std::env::remove_var("MESH_GRAPH_DANGLING_CHECK");
-        }
-    }
-}
-
-impl From<MeshGraphIntermediate> for MeshGraph {
-    fn from(value: MeshGraphIntermediate) -> Self {
-        let mut mesh_graph = Self {
-            bvh: Default::default(),
-            bvh_workspace: Default::default(),
-            index_to_face_id: Default::default(),
-            next_index: 0,
-            vertices: value.vertices,
-            halfedges: value.halfedges,
-            faces: value.faces,
-            positions: value.positions,
-            vertex_normals: value.vertex_normals,
-            outgoing_halfedges: Default::default(),
-        };
-
-        for (id, face) in &mut mesh_graph.faces {
-            face.index = mesh_graph.next_index;
-            mesh_graph.next_index += 1;
-
-            mesh_graph.index_to_face_id.insert(face.index, id);
-        }
-
-        mesh_graph.rebuild_bvh();
-        mesh_graph.rebuild_outgoing_halfedges();
-
-        mesh_graph
+        // A capacity of 0 disables the ring: no further pushes land.
+        crate::set_state_history_len(0);
+        crate::state_history_push(&mesh_graph, "test_op");
+        assert_eq!(crate::STATE_RING.lock().unwrap().len(), CAP);
     }
 }

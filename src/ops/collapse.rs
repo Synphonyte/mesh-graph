@@ -802,10 +802,10 @@ mod test {
 
         let cell = 1.0;
         let mut v = vec![vec![]; n + 1];
-        for j in 0..=n {
+        for (j, row) in v.iter_mut().enumerate() {
             for i in 0..=n {
                 let id = g.add_vertex(Vec3::new(i as f32 * cell, j as f32 * cell, 0.0));
-                v[j].push(id);
+                row.push(id);
             }
         }
 

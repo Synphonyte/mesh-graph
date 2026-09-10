@@ -11,6 +11,29 @@
 //! - Good debugging using `rerun` Cargo feature to enable the Rerun integration
 //! - Best in class documentation with illustrations
 //!
+//! ### Debugging topology corruption
+//!
+//! The `instrumentation` Cargo feature compiles in extra topology probes: chain /
+//! twin / outgoing-list validators that run at the end of every topology op and
+//! report the first op to corrupt the mesh, plus JSON state dump/resume via
+//! `MeshGraph::save_state` / `MeshGraph::load_state`. Enabling the feature enables
+//! the probes — there is no second switch to forget — and regular builds compile
+//! none of it.
+//!
+//! The validators scan every halfedge at the end of every topology op, so the cost
+//! grows with the mesh: roughly 30 ms per op call on a 250k-halfedge mesh. That is
+//! nothing for the per-stroke `*_until_*` ops but very noticeable for a host that
+//! calls `merge_vertices_one_rings` hundreds of times per stroke. The further
+//! extras stay opt-in via the environment:
+//!
+//! - `MESH_GRAPH_STATE_HISTORY_LEN=<n>` keeps a ring of the last `n` verified mesh
+//!   states (a full mesh clone per op) and writes it to disk when a probe fires, so
+//!   the run can be resumed from any state leading up to the corruption. Default `0`.
+//! - `MESH_GRAPH_HOLE_CHECK=1` adds the boundary-delta probe: every probed op must
+//!   leave the set of open edges exactly as it found it.
+//! - `MESH_GRAPH_TRACE=1` records a ring of the structural re-wiring events leading
+//!   up to a report.
+//!
 //! ## Usage
 //!
 //! ```
@@ -75,10 +98,10 @@ use tracing::{error, instrument};
 use crate::utils::unwrap_or_return;
 
 #[cfg(feature = "instrumentation")]
-// Debug support for the layer-4 corruption hunt (`MESH_GRAPH_DANGLING_CHECK=1`):
-// the name of the operation currently running on this thread. Set by the public
-// ops (collapse/subdivide/merge/...) and recorded next to every face removal in
-// [`record_face_death`], so a corruption report can name the op that killed a face.
+// Debug support for the corruption probes: the name of the operation currently
+// running on this thread. Set by the public ops (collapse/subdivide/merge/...) and
+// recorded next to every face removal in [`record_face_death`], so a corruption
+// report can name the op that killed a face.
 thread_local! {
     static CURRENT_OP: std::cell::Cell<&'static str> = const { std::cell::Cell::new("unknown") };
 }
@@ -87,13 +110,11 @@ thread_local! {
 #[cfg(feature = "instrumentation")]
 #[inline]
 pub(crate) fn set_current_op(op: &'static str) {
-    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_some() {
-        CURRENT_OP.with(|cell| cell.set(op));
-    }
+    CURRENT_OP.with(|cell| cell.set(op));
 }
 
 /// A small ring of the most recent face removals: `(op that removed it, face id)`.
-/// Only populated when `MESH_GRAPH_DANGLING_CHECK=1` (see [`record_face_death`]).
+/// Printed by the corruption reports (see [`record_face_death`]).
 #[cfg(feature = "instrumentation")]
 static FACE_DEATH_LEDGER: std::sync::Mutex<std::collections::VecDeque<(FaceId, &'static str)>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
@@ -101,13 +122,11 @@ static FACE_DEATH_LEDGER: std::sync::Mutex<std::collections::VecDeque<(FaceId, &
 #[cfg(feature = "instrumentation")]
 const FACE_DEATH_LEDGER_CAP: usize = 64;
 
-/// Records a face removal for the corruption hunt. Cheap when the env flag is unset.
+/// Records a face removal for the corruption reports: a mutex-guarded push onto a
+/// 64-entry ring, nothing more.
 #[cfg(feature = "instrumentation")]
 #[inline]
 pub(crate) fn record_face_death(face_id: FaceId) {
-    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
-        return;
-    }
     let op = CURRENT_OP.with(|cell| cell.get());
     if let Ok(mut ledger) = FACE_DEATH_LEDGER.lock() {
         ledger.push_back((face_id, op));
@@ -117,8 +136,8 @@ pub(crate) fn record_face_death(face_id: FaceId) {
     }
 }
 
-// Per-op boundary capture for the hole-delta probe (`MESH_GRAPH_HOLE_CHECK=1`
-// on top of `MESH_GRAPH_DANGLING_CHECK`): the undirected `(he, twin)` pairs of
+// Per-op boundary capture for the hole-delta probe (`MESH_GRAPH_HOLE_CHECK=1`):
+// the undirected `(he, twin)` pairs of
 // all live halfedges with `face = None`, snapshotted at the entry of each probed
 // op (collapse/subdivide/merge/...). Every probed op is required to leave this
 // exact set untouched — a topology op that opens or closes the surface mid-op is
@@ -130,6 +149,14 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Whether the hole-delta probe runs. It costs a full halfedge scan at both ends
+/// of every probed op, so it is opt-in with `MESH_GRAPH_HOLE_CHECK=1`.
+#[cfg(feature = "instrumentation")]
+pub(crate) fn hole_check_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("MESH_GRAPH_HOLE_CHECK").is_some())
+}
+
 /// Must be called at the entry of every probed op (next to [`set_current_op`]).
 /// Snapshots the boundary edge set so the op-end probe can compare against it.
 /// Unprobed ops in between (the `remove_face`-family punch cuts) never update the
@@ -138,9 +165,7 @@ thread_local! {
 #[cfg(feature = "instrumentation")]
 #[inline]
 pub(crate) fn probe_chain_begin(mesh: &MeshGraph) {
-    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none()
-        || std::env::var_os("MESH_GRAPH_HOLE_CHECK").is_none()
-    {
+    if !hole_check_enabled() {
         return;
     }
     let boundary = mesh.boundary_edge_set();
@@ -182,10 +207,6 @@ pub(crate) fn dump_face_death_ledger() {
 #[cfg(feature = "instrumentation")]
 #[inline]
 pub(crate) fn report_dead_halfedge_in_collapse_check(mesh_graph: &MeshGraph, dead_id: HalfedgeId) {
-    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
-        return;
-    }
-
     static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     if REPORTED.set(()).is_err() {
         return;
@@ -213,20 +234,23 @@ pub(crate) fn report_dead_halfedge_in_collapse_check(mesh_graph: &MeshGraph, dea
 
 // -- state history (clone ring + resume) ----------------------------------------
 //
-// Debug support for the layer-4 corruption hunt, compiled only with the
-// `instrumentation` feature and gated at runtime on `MESH_GRAPH_DANGLING_CHECK=1`:
-// after every op end that passes the chain-integrity validator a clone of the mesh
-// is pushed onto a small ring (default 10 entries). When a corruption probe fires,
-// the ring is written to disk so the op that introduced the corruption can be
-// diagnosed from the states leading up to it, and the run can be resumed from any
-// of them via `MeshGraph::load_state`.
+// Compiled only with the `instrumentation` feature: after every op end that passes
+// the chain-integrity validator a clone of the mesh is pushed onto a small ring.
+// When a corruption probe fires, the ring is written to disk so the op that
+// introduced the corruption can be diagnosed from the states leading up to it, and
+// the run can be resumed from any of them via `MeshGraph::load_state`.
+//
+// The ring clones the entire mesh per op, so unlike the validators it is opt-in.
 //
 // Env vars:
-//   MESH_GRAPH_DANGLING_CHECK        – enable the whole hunt instrumentation
-//   MESH_GRAPH_STATE_HISTORY_LEN     – ring capacity (default 10)
+//   MESH_GRAPH_STATE_HISTORY_LEN     – ring capacity (default 0 = ring disabled;
+//                                      also settable per thread with
+//                                      `set_state_history_len`)
 //   MESH_GRAPH_STATE_DUMP_DIR        – dump directory (default `mesh_graph_state_dump_<pid>`)
 //   MESH_GRAPH_STATE_DUMP_AT_POS     – dump the ring (once) when the replay position
 //                                      reaches this value (capture-on-demand for tests)
+//   MESH_GRAPH_TRACE                 – record the structural re-wiring events leading
+//                                      up to a report
 //   MESH_GRAPH_HOLE_CHECK            – boundary-delta probe: each probed op must leave
 //                                      the boundary edge set unchanged vs. its own entry
 //                                      (per-op snapshot by `probe_chain_begin`); closed
@@ -253,20 +277,18 @@ pub(crate) static OP_TRACE: std::sync::Mutex<std::collections::VecDeque<String>>
 #[cfg(feature = "instrumentation")]
 pub(crate) const OP_TRACE_CAP: usize = 2000;
 
-/// Whether the op trace records events. Enabled at runtime with
-/// `MESH_GRAPH_TRACE=1` (on top of `MESH_GRAPH_DANGLING_CHECK`).
+/// Whether the op trace records events. Every event allocates a formatted `String`,
+/// so it is opt-in with `MESH_GRAPH_TRACE=1`.
 #[cfg(feature = "instrumentation")]
 pub(crate) fn op_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_some()
-            && std::env::var_os("MESH_GRAPH_TRACE").is_some()
-    })
+    *ENABLED.get_or_init(|| std::env::var_os("MESH_GRAPH_TRACE").is_some())
 }
 
-/// Records one structural re-wiring event into [`OP_TRACE`] (no-op when the hunt
-/// instrumentation is disabled at runtime, including the `format!` itself).
+/// Records one structural re-wiring event into [`OP_TRACE`] (a no-op — including the
+/// `format!` itself — unless `MESH_GRAPH_TRACE=1`).
 #[cfg(feature = "instrumentation")]
+#[doc(hidden)]
 #[macro_export]
 macro_rules! record_op_trace {
     ($($arg:tt)*) => {
@@ -307,23 +329,37 @@ fn replay_position() -> u64 {
     REPLAY_POSITION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Set on the first integrity-violation report in this process, so hosts and
-/// tests can assert that a replay of a dumped state stayed clean.
 #[cfg(feature = "instrumentation")]
-static INTEGRITY_VIOLATION: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    /// Set on the first integrity-violation report on this thread, so hosts and
+    /// tests can assert that a replay of a dumped state stayed clean.
+    ///
+    /// Per-thread rather than process-global, matching the rest of the instrumentation
+    /// state: ops always run on the caller's thread, and the test harness gives each
+    /// test its own, so a violation raised by one replay is never attributed to another
+    /// running beside it. Pair it with [`reset_integrity_violation`] when several
+    /// replays share a thread.
+    static INTEGRITY_VIOLATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// Marks the first detected integrity violation (see [`integrity_violation_reported`]).
 #[cfg(feature = "instrumentation")]
 pub(crate) fn mark_integrity_violation() {
-    INTEGRITY_VIOLATION.store(true, std::sync::atomic::Ordering::Relaxed);
+    INTEGRITY_VIOLATION.with(|cell| cell.set(true));
 }
 
-/// Returns `true` once any corruption report has fired in this process. Hunt
+/// Returns `true` once any corruption report has fired on this thread. Hunt
 /// instrumentation only; always `false` without the `instrumentation` feature.
 #[cfg(feature = "instrumentation")]
 pub fn integrity_violation_reported() -> bool {
-    INTEGRITY_VIOLATION.load(std::sync::atomic::Ordering::Relaxed)
+    INTEGRITY_VIOLATION.with(|cell| cell.get())
+}
+
+/// Clears this thread's violation flag, so a caller can assert that one specific
+/// replay stayed clean regardless of what ran on the thread before it.
+#[cfg(feature = "instrumentation")]
+pub fn reset_integrity_violation() {
+    INTEGRITY_VIOLATION.with(|cell| cell.set(false));
 }
 
 /// One verified mesh state: the mesh clone plus the position/op it was captured at.
@@ -340,7 +376,12 @@ pub(crate) static STATE_RING: std::sync::Mutex<std::collections::VecDeque<StateS
     std::sync::Mutex::new(std::collections::VecDeque::new());
 
 #[cfg(feature = "instrumentation")]
-pub(crate) const STATE_RING_DEFAULT_CAP: usize = 10;
+// Ring capacity for this thread; `None` until first read from the environment.
+// Per-thread so a host thread can opt in without the library's parallel unit tests
+// pushing into the same ring.
+thread_local! {
+    static STATE_RING_CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
 
 /// Set once the state history has been dumped, so hosts can write sidecar data
 /// (e.g. an operation journal) into the same directory.
@@ -355,21 +396,51 @@ pub fn state_dump_dir() -> Option<std::path::PathBuf> {
     STATE_DUMP_DIR.get().cloned()
 }
 
+/// The state-history ring capacity for the current thread. Defaults to `0` — the
+/// ring clones the whole mesh at every op end, far and away the most expensive
+/// part of the instrumentation, so it is opt-in via `MESH_GRAPH_STATE_HISTORY_LEN`
+/// or [`set_state_history_len`].
 #[cfg(feature = "instrumentation")]
 fn state_ring_cap() -> usize {
-    std::env::var_os("MESH_GRAPH_STATE_HISTORY_LEN")
-        .and_then(|s| s.to_str().and_then(|s| s.parse::<usize>().ok()))
-        // 0 disables the ring entirely (faster hunt runs that only probe).
-        .unwrap_or(STATE_RING_DEFAULT_CAP)
+    STATE_RING_CAP.with(|cap| match cap.get() {
+        Some(cap) => cap,
+        None => {
+            let from_env = std::env::var_os("MESH_GRAPH_STATE_HISTORY_LEN")
+                .and_then(|s| s.to_str().and_then(|s| s.parse::<usize>().ok()))
+                .unwrap_or(0);
+            cap.set(Some(from_env));
+            from_env
+        }
+    })
+}
+
+/// Sets the state-history ring capacity for the current thread, overriding
+/// `MESH_GRAPH_STATE_HISTORY_LEN`. `0` disables the ring (the default), so a host
+/// that wants resumable snapshots has to ask for them — see [`state_ring_cap`].
+#[cfg(feature = "instrumentation")]
+pub fn set_state_history_len(len: usize) {
+    STATE_RING_CAP.with(|cap| cap.set(Some(len)));
+}
+
+/// The replay position at which the ring is dumped once (`MESH_GRAPH_STATE_DUMP_AT_POS`).
+#[cfg(feature = "instrumentation")]
+fn state_dump_at_pos() -> Option<u64> {
+    static AT_POS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *AT_POS.get_or_init(|| {
+        std::env::var_os("MESH_GRAPH_STATE_DUMP_AT_POS")
+            .and_then(|s| s.to_str().and_then(|s| s.parse::<u64>().ok()))
+    })
 }
 
 /// Pushes a clone of the current mesh onto the state-history ring. Only called at
-/// op ends that passed the chain-integrity validator. Env-gated: no-op when the
-/// hunt instrumentation is disabled.
+/// op ends that passed the chain-integrity validator, and only when the ring has
+/// been opted into (see [`state_ring_cap`]) — the mesh clone happens after that
+/// check, never speculatively.
 #[cfg(feature = "instrumentation")]
 #[inline]
 pub(crate) fn state_history_push(mesh: &MeshGraph, op: &'static str) {
-    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
+    let cap = state_ring_cap();
+    if cap == 0 {
         return;
     }
 
@@ -379,11 +450,6 @@ pub(crate) fn state_history_push(mesh: &MeshGraph, op: &'static str) {
         mesh: mesh.clone(),
     };
     if let Ok(mut ring) = STATE_RING.lock() {
-        let cap = state_ring_cap();
-        if cap == 0 {
-            ring.clear();
-            return;
-        }
         ring.push_back(snapshot);
         while ring.len() > cap {
             ring.pop_front();
@@ -391,8 +457,7 @@ pub(crate) fn state_history_push(mesh: &MeshGraph, op: &'static str) {
     }
 
     // Capture-on-demand: dump the ring (once) once the boom position is reached.
-    if let Some(target) = std::env::var_os("MESH_GRAPH_STATE_DUMP_AT_POS")
-        && let Some(target) = target.to_str().and_then(|s| s.parse::<u64>().ok())
+    if let Some(target) = state_dump_at_pos()
         && replay_position() >= target
     {
         state_history_dump("at_position", Some(mesh), None);
@@ -408,10 +473,6 @@ pub(crate) fn state_history_dump(
     current: Option<&MeshGraph>,
     context: Option<&dyn std::fmt::Debug>,
 ) {
-    if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
-        return;
-    }
-
     static DUMPED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     if DUMPED.set(()).is_err() {
         return;
@@ -734,8 +795,8 @@ impl MeshGraph {
         }
     }
 
-    /// Debug probe for the layer-4 corruption hunt: with `MESH_GRAPH_DANGLING_CHECK=1`
-    /// reports once (per process) when a halfedge removal takes a halfedge that still
+    /// Debug probe (`instrumentation` feature): reports once per process when a
+    /// halfedge removal takes a halfedge that still
     /// belongs to a *live* face — a face that is not being dismantled by the same call
     /// (`op` is not `remove_face_tail` / `remove_halfedge_face`) — and whose other
     /// members survive. Such a removal breaks the face chain and corrupts the mesh.
@@ -752,11 +813,8 @@ impl MeshGraph {
             return;
         }
 
-        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-        if *ENABLED.get_or_init(|| std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_some())
-            && !matches!(op, "remove_face_tail" | "remove_halfedge_face")
-        {
+        if !matches!(op, "remove_face_tail" | "remove_halfedge_face") {
             for id in removed_ids {
                 if let Some(he) = self.halfedges.get(*id)
                     && let Some(face_id) = he.face
@@ -784,8 +842,8 @@ impl MeshGraph {
         }
     }
 
-    /// Debug probe for the layer-4 corruption hunt: with `MESH_GRAPH_DANGLING_CHECK=1`
-    /// reports once (per process) the first operation that terminates with a broken
+    /// Debug probe (`instrumentation` feature): reports once per process the first
+    /// operation that terminates with a broken
     /// face chain — a live halfedge whose `next` is `None`, references a removed
     /// halfedge, or references a halfedge claimed by a different (or no) face.
     ///
@@ -812,10 +870,6 @@ impl MeshGraph {
     /// dumped to disk (see [`state_history_dump`]).
     #[cfg(feature = "instrumentation")]
     pub(crate) fn probe_chain_integrity(&self, op: &str) -> bool {
-        if std::env::var_os("MESH_GRAPH_DANGLING_CHECK").is_none() {
-            return true;
-        }
-
         static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
         let mut violations: Vec<(HalfedgeId, &'static str)> = Vec::new();
@@ -1114,8 +1168,8 @@ impl MeshGraph {
             state_history_dump("chain_integrity", Some(self), Some(&op));
         }
 
-        // Hole-delta detector (`MESH_GRAPH_HOLE_CHECK=1` on top of
-        // `MESH_GRAPH_DANGLING_CHECK`): each probed op (collapse/subdivide/merge/...)
+        // Hole-delta detector (`MESH_GRAPH_HOLE_CHECK=1`): each probed op
+        // (collapse/subdivide/merge/...)
         // must leave the boundary edge set exactly as it was at its own entry (see
         // [`crate::probe_chain_begin`]).
         //
@@ -1130,7 +1184,7 @@ impl MeshGraph {
         // intentional punch itself is never blamed. Reported once per process,
         // separately from the chain corruption report so the two signals don't mask
         // each other.
-        if std::env::var_os("MESH_GRAPH_HOLE_CHECK").is_some() {
+        if hole_check_enabled() {
             static HOLE_REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
             static RIM_REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
             let current = self.boundary_edge_set();
@@ -1460,5 +1514,41 @@ impl MeshGraph {
                     .and_then(|list| list.first().copied())
             });
         }
+    }
+}
+
+#[cfg(all(test, feature = "instrumentation"))]
+mod integrity_violation_tests {
+    use super::{
+        integrity_violation_reported, mark_integrity_violation, reset_integrity_violation,
+    };
+
+    /// The flag must be per-thread and clearable, so one replay's violation is never
+    /// attributed to another test running beside it under the default parallel harness.
+    #[test]
+    fn violation_flag_is_per_thread_and_resettable() {
+        reset_integrity_violation();
+        assert!(!integrity_violation_reported());
+
+        // A violation raised on another thread must not leak into this one.
+        std::thread::spawn(|| {
+            mark_integrity_violation();
+            assert!(
+                integrity_violation_reported(),
+                "flag must set on its own thread"
+            );
+        })
+        .join()
+        .expect("probe thread panicked");
+        assert!(
+            !integrity_violation_reported(),
+            "another thread's violation leaked into this thread"
+        );
+
+        mark_integrity_violation();
+        assert!(integrity_violation_reported());
+
+        reset_integrity_violation();
+        assert!(!integrity_violation_reported(), "reset must clear the flag");
     }
 }
