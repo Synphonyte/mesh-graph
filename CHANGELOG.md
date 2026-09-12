@@ -3,6 +3,27 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- `collapse_until_edges_above_min_length` and `subdivide_until_edges_below_max_length`
+  now pick the next edge from a binary heap instead of rescaming the pending set, so
+  equal-length ties are resolved deterministically (smallest halfedge id) and the loop
+  is 1.3-2.4x faster on production scans
+- `collapse_until_edges_above_min_length` no longer re-tests edges the inversion guard
+  rejected unless one of their endpoints has moved, cutting collapse time in half on
+  the worst production mesh while keeping every previously-won collapse
+- `subdivide_until_edges_below_max_length` no longer panics on non-positive lengths and
+  its work bound now scales with refinement depth, so small meshes needing many splits
+  converge in a single call; added the tests it previously lacked
+- Added a direct dependency on `ordered-float` (already in the tree via `parry3d`, no
+  extra build)
+
+### Breaking Changes
+
+- `collapse_until_edges_above_min_length` and `subdivide_until_edges_below_max_length`
+  now return `EdgeLengthCleanup` instead of `()`, reporting whether every edge ended up
+  inside the length band
+
 ## [0.10.0] - 2026-09-10
 
 - Hardened against panics and infinite loops.

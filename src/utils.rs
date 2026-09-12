@@ -52,6 +52,121 @@ macro_rules! unwrap_or_return {
     };
 }
 
+// Shared test helpers. Used by the `ops::collapse` and `ops::subdivide` test
+// modules, which both need a mesh with a known edge-length distribution and a
+// way to assert the half-edge invariants survived an operation.
+#[cfg(test)]
+use crate::{HalfedgeId, MeshGraph, VertexId};
+
+/// Builds an `(n x n)` grid of quads in the XY plane, each quad split into two
+/// triangles (CCW when viewed from `+z`), from scratch with the public add APIs.
+#[cfg(test)]
+pub(crate) fn build_grid(n: usize) -> MeshGraph {
+    let mut g = MeshGraph::new();
+
+    let cell = 1.0;
+    let mut v = vec![vec![]; n + 1];
+    for (j, row) in v.iter_mut().enumerate() {
+        for i in 0..=n {
+            let id = g.add_vertex(Vec3::new(i as f32 * cell, j as f32 * cell, 0.0));
+            row.push(id);
+        }
+    }
+
+    let edge = |g: &mut MeshGraph, a: VertexId, b: VertexId| -> HalfedgeId {
+        g.add_or_get_edge(a, b).unwrap().start_to_end_he_id
+    };
+
+    for j in 0..n {
+        for i in 0..n {
+            let a = v[j][i];
+            let b = v[j][i + 1];
+            let c = v[j + 1][i + 1];
+            let d = v[j + 1][i];
+
+            // triangles a-b-c and a-c-d
+            let he_ab = edge(&mut g, a, b);
+            let he_bc = edge(&mut g, b, c);
+            let he_ca = edge(&mut g, c, a);
+            g.add_face(he_ab, he_bc, he_ca);
+
+            let he_ac = edge(&mut g, a, c);
+            let he_cd = edge(&mut g, c, d);
+            let he_da = edge(&mut g, d, a);
+            g.add_face(he_ac, he_cd, he_da);
+        }
+    }
+
+    g
+}
+
+/// Returns a human-readable list of broken half-edge invariants, empty when the
+/// mesh is well formed: mutual twins, live start/end vertices with positions,
+/// live `face`/`next`, and `outgoing_halfedges` agreeing with the topology.
+#[cfg(test)]
+pub(crate) fn mesh_invariant_violations(mg: &MeshGraph) -> Vec<String> {
+    let mut problems = Vec::new();
+
+    for (he_id, he) in &mg.halfedges {
+        let Some(twin_id) = he.twin else {
+            problems.push(format!("he {he_id:?}: missing twin"));
+            continue;
+        };
+        match mg.halfedges.get(twin_id) {
+            Some(twin) if twin.twin == Some(he_id) => {}
+            _ => problems.push(format!(
+                "he {he_id:?}: twin {twin_id:?} does not point back"
+            )),
+        }
+
+        let Some(sv) = he.start_vertex(mg) else {
+            problems.push(format!("he {he_id:?}: no start vertex"));
+            continue;
+        };
+        if !mg.vertices.contains_key(sv) || !mg.positions.contains_key(sv) {
+            problems.push(format!("he {he_id:?}: start vertex {sv:?} is dead"));
+        }
+        if !mg.vertices.contains_key(he.end_vertex) || !mg.positions.contains_key(he.end_vertex) {
+            problems.push(format!(
+                "he {he_id:?}: end vertex {:?} is dead",
+                he.end_vertex
+            ));
+        }
+        if let Some(f) = he.face
+            && !mg.faces.contains_key(f)
+        {
+            problems.push(format!("he {he_id:?}: face {f:?} is dead"));
+        }
+        if let Some(n) = he.next
+            && !mg.halfedges.contains_key(n)
+        {
+            problems.push(format!("he {he_id:?}: next {n:?} is dead"));
+        }
+
+        // halfedge must be present in its start vertex's outgoing list
+        match mg.outgoing_halfedges.get(sv) {
+            Some(list) if list.contains(&he_id) => {}
+            _ => problems.push(format!("he {he_id:?}: not in outgoing_halfedges[{sv:?}]")),
+        }
+    }
+
+    for (v_id, list) in &mg.outgoing_halfedges {
+        for &he_id in list {
+            let Some(he) = mg.halfedges.get(he_id) else {
+                problems.push(format!("outgoing_halfedges[{v_id:?}]: stale he {he_id:?}"));
+                continue;
+            };
+            if he.start_vertex(mg) != Some(v_id) {
+                problems.push(format!(
+                    "outgoing_halfedges[{v_id:?}]: he {he_id:?} does not start here"
+                ));
+            }
+        }
+    }
+
+    problems
+}
+
 #[cfg(test)]
 pub(crate) fn get_tracing_subscriber() {
     if let Err(e) = tracing_subscriber::fmt()

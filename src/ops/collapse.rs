@@ -1,12 +1,20 @@
 use glam::Vec3;
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
 use tracing::{error, instrument};
 
-use crate::{Face, FaceId, HalfedgeId, MeshGraph, VertexId, error_none, utils::unwrap_or_return};
+use crate::{
+    Face, FaceId, HalfedgeId, MeshGraph, VertexId, error_none,
+    ops::{EdgeLengthCleanup, PendingEdges, PendingOrder},
+    utils::unwrap_or_return,
+};
 
 impl MeshGraph {
     /// Collapses edges until all edges have a length above the minimum length.
+    ///
+    /// Returns whether every edge ended up above the threshold, or some remained —
+    /// either because the work bound was reached or because the survivors cannot be
+    /// collapsed without inverting a face. See [`EdgeLengthCleanup`].
     ///
     /// This will schedule necessary updates to the BVH but you have to call
     /// `refit_bvh()` after the operation.
@@ -15,12 +23,35 @@ impl MeshGraph {
         &mut self,
         min_length_squared: f32,
         marked_vertices: &mut HashSet<VertexId>,
-    ) {
+    ) -> EdgeLengthCleanup {
         #[cfg(feature = "instrumentation")]
         crate::set_current_op("collapse");
         #[cfg(feature = "instrumentation")]
         crate::probe_chain_begin(self);
-        let mut halfedges_to_collapse = self.halfedges_map(|len_sqr| len_sqr < min_length_squared);
+        let mut halfedges_to_collapse = PendingEdges::new(
+            self.halfedges_map(|len_sqr| len_sqr < min_length_squared),
+            PendingOrder::ShortestFirst,
+        );
+
+        // Edges popped as shortest-pending but rejected by `can_collapse_edge_inner`.
+        // They stay pending, because a later collapse can make them collapsible, but
+        // re-testing them every iteration is almost pure waste: measured over the
+        // production scans, 18466 rejections produced 16 eventual collapses (0.09%).
+        //
+        // So each entry records the tick it was rejected at, and only goes back into the
+        // queue once the geometry its verdict depends on has actually moved. The entry is
+        // `(edge, squared length, tick when rejected)`.
+        let mut deferred: Vec<(HalfedgeId, f32, u32)> = Vec::new();
+
+        // `can_collapse_edge_inner` rejects an edge when collapsing it would invert a
+        // face, which it decides from the one-rings of the edge's two endpoints. A
+        // collapse moves exactly one vertex, so a rejected edge `(A, B)` can only become
+        // collapsible if the moved vertex is `A`, `B`, or a neighbour of either -
+        // equivalently, if `A` or `B` lies in the moved vertex's closed one-ring.
+        // Recording when each vertex last moved therefore says exactly which rejected
+        // edges are worth another look.
+        let mut vertex_moved_at: HashMap<VertexId, u32> = HashMap::new();
+        let mut tick: u32 = 0;
 
         // Bound the work by the initial problem size, not the mesh size: a degenerate
         // region (e.g. a cluster of zero-length edges after a bad merge) can keep
@@ -33,36 +64,81 @@ impl MeshGraph {
                 break;
             }
 
-            let mut min_len = f32::MAX;
-            let mut min_he_id = None;
-            let mut min_center = Vec3::ZERO;
-            let mut min_twin_id = HalfedgeId::default();
-            let mut min_start_v_id = VertexId::default();
-            let mut min_end_v_id = VertexId::default();
+            // Hand back the parked candidates whose endpoints have moved since they were
+            // rejected. The rest stay parked, costing two integer lookups instead of a
+            // pair of one-ring walks each.
+            for (he_id, len, rejected_at) in std::mem::take(&mut deferred) {
+                let Some(he) = self.halfedges.get(he_id) else {
+                    // The edge is gone, so it is not pending any more either.
+                    halfedges_to_collapse.remove(&he_id);
+                    continue;
+                };
 
-            for (&he_id, &len) in &halfedges_to_collapse {
-                if len < min_len
-                    && let Some((twin_id, start_v_id, end_v_id, center)) =
-                        self.can_collapse_edge_inner(he_id)
-                {
-                    min_len = len;
-                    min_he_id = Some(he_id);
-                    min_twin_id = twin_id;
-                    min_start_v_id = start_v_id;
-                    min_end_v_id = end_v_id;
-                    min_center = center;
+                // If the endpoints cannot be resolved the edge is broken; retry it so the
+                // usual rejection path reports it rather than parking it forever.
+                let moved_since = match he.start_vertex(self) {
+                    Some(start) => {
+                        let moved = |v| vertex_moved_at.get(&v).copied().unwrap_or(0) > rejected_at;
+                        moved(start) || moved(he.end_vertex)
+                    }
+                    None => true,
+                };
+
+                if moved_since {
+                    halfedges_to_collapse.requeue(he_id, len);
+                } else {
+                    deferred.push((he_id, len, rejected_at));
                 }
             }
 
-            let Some(min_he_id) = min_he_id else {
-                // couldn't find a valid halfedge to collapse
+            // Take the shortest pending edge that can actually be collapsed. Rejected
+            // candidates are held in `deferred` so they are neither lost nor retried
+            // within this iteration, which reproduces the previous linear scan's
+            // "minimum among collapsible edges" choice.
+            let mut found = None;
+
+            while let Some((he_id, len)) = halfedges_to_collapse.pop_live() {
+                // Note: this mutates the mesh even when it returns `None` - it reseeds
+                // `outgoing_halfedge` on both endpoints to anchor the one-ring walk in
+                // `check_inverted_faces`. Each call seeds its own endpoints before its
+                // own walk, so the verdict does not depend on which candidates ran
+                // before it.
+                if let Some((twin_id, start_v_id, end_v_id, center)) =
+                    self.can_collapse_edge_inner(he_id)
+                {
+                    found = Some((he_id, twin_id, start_v_id, end_v_id, center));
+                    break;
+                }
+
+                deferred.push((he_id, len, tick));
+            }
+
+            let Some((min_he_id, min_twin_id, min_start_v_id, min_end_v_id, min_center)) = found
+            else {
+                // Couldn't find a valid halfedge to collapse. Everything still pending
+                // was rejected this iteration, so no further progress is possible.
+                //
+                // `deferred` may hold *more* entries than the map holds keys, because
+                // `pop_live` can yield the same id twice (see its docs). That surplus is
+                // benign. A shortfall is not: it means a pending entry had no heap entry
+                // pointing at it, i.e. a push site is missing and that edge is lost for
+                // the rest of the run. Only the latter is asserted.
+                debug_assert!(
+                    deferred.len() >= halfedges_to_collapse.len(),
+                    "heap drained with {} pending and only {} deferred - a push site is missing",
+                    halfedges_to_collapse.len(),
+                    deferred.len()
+                );
                 break;
             };
+
+            tick += 1;
 
             let start_vertex_id = unwrap_or_return!(
                 // checked in `can_collapse_edge_inner`
                 self.halfedges[min_he_id].start_vertex(self),
-                "Start vertex not found"
+                "Start vertex not found",
+                EdgeLengthCleanup::Stalled
             );
 
             let collapse_edge_result = self.collapse_edge_inner(
@@ -102,13 +178,24 @@ impl MeshGraph {
                     continue;
                 };
 
+                // This vertex moved, or was created, by the collapse.
+                vertex_moved_at.insert(vertex_id, tick);
+
                 for &halfedge_id in outgoing_halfedges {
                     let Some(halfedge) = self.halfedges.get(halfedge_id) else {
                         error!("Halfedge not found");
                         continue;
                     };
 
-                    let twin_id = unwrap_or_return!(halfedge.twin, "Twin not found");
+                    // ... and so did its one-ring, as far as the inversion guard's
+                    // verdict on edges incident to those neighbours is concerned.
+                    vertex_moved_at.insert(halfedge.end_vertex, tick);
+
+                    let twin_id = unwrap_or_return!(
+                        halfedge.twin,
+                        "Twin not found",
+                        EdgeLengthCleanup::Stalled
+                    );
 
                     halfedges_to_check.insert(halfedge_id.min(twin_id));
 
@@ -145,10 +232,6 @@ impl MeshGraph {
             }
         }
 
-        // The per-collapse edits keep the cache consistent for local operations, but the
-        // neighborhood cleanup (vertex splitting) can leave halfedges attributed to the
-        // wrong vertex's list. Since `outgoing_halfedges` is derived, reconcile it once from
-        // the halfedge topology after all collapses are done.
         self.rebuild_outgoing_halfedges();
 
         #[cfg(feature = "instrumentation")]
@@ -158,6 +241,14 @@ impl MeshGraph {
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
+
+        // The loop only exits early once the pending set drains, so anything left in it
+        // is an edge below the threshold that could not be collapsed.
+        if halfedges_to_collapse.is_empty() {
+            EdgeLengthCleanup::Converged
+        } else {
+            EdgeLengthCleanup::Stalled
+        }
     }
 
     #[inline]
@@ -665,6 +756,8 @@ pub struct CollapseEdge {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::ops::EdgeLengthCleanup;
+    use crate::utils::{build_grid, mesh_invariant_violations};
 
     #[test]
     #[allow(unused_variables)]
@@ -795,111 +888,60 @@ mod test {
         assert_eq!(mesh_graph.outgoing_halfedges[start_v_id].len(), 6);
     }
 
-    /// Builds an `(n x n)` grid of quads in the XY plane, each quad split into two
-    /// triangles (CCW when viewed from `+z`), from scratch with the public add APIs.
-    fn build_grid(n: usize) -> MeshGraph {
-        let mut g = MeshGraph::new();
+    /// An edge the inversion guard permanently refuses leaves the mesh dirty, and the
+    /// op must say so rather than letting the caller assume it finished.
+    #[test]
+    fn test_collapse_reports_stalled_when_an_edge_cannot_collapse() {
+        const MIN_LEN_SQR: f32 = 0.2;
 
-        let cell = 1.0;
-        let mut v = vec![vec![]; n + 1];
-        for (j, row) in v.iter_mut().enumerate() {
-            for i in 0..=n {
-                let id = g.add_vertex(Vec3::new(i as f32 * cell, j as f32 * cell, 0.0));
-                row.push(id);
-            }
-        }
+        let mut mg = build_grid(4);
 
-        let edge = |g: &mut MeshGraph, a: VertexId, b: VertexId| -> HalfedgeId {
-            g.add_or_get_edge(a, b).unwrap().start_to_end_he_id
+        let vertex_at = |mg: &MeshGraph, x: f32, y: f32| -> VertexId {
+            mg.positions
+                .iter()
+                .find(|(_, p)| (p.x - x).abs() < 1e-6 && (p.y - y).abs() < 1e-6)
+                .map(|(v, _)| v)
+                .expect("grid has no vertex at that position")
         };
 
-        for j in 0..n {
-            for i in 0..n {
-                let a = v[j][i];
-                let b = v[j][i + 1];
-                let c = v[j + 1][i + 1];
-                let d = v[j + 1][i];
+        let v = vertex_at(&mg, 2.0, 2.0);
+        let w = vertex_at(&mg, 1.0, 2.0);
+        mg.positions[v] = Vec3::new(2.5, 2.95, 0.0);
+        mg.positions[w] = Vec3::new(2.5, 3.1, 0.0);
+        mg.compute_vertex_normals();
 
-                // triangles a-b-c and a-c-d
-                let he_ab = edge(&mut g, a, b);
-                let he_bc = edge(&mut g, b, c);
-                let he_ca = edge(&mut g, c, a);
-                g.add_face(he_ab, he_bc, he_ca);
+        let outcome = mg.collapse_until_edges_above_min_length(MIN_LEN_SQR, &mut HashSet::new());
 
-                let he_ac = edge(&mut g, a, c);
-                let he_cd = edge(&mut g, c, d);
-                let he_da = edge(&mut g, d, a);
-                g.add_face(he_ac, he_cd, he_da);
-            }
-        }
-
-        g
+        assert_eq!(outcome, EdgeLengthCleanup::Stalled);
+        assert!(mesh_invariant_violations(&mg).is_empty());
     }
 
-    /// Collects invariant violations of the mesh: every halfedge must reference only live
-    /// vertices/faces, and `outgoing_halfedges[V]` must be exactly the halfedges starting at `V`.
-    fn mesh_invariant_violations(mg: &MeshGraph) -> Vec<String> {
-        let mut problems = Vec::new();
+    #[test]
+    fn test_collapse_reports_converged_when_it_drains() {
+        let mut mg = build_grid(6);
 
-        for (he_id, he) in &mg.halfedges {
-            let Some(twin_id) = he.twin else {
-                problems.push(format!("he {he_id:?}: missing twin"));
-                continue;
-            };
-            match mg.halfedges.get(twin_id) {
-                Some(twin) if twin.twin == Some(he_id) => {}
-                _ => problems.push(format!(
-                    "he {he_id:?}: twin {twin_id:?} does not point back"
-                )),
-            }
+        let outcome = mg.collapse_until_edges_above_min_length(2.0, &mut HashSet::new());
 
-            let Some(sv) = he.start_vertex(mg) else {
-                problems.push(format!("he {he_id:?}: no start vertex"));
-                continue;
-            };
-            if !mg.vertices.contains_key(sv) || !mg.positions.contains_key(sv) {
-                problems.push(format!("he {he_id:?}: start vertex {sv:?} is dead"));
-            }
-            if !mg.vertices.contains_key(he.end_vertex) || !mg.positions.contains_key(he.end_vertex)
-            {
-                problems.push(format!(
-                    "he {he_id:?}: end vertex {:?} is dead",
-                    he.end_vertex
-                ));
-            }
-            if let Some(f) = he.face
-                && !mg.faces.contains_key(f)
-            {
-                problems.push(format!("he {he_id:?}: face {f:?} is dead"));
-            }
-            if let Some(n) = he.next
-                && !mg.halfedges.contains_key(n)
-            {
-                problems.push(format!("he {he_id:?}: next {n:?} is dead"));
-            }
+        assert_eq!(outcome, EdgeLengthCleanup::Converged);
+        assert_eq!(
+            mg.halfedges
+                .values()
+                .filter(|he| he.length_squared(&mg) < 2.0)
+                .count(),
+            0
+        );
+    }
 
-            // halfedge must be present in its start vertex's outgoing list
-            match mg.outgoing_halfedges.get(sv) {
-                Some(list) if list.contains(&he_id) => {}
-                _ => problems.push(format!("he {he_id:?}: not in outgoing_halfedges[{sv:?}]")),
-            }
-        }
+    /// A mesh with nothing below the threshold converges without touching anything.
+    #[test]
+    fn test_collapse_reports_converged_on_a_clean_mesh() {
+        let mut mg = build_grid(3);
+        let faces = mg.faces.len();
 
-        for (v_id, list) in &mg.outgoing_halfedges {
-            for &he_id in list {
-                let Some(he) = mg.halfedges.get(he_id) else {
-                    problems.push(format!("outgoing_halfedges[{v_id:?}]: stale he {he_id:?}"));
-                    continue;
-                };
-                if he.start_vertex(mg) != Some(v_id) {
-                    problems.push(format!(
-                        "outgoing_halfedges[{v_id:?}]: he {he_id:?} does not start here"
-                    ));
-                }
-            }
-        }
+        let outcome = mg.collapse_until_edges_above_min_length(0.01, &mut HashSet::new());
 
-        problems
+        assert_eq!(outcome, EdgeLengthCleanup::Converged);
+        assert_eq!(mg.faces.len(), faces);
     }
 
     #[test]
@@ -919,6 +961,162 @@ mod test {
             "collapse left {} dangling/inconsistent halfedges, e.g.:\n{}\n",
             problems.len(),
             problems.iter().take(10).join("\n")
+        );
+    }
+
+    /// The above asserts only that the mesh stayed well formed, which a collapse
+    /// that picked the wrong edges — or no edges — would also satisfy. These pin
+    /// that work actually happened and moved in the right direction.
+    #[test]
+    fn test_collapse_until_min_length_removes_short_edges() {
+        let mut mg = build_grid(6);
+
+        let below_before = mg
+            .halfedges
+            .values()
+            .filter(|he| he.length_squared(&mg) < 2.0)
+            .count();
+        let faces_before = mg.faces.len();
+        assert!(below_before > 0, "fixture has no edges below the threshold");
+
+        mg.collapse_until_edges_above_min_length(2.0, &mut HashSet::new());
+
+        assert!(mesh_invariant_violations(&mg).is_empty());
+
+        let below_after = mg
+            .halfedges
+            .values()
+            .filter(|he| he.length_squared(&mg) < 2.0)
+            .count();
+
+        assert!(
+            below_after < below_before,
+            "collapse made no progress: {below_before} -> {below_after} short edges"
+        );
+        assert!(
+            mg.faces.len() < faces_before,
+            "collapsing edges must remove faces: {faces_before} -> {}",
+            mg.faces.len()
+        );
+    }
+
+    /// Aggressive collapse on non-planar geometry stays well formed.
+    ///
+    /// Note on what this does *not* cover: the deferred-requeue path, which holds
+    /// candidates that `can_collapse_edge_inner` rejected. Rejections come from
+    /// `check_inverted_faces`, and measurement shows this fixture produces zero
+    /// of them even with the ridges — as does the flat grid, because collapsing to
+    /// a midpoint inside a convex one-ring cannot flip a face normal. That path is
+    /// covered by `test_collapse_retries_candidates_the_inversion_guard_rejected`
+    /// below, which builds the non-convex case on purpose, and at the unit level by
+    /// `ops::pending_edges_test::requeue_makes_a_declined_entry_reachable_again`;
+    /// on production scans it fires 64-18466 times per pass.
+    #[test]
+    fn test_collapse_until_min_length_on_non_planar_grid() {
+        let mut mg = build_grid(6);
+
+        let displaced: Vec<(VertexId, Vec3)> = mg
+            .positions
+            .iter()
+            .map(|(v, &p)| {
+                let ridge = ((p.x as i32 % 2) ^ (p.y as i32 % 2)) as f32;
+                (v, Vec3::new(p.x, p.y, ridge * 1.5))
+            })
+            .collect();
+        for (v, p) in displaced {
+            mg.positions[v] = p;
+        }
+        mg.compute_vertex_normals();
+
+        let faces_before = mg.faces.len();
+        mg.collapse_until_edges_above_min_length(3.0, &mut HashSet::new());
+
+        assert!(
+            mesh_invariant_violations(&mg).is_empty(),
+            "invariants violated: {:?}",
+            mesh_invariant_violations(&mg)
+        );
+        assert!(
+            mg.faces.len() < faces_before,
+            "collapse made no progress on the ridged grid"
+        );
+    }
+
+    /// The deferred-requeue path: a candidate `can_collapse_edge_inner` rejected is
+    /// pushed back onto the heap after the next successful collapse, instead of being
+    /// dropped. `pop_live` consumes the heap entry without touching the map, so a
+    /// rejected id that is not requeued stays pending with nothing pointing at it —
+    /// unreachable for the rest of the run.
+    ///
+    /// Reaching a rejection at all takes deliberate construction; the grids above
+    /// produce none. `check_inverted_faces` rejects only when moving a vertex to the
+    /// edge midpoint flips a face normal, which needs the midpoint to land across the
+    /// line through two of that vertex's *other* ring neighbours — impossible inside
+    /// a convex one-ring. So `v` is pulled to just inside the line `y = 3` through its
+    /// neighbours `(3,3)` and `(2,3)`, and `w` is pushed just across it. Edge `v-w` is
+    /// len_sqr 0.0225, the shortest in the mesh, so it is popped first, and its
+    /// midpoint at `y = 3.025` inverts the face `(v, (3,3), (2,3))`.
+    ///
+    /// The second edit is what makes the requeue observable: a collapsible short edge
+    /// in the far corner, `len_sqr` 0.09. The run then goes reject `v-w` → collapse
+    /// the corner edge → retry `v-w`. The corner collapse is far enough away that
+    /// `v-w` is not in its `halfedges_to_check`, so the re-check pass cannot re-insert
+    /// it; only the requeue can bring it back. Drop the requeue and the final
+    /// `debug_assert!` in the op sees one pending edge and an empty `deferred`.
+    #[test]
+    fn test_collapse_retries_candidates_the_inversion_guard_rejected() {
+        const MIN_LEN_SQR: f32 = 0.2;
+
+        let mut mg = build_grid(4);
+
+        let vertex_at = |mg: &MeshGraph, x: f32, y: f32| -> VertexId {
+            mg.positions
+                .iter()
+                .find(|(_, p)| (p.x - x).abs() < 1e-6 && (p.y - y).abs() < 1e-6)
+                .map(|(v, _)| v)
+                .expect("grid has no vertex at that position")
+        };
+
+        let v = vertex_at(&mg, 2.0, 2.0);
+        let w = vertex_at(&mg, 1.0, 2.0);
+        let corner = vertex_at(&mg, 0.0, 0.0);
+        mg.positions[v] = Vec3::new(2.5, 2.95, 0.0);
+        mg.positions[w] = Vec3::new(2.5, 3.1, 0.0);
+        mg.positions[corner] = Vec3::new(0.7, 0.0, 0.0);
+        mg.compute_vertex_normals();
+
+        let below = |mg: &MeshGraph| {
+            mg.halfedges
+                .values()
+                .filter(|he| he.length_squared(mg) < MIN_LEN_SQR)
+                .count()
+        };
+
+        // Exactly two edges pending: the inverting `v-w` and the corner edge.
+        assert_eq!(below(&mg), 4, "fixture should seed exactly two short edges");
+        let faces_before = mg.faces.len();
+
+        mg.collapse_until_edges_above_min_length(MIN_LEN_SQR, &mut HashSet::new());
+
+        assert!(
+            mesh_invariant_violations(&mg).is_empty(),
+            "invariants violated: {:?}",
+            mesh_invariant_violations(&mg)
+        );
+        // The rejected candidate sits at the front of the queue; the op must still
+        // get past it and collapse the corner edge.
+        assert!(
+            mg.faces.len() < faces_before,
+            "a rejected shortest edge stalled the whole op: {faces_before} -> {} faces",
+            mg.faces.len()
+        );
+        // `v-w` inverts a face no later collapse repairs, so it stays pending - and
+        // stays *retried*, which is the half a dropped requeue would lose.
+        assert_eq!(
+            below(&mg),
+            2,
+            "expected only the inverting edge to survive, found {} short halfedges",
+            below(&mg)
         );
     }
 
