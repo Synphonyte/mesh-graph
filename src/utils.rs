@@ -56,7 +56,7 @@ macro_rules! unwrap_or_return {
 // modules, which both need a mesh with a known edge-length distribution and a
 // way to assert the half-edge invariants survived an operation.
 #[cfg(test)]
-use crate::{HalfedgeId, MeshGraph, VertexId};
+use crate::{FaceId, HalfedgeId, MeshGraph, Selection, VertexId};
 
 /// Builds an `(n x n)` grid of quads in the XY plane, each quad split into two
 /// triangles (CCW when viewed from `+z`), from scratch with the public add APIs.
@@ -165,6 +165,109 @@ pub(crate) fn mesh_invariant_violations(mg: &MeshGraph) -> Vec<String> {
     }
 
     problems
+}
+
+/// Returns a human-readable list of ids a [`Selection`] holds that are no longer live,
+/// empty when the selection is consistent with the mesh.
+///
+/// This is the bookkeeping counterpart to [`mesh_invariant_violations`]: that one says
+/// the mesh is well formed, this one says the selection still describes it.
+#[cfg(test)]
+pub(crate) fn selection_violations(mg: &MeshGraph, sel: &Selection) -> Vec<String> {
+    let mut problems = Vec::new();
+
+    for v_id in &sel.vertices {
+        if !mg.vertices.contains_key(*v_id) {
+            problems.push(format!("selection: dead vertex {v_id:?}"));
+        }
+    }
+    for he_id in &sel.halfedges {
+        if !mg.halfedges.contains_key(*he_id) {
+            problems.push(format!("selection: dead halfedge {he_id:?}"));
+        }
+    }
+    for f_id in &sel.faces {
+        if !mg.faces.contains_key(*f_id) {
+            problems.push(format!("selection: dead face {f_id:?}"));
+        }
+    }
+
+    problems
+}
+
+/// Every live key in the mesh, for brute-force before/after diffing.
+///
+/// Lets a test derive what an operation created without trusting the mechanism the
+/// operation itself uses to report it.
+#[cfg(test)]
+pub(crate) fn element_keys(
+    mg: &MeshGraph,
+) -> (
+    hashbrown::HashSet<VertexId>,
+    hashbrown::HashSet<HalfedgeId>,
+    hashbrown::HashSet<FaceId>,
+) {
+    (
+        mg.vertices.keys().collect(),
+        mg.halfedges.keys().collect(),
+        mg.faces.keys().collect(),
+    )
+}
+
+/// Selects every face whose centroid satisfies `predicate`.
+#[cfg(test)]
+pub(crate) fn select_faces_where(mg: &MeshGraph, predicate: impl Fn(Vec3) -> bool) -> Selection {
+    Selection {
+        faces: mg
+            .faces
+            .iter()
+            .filter(|(_, face)| predicate(face.center(mg)))
+            .map(|(f_id, _)| f_id)
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// The endpoint positions of every live halfedge, for "this edge was not touched"
+/// assertions. Subdividing an edge re-points its `end_vertex` at the new center, so a
+/// changed pair is exactly the signal that an edge was split.
+#[cfg(test)]
+pub(crate) fn edge_endpoint_positions(mg: &MeshGraph) -> hashbrown::HashMap<HalfedgeId, (Vec3, Vec3)> {
+    let mut map = hashbrown::HashMap::new();
+
+    for (he_id, he) in &mg.halfedges {
+        let Some(start_v) = he.start_vertex(mg) else {
+            continue;
+        };
+        let (Some(start), Some(end)) = (mg.positions.get(start_v), mg.positions.get(he.end_vertex))
+        else {
+            continue;
+        };
+        map.insert(he_id, (*start, *end));
+    }
+
+    map
+}
+
+/// Total area of the faces in a selection.
+///
+/// Subdivision splits faces without changing the area they cover, so this is a single
+/// number that catches both halves of the bookkeeping going wrong: a created face that
+/// was never added to the selection loses area, and a face that died without being
+/// dropped is skipped here and loses area too.
+#[cfg(test)]
+pub(crate) fn selection_area(mg: &MeshGraph, sel: &Selection) -> f32 {
+    sel.faces
+        .iter()
+        .filter_map(|f_id| mg.faces.get(*f_id))
+        .map(|face| {
+            let p: Vec<Vec3> = face.vertex_positions(mg).collect();
+            if p.len() < 3 {
+                return 0.0;
+            }
+            (p[1] - p[0]).cross(p[2] - p[0]).length() * 0.5
+        })
+        .sum()
 }
 
 #[cfg(test)]

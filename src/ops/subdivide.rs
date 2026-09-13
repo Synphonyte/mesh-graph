@@ -2,7 +2,7 @@ use hashbrown::HashSet;
 use tracing::instrument;
 
 use crate::{
-    HalfedgeId, MeshGraph, Selection, SelectionOps, VertexId, error_none,
+    HalfedgeId, MeshGraph, ScopedCleanup, Selection, SelectionOps, VertexId, error_none,
     ops::{EdgeLengthCleanup, PendingEdges, PendingOrder},
     utils::unwrap_or_return,
 };
@@ -23,11 +23,68 @@ impl MeshGraph {
         marked_halfedge_ids: &mut HashSet<HalfedgeId>,
         marked_vertex_ids: &mut HashSet<VertexId>,
     ) -> EdgeLengthCleanup {
+        self.subdivide_until_edges_below_max_length_inner(
+            max_length_squared,
+            None,
+            marked_halfedge_ids,
+            marked_vertex_ids,
+        )
+    }
+
+    /// Subdivide the edges covered by `selection` until all of them are <= max_length,
+    /// leaving the rest of the mesh alone. Please note that you have to provide the
+    /// squared value of max_length.
+    ///
+    /// The scope is [`Selection::resolve_to_halfedges`]: explicitly selected halfedges,
+    /// every halfedge of a selected face, and every outgoing halfedge of a selected
+    /// vertex. A selected face therefore puts all three of its edges in scope, including
+    /// ones it shares with unselected faces — splitting such an edge also splits the
+    /// unselected face on the far side, which is unavoidable in a triangle mesh.
+    ///
+    /// `selection` is updated in place: elements the operation destroyed are dropped and
+    /// elements it created are added, so the selection keeps describing the same region
+    /// and never holds a dead id. Because created vertices and halfedges are added too, a
+    /// face-based selection accumulates them, and on a *later* call those vertices resolve
+    /// their full one-ring — so the scope can creep one ring outward per call. Re-derive
+    /// the selection between calls if you need it pinned.
+    ///
+    /// Returns what changed; see [`ScopedCleanup`].
+    ///
+    /// This will schedule necessary updates to the QBVH but you have to call
+    /// `refit_bvh()` after the operation.
+    #[instrument(skip(self, selection))]
+    pub fn subdivide_selected_until_edges_below_max_length(
+        &mut self,
+        selection: &mut Selection,
+        max_length_squared: f32,
+        marked_halfedge_ids: &mut HashSet<HalfedgeId>,
+        marked_vertex_ids: &mut HashSet<VertexId>,
+    ) -> ScopedCleanup {
+        self.run_scoped(selection, |mg, scope| {
+            mg.subdivide_until_edges_below_max_length_inner(
+                max_length_squared,
+                Some(scope),
+                marked_halfedge_ids,
+                marked_vertex_ids,
+            )
+        })
+    }
+
+    fn subdivide_until_edges_below_max_length_inner(
+        &mut self,
+        max_length_squared: f32,
+        mut scope: Option<&mut HashSet<HalfedgeId>>,
+        marked_halfedge_ids: &mut HashSet<HalfedgeId>,
+        marked_vertex_ids: &mut HashSet<VertexId>,
+    ) -> EdgeLengthCleanup {
         #[cfg(feature = "instrumentation")]
         crate::set_current_op("subdivide");
         #[cfg(feature = "instrumentation")]
         crate::probe_chain_begin(self);
-        let pending = self.halfedges_map(|len_sqr| len_sqr > max_length_squared);
+        let pending = match scope.as_deref() {
+            Some(scope) => self.halfedges_map_in(scope, |len_sqr| len_sqr > max_length_squared),
+            None => self.halfedges_map(|len_sqr| len_sqr > max_length_squared),
+        };
 
         // Bound the work by the initial problem size, not the mesh size: in stretched
         // regions (e.g. the punch band) splitting the longest edge of a triangle can
@@ -115,6 +172,19 @@ impl MeshGraph {
                 marked_vertex_ids.insert(subdivide_edge_result.added_vertex);
             }
 
+            // Geometry created inside the scope belongs to the scope, or the cascade
+            // would stop at the first split: a half that is still too long has to be
+            // splittable in turn. Both directions go in, because `subdivide_edge`
+            // re-pairs twins and the surviving halves are found through either one.
+            if let Some(scope) = scope.as_deref_mut() {
+                for &new_he_id in &subdivide_edge_result.added_halfedges {
+                    scope.insert(new_he_id);
+                    if let Some(twin_id) = self.halfedges.get(new_he_id).and_then(|he| he.twin) {
+                        scope.insert(twin_id);
+                    }
+                }
+            }
+
             // #[cfg(feature = "rerun")]
             // {
             //     crate::RR
@@ -163,6 +233,16 @@ impl MeshGraph {
                 let twin_id =
                     unwrap_or_return!(he.twin, "Twin missing", EdgeLengthCleanup::Stalled);
 
+                // The faces touched by a split reach beyond the selection at its rim.
+                // Only edges in scope may be queued, or the operation would walk off
+                // into unselected geometry one ring at a time.
+                if let Some(scope) = scope.as_deref()
+                    && !scope.contains(&he_id)
+                    && !scope.contains(&twin_id)
+                {
+                    continue;
+                }
+
                 new_hes_to_check.insert(he_id.min(twin_id));
             }
 
@@ -189,8 +269,8 @@ impl MeshGraph {
         }
 
         // Subdivision itself only adds geometry, but a marked set is long-lived and may
-        // still carry ids invalidated by an earlier operation. Both ops hand back only
-        // live keys.
+        // still carry ids invalidated by an earlier operation. Prune it here so both the
+        // whole-mesh and the scoped path hand back only live keys.
         marked_vertex_ids.retain(|v_id| self.vertices.contains_key(*v_id));
         marked_halfedge_ids.retain(|he_id| self.halfedges.contains_key(*he_id));
 
@@ -404,11 +484,14 @@ impl MeshGraph {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct SubdivideEdge {
-    /// All halfedges created by the subdivision.
-    added_halfedges: Vec<HalfedgeId>,
+    /// All halfedges created by the subdivision. Only one of each twin pair, so
+    /// `1 <= len <= 3`: the half running from the center vertex to the original end
+    /// vertex, plus one per adjacent face that was split.
+    pub added_halfedges: Vec<HalfedgeId>,
     /// This is the center vertex of the subdivided edge that was created.
-    added_vertex: VertexId,
+    pub added_vertex: VertexId,
 }
 
 #[cfg(test)]

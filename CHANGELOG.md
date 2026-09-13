@@ -5,6 +5,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added `collapse_selected_until_edges_above_min_length` and
+  `subdivide_selected_until_edges_below_max_length`, which restrict the edge-length
+  cleanups to a `Selection` and keep that selection in step with the mesh they reshape:
+  elements the operation destroys are dropped from it and elements it creates are added,
+  so it never holds a dead id. The scope is `Selection::resolve_to_halfedges`, so a
+  selected face puts all three of its edges in scope. The whole-mesh entry points are
+  unchanged and now delegate to the scoped ones with a full-mesh selection
+- Added `ScopedCleanup`, returned by both scoped operations: the `EdgeLengthCleanup`
+  outcome plus `added`/`removed` `SelectionEdit`s. Replaying `removed` then `added` onto
+  the selection an operation started from reproduces the one it ended with, so a caller
+  mirroring the selection elsewhere can follow along without re-scanning the mesh
+- Added `Selection::retain_live`, which drops ids that no longer name a live element and
+  returns exactly which ones. Removals are derived from the mesh's own keys rather than
+  recorded per operation, so no removal site can be missed
+- `SubdivideEdge`'s fields are now public and it derives `Debug`. The struct was public
+  with private fields and no accessors, so `subdivide_edge` told external callers nothing
+  about what it had created
 - `collapse_until_edges_above_min_length` and `subdivide_until_edges_below_max_length`
   now pick the next edge from a binary heap instead of rescaming the pending set, so
   equal-length ties are resolved deterministically (smallest halfedge id) and the loop

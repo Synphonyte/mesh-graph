@@ -4,6 +4,8 @@ mod collapse;
 mod edit;
 mod merge_one_ring;
 mod query;
+#[cfg(test)]
+mod selection_scoped_tests;
 mod remove;
 mod subdivide;
 mod transform;
@@ -16,7 +18,7 @@ pub use merge_one_ring::*;
 
 use ordered_float::OrderedFloat;
 
-use crate::{HalfedgeId, MeshGraph};
+use crate::{HalfedgeId, MeshGraph, Selection, SelectionEdit};
 
 /// The outcome of [`MeshGraph::collapse_until_edges_above_min_length`] and
 /// [`MeshGraph::subdivide_until_edges_below_max_length`].
@@ -45,6 +47,114 @@ impl EdgeLengthCleanup {
     #[inline]
     pub fn converged(self) -> bool {
         self == Self::Converged
+    }
+}
+
+/// The outcome of a selection-scoped remesh, plus the bookkeeping needed to keep the
+/// caller's [`Selection`](crate::Selection) in step with the mesh.
+///
+/// Applying `removed` and then `added` to the selection the operation started from
+/// reproduces the selection it ended with, so a caller mirroring the selection into
+/// its own structures can follow along without re-scanning the mesh.
+#[derive(Debug, Clone)]
+pub struct ScopedCleanup {
+    /// Whether every edge in scope ended up inside the length band. An empty
+    /// selection yields [`EdgeLengthCleanup::Converged`]: no edge in scope violates
+    /// the threshold, which keeps a caller looping until convergence from spinning.
+    pub outcome: EdgeLengthCleanup,
+
+    /// Elements the operation created and added to the selection. Every id is live.
+    pub added: SelectionEdit,
+
+    /// Elements dropped from the selection because they no longer name anything. Every
+    /// id was in the selection beforehand and is dead now — usually because this
+    /// operation destroyed it, but ids an *earlier* operation invalidated are reported
+    /// here too, the first time a scoped operation sees them. That keeps the replay
+    /// property exact for a selection that had gone stale.
+    pub removed: SelectionEdit,
+}
+
+impl ScopedCleanup {
+    /// `true` only when every edge in scope ended up inside the length band.
+    #[inline]
+    pub fn converged(&self) -> bool {
+        self.outcome.converged()
+    }
+}
+
+impl MeshGraph {
+    /// Runs a length-cleanup operation restricted to `selection`, and keeps that
+    /// selection in step with the mesh the operation reshapes.
+    ///
+    /// The scope is materialized once, up front, and handed to `op` to grow as it
+    /// creates geometry. It is deliberately never re-derived from `selection`
+    /// mid-operation: the write-back adds created vertices to the selection, and a
+    /// vertex resolves its whole one-ring, so re-resolving would let the operation
+    /// walk out of the region one ring per edge.
+    pub(crate) fn run_scoped(
+        &mut self,
+        selection: &mut Selection,
+        op: impl FnOnce(&mut Self, &mut hashbrown::HashSet<HalfedgeId>) -> EdgeLengthCleanup,
+    ) -> ScopedCleanup {
+        // Purge first: a selection carrying ids killed by some earlier operation must
+        // not widen the scope, and the caller's mirror needs to hear about them too.
+        let mut removed = selection.retain_live(self);
+
+        let mut scope = hashbrown::HashSet::new();
+        for he_id in selection.resolve_to_halfedges(self) {
+            scope.insert(he_id);
+            // Both directions: `subdivide_edge` re-pairs twins, so which halfedge of a
+            // pair is canonical is not stable across the operation.
+            if let Some(twin_id) = self.halfedges.get(he_id).and_then(|he| he.twin) {
+                scope.insert(twin_id);
+            }
+        }
+
+        if scope.is_empty() {
+            return ScopedCleanup {
+                outcome: EdgeLengthCleanup::Converged,
+                added: SelectionEdit::default(),
+                removed,
+            };
+        }
+
+        self.start_recording_creations();
+        let outcome = op(self, &mut scope);
+        let (vertices, halfedges, faces) = self.end_recording_creations();
+
+        // The journal lists everything created, including geometry a later step of the
+        // same run destroyed again. Only what survived belongs in the selection, and
+        // filtering here is what keeps an element that was created and then removed out
+        // of `added` *and* out of `removed` — it was never in the selection to lose.
+        let added = SelectionEdit {
+            vertices: vertices
+                .into_iter()
+                .filter(|id| self.vertices.contains_key(*id))
+                .collect(),
+            halfedges: halfedges
+                .into_iter()
+                .filter(|id| self.halfedges.contains_key(*id))
+                .collect(),
+            faces: faces
+                .into_iter()
+                .filter(|id| self.faces.contains_key(*id))
+                .collect(),
+        };
+        selection.extend_with_edit(&added);
+
+        // Second purge, for elements that were selected before the operation and did
+        // not survive it. `added` is already filtered to live ids, so this cannot
+        // remove anything the previous statement just put in.
+        let removed_by_op = selection.retain_live(self);
+        removed.vertices.extend(removed_by_op.vertices);
+        removed.halfedges.extend(removed_by_op.halfedges);
+        removed.faces.extend(removed_by_op.faces);
+
+        ScopedCleanup {
+            outcome,
+            added,
+            removed,
+        }
     }
 }
 
@@ -207,6 +317,8 @@ impl PendingEdges {
 }
 
 impl MeshGraph {
+    /// One entry per undirected edge whose squared length satisfies `predicate`,
+    /// keyed by the canonical halfedge `min(he, twin)`.
     pub fn halfedges_map(&mut self, predicate: impl Fn(f32) -> bool) -> HashMap<HalfedgeId, f32> {
         let mut halfedges_map = HashMap::new();
 
@@ -214,6 +326,44 @@ impl MeshGraph {
             // A twinless halfedge is a broken edge, not a reason to abandon the scan:
             // returning the partial map here used to silently drop every edge after
             // the first one, leaving those edges unprocessed by the caller's loop.
+            let Some(twin_id) = he.twin else {
+                tracing::error!("Twin missing for {he_id:?}");
+                continue;
+            };
+
+            let id = he_id.min(twin_id);
+
+            if halfedges_map.contains_key(&id) {
+                continue;
+            }
+            let len_sqr = he.length_squared(self);
+
+            if predicate(len_sqr) {
+                halfedges_map.insert(id, len_sqr);
+            }
+        }
+
+        halfedges_map
+    }
+
+    /// Like [`Self::halfedges_map`], but only over the edges covered by `scope`.
+    ///
+    /// `scope` holds halfedge ids in both directions where known; an edge counts as
+    /// in scope when either of its two halfedges is listed. Storing both directions
+    /// matters because [`Self::subdivide_edge`] re-pairs twins, which changes which
+    /// of a pair is the canonical `min(he, twin)`.
+    pub(crate) fn halfedges_map_in(
+        &mut self,
+        scope: &hashbrown::HashSet<HalfedgeId>,
+        predicate: impl Fn(f32) -> bool,
+    ) -> HashMap<HalfedgeId, f32> {
+        let mut halfedges_map = HashMap::new();
+
+        for &he_id in scope {
+            let Some(he) = self.halfedges.get(he_id) else {
+                // Stale entries are expected: `scope` can outlive the elements it names.
+                continue;
+            };
             let Some(twin_id) = he.twin else {
                 tracing::error!("Twin missing for {he_id:?}");
                 continue;

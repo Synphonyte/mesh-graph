@@ -201,6 +201,8 @@ impl MeshGraph {
             id,
         });
 
+        self.record_created_face(face_id);
+
         self.index_to_face_id.insert(self.next_index, face_id);
 
         self.next_index += 1;

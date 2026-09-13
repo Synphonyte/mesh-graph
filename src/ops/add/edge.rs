@@ -190,6 +190,7 @@ impl MeshGraph {
             face: None,
         };
         let he_id = self.halfedges.insert(halfedge);
+        self.record_created_halfedge(he_id);
 
         self.outgoing_halfedges
             .entry(start_vertex)

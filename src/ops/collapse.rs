@@ -4,7 +4,7 @@ use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{
-    Face, FaceId, HalfedgeId, MeshGraph, VertexId, error_none,
+    Face, FaceId, HalfedgeId, MeshGraph, ScopedCleanup, Selection, VertexId, error_none,
     ops::{EdgeLengthCleanup, PendingEdges, PendingOrder},
     utils::unwrap_or_return,
 };
@@ -24,14 +24,57 @@ impl MeshGraph {
         min_length_squared: f32,
         marked_vertices: &mut HashSet<VertexId>,
     ) -> EdgeLengthCleanup {
+        self.collapse_until_edges_above_min_length_inner(min_length_squared, None, marked_vertices)
+    }
+
+    /// Collapses the edges covered by `selection` until they are all above the minimum
+    /// length, leaving the rest of the mesh alone.
+    ///
+    /// The scope is [`Selection::resolve_to_halfedges`]: explicitly selected halfedges,
+    /// every halfedge of a selected face, and every outgoing halfedge of a selected
+    /// vertex. Collapsing an edge on the rim of the selection moves a vertex that
+    /// unselected faces also use, so those faces change shape even though none of their
+    /// own edges were collapsed.
+    ///
+    /// `selection` is updated in place: elements the operation destroyed are dropped and
+    /// elements it created are added, so the selection keeps describing the same region
+    /// and never holds a dead id.
+    ///
+    /// Returns what changed; see [`ScopedCleanup`].
+    ///
+    /// This will schedule necessary updates to the BVH but you have to call
+    /// `refit_bvh()` after the operation.
+    #[instrument(skip(self, selection))]
+    pub fn collapse_selected_until_edges_above_min_length(
+        &mut self,
+        selection: &mut Selection,
+        min_length_squared: f32,
+        marked_vertices: &mut HashSet<VertexId>,
+    ) -> ScopedCleanup {
+        self.run_scoped(selection, |mg, scope| {
+            mg.collapse_until_edges_above_min_length_inner(
+                min_length_squared,
+                Some(scope),
+                marked_vertices,
+            )
+        })
+    }
+
+    fn collapse_until_edges_above_min_length_inner(
+        &mut self,
+        min_length_squared: f32,
+        scope: Option<&mut HashSet<HalfedgeId>>,
+        marked_vertices: &mut HashSet<VertexId>,
+    ) -> EdgeLengthCleanup {
         #[cfg(feature = "instrumentation")]
         crate::set_current_op("collapse");
         #[cfg(feature = "instrumentation")]
         crate::probe_chain_begin(self);
-        let mut halfedges_to_collapse = PendingEdges::new(
-            self.halfedges_map(|len_sqr| len_sqr < min_length_squared),
-            PendingOrder::ShortestFirst,
-        );
+        let pending = match scope.as_deref() {
+            Some(scope) => self.halfedges_map_in(scope, |len_sqr| len_sqr < min_length_squared),
+            None => self.halfedges_map(|len_sqr| len_sqr < min_length_squared),
+        };
+        let mut halfedges_to_collapse = PendingEdges::new(pending, PendingOrder::ShortestFirst);
 
         // Edges popped as shortest-pending but rejected by `can_collapse_edge_inner`.
         // They stay pending, because a later collapse can make them collapsible, but
@@ -197,7 +240,19 @@ impl MeshGraph {
                         EdgeLengthCleanup::Stalled
                     );
 
-                    halfedges_to_check.insert(halfedge_id.min(twin_id));
+                    // The one-ring of a collapsed vertex reaches past the selection at
+                    // its rim. Only edges in scope may be queued, or the operation would
+                    // eat outward into unselected geometry. The BVH refresh below is
+                    // deliberately *not* skipped for them: an out-of-scope face sharing
+                    // the moved vertex has changed shape, so its stored AABB is stale
+                    // whether or not its edges are eligible for collapse.
+                    let in_scope = scope
+                        .as_deref()
+                        .is_none_or(|s| s.contains(&halfedge_id) || s.contains(&twin_id));
+
+                    if in_scope {
+                        halfedges_to_check.insert(halfedge_id.min(twin_id));
+                    }
 
                     if let Some(face_id) = halfedge.face {
                         if let Some(face) = self.faces.get(face_id) {

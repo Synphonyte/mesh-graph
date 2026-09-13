@@ -24,7 +24,8 @@ impl Selection {
     /// selected vertex.
     ///
     /// Ids that are no longer live are skipped rather than panicking — a `Selection`
-    /// holds bare keys and any topology change can invalidate them.
+    /// holds bare keys and any topology change can invalidate them. Use
+    /// [`Self::retain_live`] to drop them.
     pub fn resolve_to_halfedges(&self, mesh_graph: &MeshGraph) -> HashSet<HalfedgeId> {
         let mut halfedges = self.halfedges.clone();
 
@@ -97,6 +98,86 @@ impl Selection {
         }
 
         new_verts
+    }
+
+    /// Drops every id that is no longer live in `mesh_graph`, returning exactly which
+    /// ones were dropped.
+    ///
+    /// This is how a [`Selection`] survives a topology change. Liveness is read from
+    /// the mesh itself rather than from a record of what each operation removed, so it
+    /// cannot miss a removal site — see [`SelectionEdit`].
+    pub fn retain_live(&mut self, mesh_graph: &MeshGraph) -> SelectionEdit {
+        let mut removed = SelectionEdit::default();
+
+        self.vertices.retain(|v_id| {
+            let live = mesh_graph.vertices.contains_key(*v_id);
+            if !live {
+                removed.vertices.push(*v_id);
+            }
+            live
+        });
+        self.halfedges.retain(|he_id| {
+            let live = mesh_graph.halfedges.contains_key(*he_id);
+            if !live {
+                removed.halfedges.push(*he_id);
+            }
+            live
+        });
+        self.faces.retain(|f_id| {
+            let live = mesh_graph.faces.contains_key(*f_id);
+            if !live {
+                removed.faces.push(*f_id);
+            }
+            live
+        });
+
+        removed
+    }
+
+    /// Adds every element of `edit` to the matching set.
+    pub fn extend_with_edit(&mut self, edit: &SelectionEdit) {
+        self.vertices.extend(edit.vertices.iter().copied());
+        self.halfedges.extend(edit.halfedges.iter().copied());
+        self.faces.extend(edit.faces.iter().copied());
+    }
+
+    /// Removes every element of `edit` from the matching set.
+    pub fn remove_edit(&mut self, edit: &SelectionEdit) {
+        for v_id in &edit.vertices {
+            self.vertices.remove(v_id);
+        }
+        for he_id in &edit.halfedges {
+            self.halfedges.remove(he_id);
+        }
+        for f_id in &edit.faces {
+            self.faces.remove(f_id);
+        }
+    }
+}
+
+/// A set of mesh elements a scoped operation added to, or removed from, a
+/// [`Selection`].
+///
+/// Applying a scoped operation's `removed` and then its `added` to the selection it
+/// started from reproduces the selection it ended with, so a caller mirroring the
+/// selection elsewhere can follow along without re-scanning the mesh.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SelectionEdit {
+    pub vertices: Vec<VertexId>,
+    pub halfedges: Vec<HalfedgeId>,
+    pub faces: Vec<FaceId>,
+}
+
+impl SelectionEdit {
+    /// True when nothing was added or removed.
+    pub fn is_empty(&self) -> bool {
+        self.vertices.is_empty() && self.halfedges.is_empty() && self.faces.is_empty()
+    }
+
+    /// Total number of elements across all three kinds.
+    pub fn len(&self) -> usize {
+        self.vertices.len() + self.halfedges.len() + self.faces.len()
     }
 }
 
