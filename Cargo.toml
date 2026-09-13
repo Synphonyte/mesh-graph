@@ -8,7 +8,7 @@ license = "MIT"
 name = "mesh-graph"
 readme = "README.md"
 repository = "https://github.com/Synphonyte/mesh-graph"
-version = "0.10.0"
+version = "0.11.0"
 
 [dependencies]
 anyhow = "1"
