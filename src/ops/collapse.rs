@@ -1222,7 +1222,10 @@ mod test {
 
         mg.collapse_until_edges_above_min_length(1.5, &mut marked);
 
-        assert!(marked.len() < before, "no vertex was collapsed - test is vacuous");
+        assert!(
+            marked.len() < before,
+            "no vertex was collapsed - test is vacuous"
+        );
         for v_id in &marked {
             assert!(
                 mg.vertices.contains_key(*v_id),

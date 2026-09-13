@@ -221,7 +221,10 @@ mod tests {
         mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
 
         assert!(
-            selection.faces.iter().any(|f_id| !mg.faces.contains_key(*f_id)),
+            selection
+                .faces
+                .iter()
+                .any(|f_id| !mg.faces.contains_key(*f_id)),
             "fixture failed to invalidate anything - test is vacuous"
         );
 

@@ -642,7 +642,10 @@ mod test {
         mg.subdivide_until_edges_below_max_length(0.5, &mut marked_halfedges, &mut marked_vertices);
 
         for v_id in &marked_vertices {
-            assert!(mg.vertices.contains_key(*v_id), "marked vertex {v_id:?} is dead");
+            assert!(
+                mg.vertices.contains_key(*v_id),
+                "marked vertex {v_id:?} is dead"
+            );
         }
         for he_id in &marked_halfedges {
             assert!(

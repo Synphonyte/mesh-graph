@@ -450,11 +450,7 @@ mod halfedges_map_test {
         let mut mg = build_grid(2);
         let baseline = mg.halfedges_map(|_| true).len();
 
-        let broken_id = mg
-            .halfedges
-            .keys()
-            .next()
-            .expect("grid mesh has halfedges");
+        let broken_id = mg.halfedges.keys().next().expect("grid mesh has halfedges");
         mg.halfedges.get_mut(broken_id).unwrap().twin = None;
 
         // The broken halfedge is skipped, but its former twin still points back at
