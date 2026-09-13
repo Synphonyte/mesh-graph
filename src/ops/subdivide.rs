@@ -188,6 +188,12 @@ impl MeshGraph {
             }
         }
 
+        // Subdivision itself only adds geometry, but a marked set is long-lived and may
+        // still carry ids invalidated by an earlier operation. Both ops hand back only
+        // live keys.
+        marked_vertex_ids.retain(|v_id| self.vertices.contains_key(*v_id));
+        marked_halfedge_ids.retain(|he_id| self.halfedges.contains_key(*he_id));
+
         #[cfg(feature = "instrumentation")]
         if self.probe_chain_integrity("subdivide_until_edges_below_max_length") {
             crate::state_history_push(self, "subdivide_until_edges_below_max_length");
@@ -610,6 +616,38 @@ mod test {
             assert!(
                 frac_x < 1e-6 && frac_y < 1e-6,
                 "split at {p:?} is not a diagonal midpoint, so a shorter edge was chosen"
+            );
+        }
+    }
+
+    /// Subdivision only adds geometry, so it cannot invalidate its own marked ids -
+    /// but a marked set is long-lived and can arrive already carrying ones an earlier
+    /// operation killed. Both ops hand back only live keys, so those have to be
+    /// pruned here too.
+    #[test]
+    fn test_subdivide_purges_dead_ids_from_marked_sets() {
+        let mut mg = build_grid(4);
+
+        // Kill some ids first, so the marked sets carry stale entries into the call.
+        let mut marked_vertices: HashSet<crate::VertexId> = mg.vertices.keys().collect();
+        let mut marked_halfedges: HashSet<HalfedgeId> = mg.halfedges.keys().collect();
+        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
+        assert!(
+            marked_vertices
+                .iter()
+                .any(|v| !mg.vertices.contains_key(*v)),
+            "fixture failed to invalidate anything - test is vacuous"
+        );
+
+        mg.subdivide_until_edges_below_max_length(0.5, &mut marked_halfedges, &mut marked_vertices);
+
+        for v_id in &marked_vertices {
+            assert!(mg.vertices.contains_key(*v_id), "marked vertex {v_id:?} is dead");
+        }
+        for he_id in &marked_halfedges {
+            assert!(
+                mg.halfedges.contains_key(*he_id),
+                "marked halfedge {he_id:?} is dead"
             );
         }
     }

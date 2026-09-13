@@ -234,6 +234,12 @@ impl MeshGraph {
 
         self.rebuild_outgoing_halfedges();
 
+        // Collapsing absorbs one endpoint into the other, so ids the caller marked can
+        // name vertices that no longer exist. The set is extended with the vertices
+        // cleanup creates, so it has to be pruned of the ones it destroys as well, or
+        // callers are handed dead keys.
+        marked_vertices.retain(|v_id| self.vertices.contains_key(*v_id));
+
         #[cfg(feature = "instrumentation")]
         if self.probe_chain_integrity("collapse_until_edges_above_min_length") {
             crate::state_history_push(self, "collapse_until_edges_above_min_length");
@@ -1202,5 +1208,26 @@ mod test {
 
         #[cfg(feature = "rerun")]
         crate::RR.flush_blocking().unwrap();
+    }
+
+    /// Collapse absorbs one endpoint into the other, so ids the caller marked can name
+    /// vertices that no longer exist by the time it returns. `marked_vertices` is also
+    /// extended with the vertices the cleanup creates, so a caller that only ever adds
+    /// to it never notices unless the dead ones are pruned too.
+    #[test]
+    fn test_collapse_purges_dead_ids_from_marked_vertices() {
+        let mut mg = build_grid(4);
+        let mut marked: HashSet<VertexId> = mg.vertices.keys().collect();
+        let before = marked.len();
+
+        mg.collapse_until_edges_above_min_length(1.5, &mut marked);
+
+        assert!(marked.len() < before, "no vertex was collapsed - test is vacuous");
+        for v_id in &marked {
+            assert!(
+                mg.vertices.contains_key(*v_id),
+                "marked vertex {v_id:?} is dead"
+            );
+        }
     }
 }

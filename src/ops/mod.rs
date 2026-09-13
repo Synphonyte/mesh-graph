@@ -16,7 +16,7 @@ pub use merge_one_ring::*;
 
 use ordered_float::OrderedFloat;
 
-use crate::{HalfedgeId, MeshGraph, utils::unwrap_or_return};
+use crate::{HalfedgeId, MeshGraph};
 
 /// The outcome of [`MeshGraph::collapse_until_edges_above_min_length`] and
 /// [`MeshGraph::subdivide_until_edges_below_max_length`].
@@ -211,7 +211,13 @@ impl MeshGraph {
         let mut halfedges_map = HashMap::new();
 
         for (he_id, he) in &self.halfedges {
-            let twin_id = unwrap_or_return!(he.twin, "Twin missing", halfedges_map);
+            // A twinless halfedge is a broken edge, not a reason to abandon the scan:
+            // returning the partial map here used to silently drop every edge after
+            // the first one, leaving those edges unprocessed by the caller's loop.
+            let Some(twin_id) = he.twin else {
+                tracing::error!("Twin missing for {he_id:?}");
+                continue;
+            };
 
             let id = he_id.min(twin_id);
 
@@ -427,5 +433,36 @@ mod pending_edges_test {
     #[test]
     fn longest_first_breaks_ties_towards_the_smallest_id() {
         assert_ties_break_towards_smallest_id(PendingOrder::LongestFirst);
+    }
+}
+
+#[cfg(test)]
+mod halfedges_map_test {
+    use crate::utils::build_grid;
+
+    /// A twinless halfedge must not abandon the scan: the old code returned the
+    /// partial map built so far, which silently dropped every edge after it. Breaking
+    /// the *first* halfedge in slotmap order makes that distinction observable — the
+    /// buggy code returns (near-)nothing, while breaking a late halfedge would return
+    /// everything before it and pass on the bug too.
+    #[test]
+    fn test_halfedges_map_skips_twinless_and_keeps_scanning() {
+        let mut mg = build_grid(2);
+        let baseline = mg.halfedges_map(|_| true).len();
+
+        let broken_id = mg
+            .halfedges
+            .keys()
+            .next()
+            .expect("grid mesh has halfedges");
+        mg.halfedges.get_mut(broken_id).unwrap().twin = None;
+
+        // The broken halfedge is skipped, but its former twin still points back at
+        // it, so the pair is still registered from the other direction.
+        let after = mg.halfedges_map(|_| true).len();
+        assert_eq!(
+            after, baseline,
+            "breaking one halfedge's twin link must not shrink the map beyond that one pair"
+        );
     }
 }
