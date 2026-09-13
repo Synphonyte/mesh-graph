@@ -19,15 +19,29 @@ impl Selection {
         }
     }
 
+    /// Resolves the selection to the halfedges it covers: the explicitly selected
+    /// ones, every halfedge of a selected face, and every outgoing halfedge of a
+    /// selected vertex.
+    ///
+    /// Ids that are no longer live are skipped rather than panicking — a `Selection`
+    /// holds bare keys and any topology change can invalidate them.
     pub fn resolve_to_halfedges(&self, mesh_graph: &MeshGraph) -> HashSet<HalfedgeId> {
         let mut halfedges = self.halfedges.clone();
 
         for face in &self.faces {
-            halfedges.extend(mesh_graph.faces[*face].halfedges(mesh_graph));
+            let Some(face) = mesh_graph.faces.get(*face) else {
+                error!("Face not found");
+                continue;
+            };
+            halfedges.extend(face.halfedges(mesh_graph));
         }
 
         for vertex in &self.vertices {
-            halfedges.extend(mesh_graph.vertices[*vertex].outgoing_halfedges(mesh_graph));
+            let Some(vertex) = mesh_graph.vertices.get(*vertex) else {
+                error!("Vertex not found");
+                continue;
+            };
+            halfedges.extend(vertex.outgoing_halfedges(mesh_graph));
         }
 
         halfedges
@@ -37,7 +51,10 @@ impl Selection {
         let mut vertices = self.vertices.clone();
 
         for halfedge in &self.halfedges {
-            let he = mesh_graph.halfedges[*halfedge];
+            let Some(he) = mesh_graph.halfedges.get(*halfedge) else {
+                error!("Halfedge not found");
+                continue;
+            };
             if let Some(start_vertex) = he.start_vertex(mesh_graph) {
                 vertices.insert(start_vertex);
             } else {
@@ -47,7 +64,11 @@ impl Selection {
         }
 
         for face in &self.faces {
-            vertices.extend(mesh_graph.faces[*face].vertices(mesh_graph));
+            let Some(face) = mesh_graph.faces.get(*face) else {
+                error!("Face not found");
+                continue;
+            };
+            vertices.extend(face.vertices(mesh_graph));
         }
 
         vertices
@@ -181,3 +202,93 @@ macro_rules! impl_from_for_selection {
 
 impl_from_for_selection!(Vec);
 impl_from_for_selection!(HashSet);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::build_grid;
+
+    /// `select_all` seeds *faces only*, so every id `resolve_to_halfedges` and
+    /// `resolve_to_vertices` hand back here is derived (a selected face's own
+    /// halfedges/vertices), never one of the selection's unfiltered explicit ids.
+    /// That is what makes the strict "every resolved id is live" assertion
+    /// legitimate for this fixture. Panics on unfixed code, at the first stale face.
+    #[test]
+    fn test_resolve_tolerates_dead_faces_in_the_selection() {
+        let mut mg = build_grid(4);
+        let selection = Selection::select_all(&mg);
+
+        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
+
+        assert!(
+            selection.faces.iter().any(|f_id| !mg.faces.contains_key(*f_id)),
+            "fixture failed to invalidate anything - test is vacuous"
+        );
+
+        for he_id in selection.resolve_to_halfedges(&mg) {
+            assert!(
+                mg.halfedges.contains_key(he_id),
+                "resolved halfedge {he_id:?} is dead"
+            );
+        }
+        for v_id in selection.resolve_to_vertices(&mg) {
+            assert!(
+                mg.vertices.contains_key(v_id),
+                "resolved vertex {v_id:?} is dead"
+            );
+        }
+    }
+
+    /// A selection naming every vertex, halfedge and face reaches the stale-halfedge
+    /// and stale-vertex lookup sites the faces-only fixture above cannot. Both
+    /// resolves must complete without panicking, and every id that was still live in
+    /// the selection must still appear in the corresponding result - the unfiltered
+    /// seed (`self.vertices.clone()` / `self.halfedges.clone()`) passes live explicit
+    /// ids straight through by design, and this pins that behaviour rather than
+    /// asserting every resolved id is live (which is false here on purpose).
+    #[test]
+    fn test_resolve_keeps_live_ids_when_the_selection_is_stale() {
+        let mut mg = build_grid(4);
+        let selection = Selection {
+            vertices: mg.vertices.keys().collect(),
+            halfedges: mg.halfedges.keys().collect(),
+            faces: mg.faces.keys().collect(),
+        };
+
+        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
+
+        let live_vertices_before: HashSet<VertexId> = selection
+            .vertices
+            .iter()
+            .copied()
+            .filter(|v_id| mg.vertices.contains_key(*v_id))
+            .collect();
+        let live_halfedges_before: HashSet<HalfedgeId> = selection
+            .halfedges
+            .iter()
+            .copied()
+            .filter(|he_id| mg.halfedges.contains_key(*he_id))
+            .collect();
+
+        assert!(
+            live_vertices_before.len() < selection.vertices.len(),
+            "fixture failed to invalidate anything - test is vacuous"
+        );
+
+        let resolved_halfedges = selection.resolve_to_halfedges(&mg);
+        let resolved_vertices = selection.resolve_to_vertices(&mg);
+
+        for v_id in &live_vertices_before {
+            assert!(
+                resolved_vertices.contains(v_id),
+                "live vertex {v_id:?} missing from resolve_to_vertices"
+            );
+        }
+        for he_id in &live_halfedges_before {
+            assert!(
+                resolved_halfedges.contains(he_id),
+                "live halfedge {he_id:?} missing from resolve_to_halfedges"
+            );
+        }
+    }
+}

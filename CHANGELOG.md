@@ -17,6 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   converge in a single call; added the tests it previously lacked
 - Added a direct dependency on `ordered-float` (already in the tree via `parry3d`, no
   extra build)
+- `collapse_until_edges_above_min_length` no longer hands back dead ids in
+  `marked_vertices`. It extended the set with the vertices it created but never
+  removed the ones it destroyed, leaving callers holding keys that no longer name
+  anything; `subdivide_until_edges_below_max_length` prunes its marked sets the same
+  way, so both ops hand back only live keys
+- `Selection::resolve_to_halfedges` and `resolve_to_vertices` no longer panic when the
+  selection holds ids invalidated by an earlier operation; they skip and log instead.
+  A `Selection` stores bare keys with no back-reference to the mesh, so any topology
+  change between building one and resolving it could previously turn a lookup into a
+  panic
+- `halfedges_map` no longer abandons the scan at the first twinless halfedge. It
+  returned the partial map built so far, silently dropping every edge after that one
+  from the caller's work set — on an already-damaged mesh this could make a cleanup
+  loop report `Converged` while the mesh still violated the threshold
 
 ### Breaking Changes
 
