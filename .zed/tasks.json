@@ -37,7 +37,7 @@
 		"args": [
 			"test",
 			// "ops::merge_one_ring",
-			"test_merge_one_ring_punch_cleanup_hole_reproduction",
+			"test_merge_one_ring_close_hole_reproduction",
 			"--lib",
 			// "--release",
 			"--features",

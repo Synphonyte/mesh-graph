@@ -1675,3 +1675,142 @@ fn boundary_edges(mesh: &MeshGraph) -> std::collections::BTreeSet<(VertexId, Ver
     }
     edges
 }
+
+/// Regression test for the weld-hole defect: the morphological close
+/// (freestyle-sculpt `test_apply_weld_amount_applies_close`) intermittently
+/// leaves 4 boundary halfedges after fusing two tessellated cubes. The HOLE
+/// probe (`MESH_GRAPH_HOLE_CHECK=1`) attributes it to a single
+/// `merge_vertices_one_rings` whose stitch band closes with a hole.
+///
+/// Currently fails (reproduces the defect) until the merge is fixed.
+///
+/// The region below was extracted with `cargo run --bin extract-merge-region`
+/// from the probe dump captured on that fixture (journal step 500, merge of
+/// vertices 367 and 1083 of that run): the faces within graph distance 1 of the
+/// merge pair from the last verified state — 17 vertices / 23 faces, all
+/// triangles, no parallel halfedge pairs. Rebuilding exactly that region and
+/// replaying the single merge reproduces the defect deterministically: the
+/// merge removes the two vertices and stitches a band (6 added faces), but
+/// leaves 4 additional boundary halfedges (hole) — on the extracted region the
+/// outer cut grows from 5 to 9 boundary edges.
+///
+/// `FLIP_THRESHOLD_SQR` is the weld's `SculptParams::from_mesh_graph(fixture,
+/// 0.2).min_edge_length_squared` (median edge 0.125 -> max edge 0.2).
+#[test]
+fn test_merge_one_ring_close_hole_reproduction() {
+    get_tracing_subscriber();
+
+    // vertex id -> rebuild id mapping is the sorted array index (see comments).
+    const REGION_VERTICES: [(f32, f32, f32); 17] = [
+        (1.4370954, 0.451704, 1.0509045),  // 1223 -> 0
+        (1.4375, 0.375, 0.625),            // 368 -> 1
+        (1.4487758, 0.2842505, 1.0250168), // 1222 -> 2
+        (1.4677734, 0.374468, 0.4689652),  // 692 -> 3
+        (1.4938163, 0.4002733, 0.9384441), // 382 -> 4
+        (1.4949148, 0.2527521, 0.4949971), // 685 -> 5
+        (1.499954, 0.2532232, 0.6329052),  // 367 -> 6 (merge vertex 1)
+        (1.5, 0.484375, 0.6172814),        // 700 -> 7
+        (1.5031247, 0.2185288, 0.8041879), // 1083 -> 8 (merge vertex 2)
+        (1.5127819, 0.4008933, 0.7652988), // 375 -> 9
+        (1.5127819, 0.4008933, 0.7652988), // 694 -> 10
+        (1.540801, 0.2279671, 0.9078187),  // 688 -> 11
+        (1.5425725, 0.5086495, 1.0033165), // 1240 -> 12
+        (1.5455617, 0.2298947, 1.0587322), // 1237 -> 13
+        (1.5506089, 0.4160118, 0.8858563), // 695 -> 14
+        (1.5625, 0.375, 0.625),            // 693 -> 15
+        (1.5834919, 0.3437378, 1.040552),  // 1238 -> 16
+    ];
+    const REGION_FACES: [(usize, usize, usize); 23] = [
+        (4, 9, 12),
+        (5, 3, 1),
+        (5, 1, 6),
+        (3, 7, 1),
+        (4, 12, 0),
+        (6, 1, 10),
+        (1, 7, 10),
+        (8, 9, 4),
+        (8, 4, 11),
+        (4, 0, 2),
+        (14, 12, 9),
+        (5, 6, 15),
+        (5, 15, 3),
+        (6, 10, 15),
+        (8, 11, 14),
+        (8, 14, 9),
+        (11, 16, 14),
+        (3, 15, 7),
+        (15, 10, 7),
+        (2, 11, 4),
+        (11, 13, 16),
+        (14, 16, 12),
+        (13, 11, 2),
+    ];
+    // The two vertices whose one-rings are merged (367 -> 6, 1083 -> 8).
+    const MERGE_V1: usize = 6;
+    const MERGE_V2: usize = 8;
+    // min_edge_length_squared of the weld's SculptParams (see doc comment).
+    const FLIP_THRESHOLD_SQR: f32 = 0.0096;
+
+    let mut mesh_graph = MeshGraph::new();
+
+    let mut vertex_ids = Vec::with_capacity(REGION_VERTICES.len());
+    for &(x, y, z) in &REGION_VERTICES {
+        vertex_ids.push(mesh_graph.add_vertex(vec3(x, y, z)));
+    }
+    for &(a, b, c) in &REGION_FACES {
+        mesh_graph
+            .add_face_from_vertices(vertex_ids[a], vertex_ids[b], vertex_ids[c])
+            .expect("failed to rebuild a captured region face");
+    }
+
+    let boundary_before = boundary_edges(&mesh_graph);
+    assert!(
+        !boundary_before.is_empty(),
+        "captured region should have an outer boundary (the cut), got none"
+    );
+
+    #[cfg(feature = "rerun")]
+    mesh_graph.log_rerun();
+
+    let mut marked_halfedges = HashSet::new();
+    let mut marked_vertices = HashSet::new();
+    let _result = mesh_graph.merge_vertices_one_rings(
+        vertex_ids[MERGE_V1],
+        vertex_ids[MERGE_V2],
+        FLIP_THRESHOLD_SQR,
+        &mut marked_halfedges,
+        &mut marked_vertices,
+    );
+
+    #[cfg(feature = "rerun")]
+    {
+        mesh_graph.log_rerun();
+        RR.flush_blocking().unwrap();
+    }
+
+    let boundary_after = boundary_edges(&mesh_graph);
+
+    let capture_id = |v_id: VertexId| -> String {
+        vertex_ids
+            .iter()
+            .position(|v| *v == v_id)
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| format!("{v_id:?}"))
+    };
+    let added: Vec<String> = boundary_after
+        .difference(&boundary_before)
+        .map(|(a, b)| format!("({}, {})", capture_id(*a), capture_id(*b)))
+        .collect();
+    let removed: Vec<String> = boundary_before
+        .difference(&boundary_after)
+        .map(|(a, b)| format!("({}, {})", capture_id(*a), capture_id(*b)))
+        .collect();
+    assert!(
+        boundary_after == boundary_before,
+        "merge_vertices_one_rings changed the region's boundary: \
+         before {} boundary edges, after {} (added {added:?}, removed {removed:?}). \
+         The merge must not leave holes.",
+        boundary_before.len(),
+        boundary_after.len()
+    );
+}

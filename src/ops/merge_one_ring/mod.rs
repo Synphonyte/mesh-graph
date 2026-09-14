@@ -3,7 +3,7 @@ mod tests;
 
 use std::ops::RangeInclusive;
 
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
 use tracing::{error, instrument};
 
@@ -108,6 +108,54 @@ impl MeshGraph {
         if one_ring_v_ids1.len() < 3 || one_ring_v_ids2.len() < 3 {
             error!("One rings are too small");
             return result;
+        }
+
+        // Weld position-coincident cross-ring vertices before planning the band.
+        //
+        // When the two sheets touch (morphological close / collision merge), a
+        // ring vertex of `vertex_id1` and a ring vertex of `vertex_id2` can share
+        // a position while remaining distinct ids. Both rings then pass through
+        // the same point, and any band spanning that zero-width seam contains two
+        // faces over the same geometric triangle — a "flap" by the position-based
+        // `faces_share_all_vertices`. `cleanup_bookkeeping` deletes the flap,
+        // leaving a hole that nothing re-fills (the intermittent weld-hole
+        // defect, ~1 in 12 runs, boundary halfedges left open).
+        //
+        // Fusing each coincident pair turns the two rings into the well-tested
+        // shared-vertex case: the band is split at the shared vertex and the seam
+        // is never spanned by a degenerate face. The position comparison is exact,
+        // matching `faces_share_all_vertices`, so this fires exactly where the
+        // flap deletion would have.
+        let mut coincident_pairs = Vec::new();
+        for &v_id1 in &one_ring_v_ids1 {
+            for &v_id2 in &one_ring_v_ids2 {
+                if v_id1 != v_id2
+                    && self
+                        .positions
+                        .get(v_id1)
+                        .is_some_and(|p1| self.positions.get(v_id2).is_some_and(|p2| p1 == p2))
+                {
+                    coincident_pairs.push((v_id1, v_id2));
+                }
+            }
+        }
+        for (v1_id, v2_id) in &coincident_pairs {
+            tracing::debug!("fusing coincident ring vertices {v1_id:?} and {v2_id:?}");
+            // Survivor is the ring-1 vertex, so the fused id stays on both rings
+            // and shows up in `shared_v_ids` below.
+            self.merge_vertices([*v1_id, *v2_id]);
+            result.removed_vertices.push(*v2_id);
+        }
+        if !coincident_pairs.is_empty() {
+            let fused: HashMap<VertexId, VertexId> = coincident_pairs
+                .iter()
+                .map(|(survivor, dead)| (*dead, *survivor))
+                .collect();
+            for v_id in &mut one_ring_v_ids2 {
+                if let Some(survivor) = fused.get(v_id) {
+                    *v_id = *survivor;
+                }
+            }
         }
 
         let one_ring_he_set1 = HashSet::<HalfedgeId>::from_iter(one_ring_he_ids1.iter().copied());
