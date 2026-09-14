@@ -3,7 +3,7 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] - 2026-09-13
 
 - Added `collapse_selected_until_edges_above_min_length` and
   `subdivide_selected_until_edges_below_max_length`, which restrict the edge-length
@@ -23,31 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with private fields and no accessors, so `subdivide_edge` told external callers nothing
   about what it had created
 - `collapse_until_edges_above_min_length` and `subdivide_until_edges_below_max_length`
-  now pick the next edge from a binary heap instead of rescaming the pending set, so
-  equal-length ties are resolved deterministically (smallest halfedge id) and the loop
-  is 1.3-2.4x faster on production scans
-- `collapse_until_edges_above_min_length` no longer re-tests edges the inversion guard
-  rejected unless one of their endpoints has moved, cutting collapse time in half on
-  the worst production mesh while keeping every previously-won collapse
-- `subdivide_until_edges_below_max_length` no longer panics on non-positive lengths and
-  its work bound now scales with refinement depth, so small meshes needing many splits
-  converge in a single call; added the tests it previously lacked
+  now pick the next edge from a binary heap, resolving equal-length ties
+  deterministically and running 1.3–2.4x faster on production scans
+- `collapse_until_edges_above_min_length` skips re-testing edges the inversion guard
+  rejected unless an endpoint has moved, halving collapse time on the worst production
+  mesh without losing any collapses
+- `subdivide_until_edges_below_max_length` no longer panics on non-positive lengths, its
+  work bound now scales with refinement depth, and it gained the tests it previously
+  lacked
 - Added a direct dependency on `ordered-float` (already in the tree via `parry3d`, no
   extra build)
-- `collapse_until_edges_above_min_length` no longer hands back dead ids in
-  `marked_vertices`. It extended the set with the vertices it created but never
-  removed the ones it destroyed, leaving callers holding keys that no longer name
-  anything; `subdivide_until_edges_below_max_length` prunes its marked sets the same
-  way, so both ops hand back only live keys
-- `Selection::resolve_to_halfedges` and `resolve_to_vertices` no longer panic when the
-  selection holds ids invalidated by an earlier operation; they skip and log instead.
-  A `Selection` stores bare keys with no back-reference to the mesh, so any topology
-  change between building one and resolving it could previously turn a lookup into a
-  panic
-- `halfedges_map` no longer abandons the scan at the first twinless halfedge. It
-  returned the partial map built so far, silently dropping every edge after that one
-  from the caller's work set — on an already-damaged mesh this could make a cleanup
-  loop report `Converged` while the mesh still violated the threshold
+- `collapse_until_edges_above_min_length` and `subdivide_until_edges_below_max_length`
+  no longer hand back dead ids in their marked sets, so callers only receive live keys
+- `Selection::resolve_to_halfedges` and `resolve_to_vertices` no longer panic on ids
+  invalidated by an earlier operation; they skip and log instead
+- `halfedges_map` no longer abandons the scan at the first twinless halfedge, which
+  previously dropped edges from the caller's work set and could let a cleanup loop
+  report `Converged` while the mesh still violated the threshold
 
 ### Breaking Changes
 
