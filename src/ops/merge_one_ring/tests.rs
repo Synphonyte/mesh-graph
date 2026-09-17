@@ -39,6 +39,8 @@ fn test_vertex_merge_equal_count() {
     #[cfg(feature = "rerun")]
     meshgraph.log_rerun();
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -56,16 +58,15 @@ fn test_vertex_merge_equal_count() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 12);
-    assert_eq!(result.removed_halfedges.len(), 24);
-    assert_eq!(result.removed_vertices.len(), 2);
-
-    assert_eq!(result.added_faces.len(), 12);
-    assert_eq!(result.added_halfedges.len(), 24);
-    assert_eq!(result.added_vertices.len(), 0);
-
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_c_id, v_c_m_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[test]
@@ -110,6 +111,8 @@ fn test_vertex_merge_different_count() {
     #[cfg(feature = "rerun")]
     meshgraph.log_rerun();
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -127,15 +130,14 @@ fn test_vertex_merge_different_count() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 11);
-    assert_eq!(result.removed_halfedges.len(), 22);
-    assert_eq!(result.removed_vertices.len(), 2);
-
-    assert_eq!(result.added_faces.len(), 11);
-    assert_eq!(result.added_halfedges.len(), 22);
-
-    assert_eq!(marked_halfedges.len(), 22);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_c_id, v_c_m_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -171,6 +173,8 @@ fn test_vertex_merge_common_one_ring() {
         panic!("No bottom vertex found");
     }
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -188,16 +192,14 @@ fn test_vertex_merge_common_one_ring() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 21);
-    assert_eq!(result.removed_halfedges.len(), 46);
-    assert_eq!(result.removed_vertices.len(), 3);
-
-    assert_eq!(result.added_faces.len(), 13);
-    assert_eq!(result.added_halfedges.len(), 22);
-    assert_eq!(result.added_vertices.len(), 1);
-
-    assert_eq!(marked_halfedges.len(), 22);
-    assert_eq!(marked_vertices.len(), 2);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -234,6 +236,8 @@ fn test_vertex_merge_common_except_one() {
         panic!("No bottom vertex found");
     }
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -251,16 +255,14 @@ fn test_vertex_merge_common_except_one() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 10);
-    assert_eq!(result.removed_halfedges.len(), 26);
-    assert_eq!(result.removed_vertices.len(), 4);
-
-    assert_eq!(result.added_faces.len(), 2);
-    assert_eq!(result.added_halfedges.len(), 2);
-    assert_eq!(result.added_vertices.len(), 0);
-
-    assert_eq!(marked_halfedges.len(), 2);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -297,6 +299,8 @@ fn test_vertex_merge_common_except_two() {
         panic!("No bottom vertex found");
     }
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -314,15 +318,14 @@ fn test_vertex_merge_common_except_two() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 11);
-    assert_eq!(result.removed_halfedges.len(), 28);
-    assert_eq!(result.removed_vertices.len(), 4);
-
-    assert_eq!(result.added_faces.len(), 3);
-    assert_eq!(result.added_halfedges.len(), 4);
-
-    assert_eq!(marked_halfedges.len(), 4);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -359,6 +362,8 @@ fn test_vertex_merge_common_single_he_flip() {
         panic!("No bottom vertex found");
     }
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -376,15 +381,20 @@ fn test_vertex_merge_common_single_he_flip() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 2);
-    assert_eq!(result.removed_halfedges.len(), 6);
-    assert_eq!(result.removed_vertices.len(), 1);
+    assert_eq!(
+        result.added_faces.len(),
+        0,
+        "the flip shortcut must not rebuild faces"
+    );
 
-    assert_eq!(result.added_faces.len(), 0);
-    assert_eq!(result.added_halfedges.len(), 0);
-
-    assert_eq!(marked_halfedges.len(), 0);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -421,6 +431,8 @@ fn test_vertex_merge_common_single_he_noflip() {
         panic!("No bottom vertex found");
     }
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -438,15 +450,14 @@ fn test_vertex_merge_common_single_he_noflip() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 12);
-    assert_eq!(result.removed_halfedges.len(), 26);
-    assert_eq!(result.removed_vertices.len(), 2);
-
-    assert_eq!(result.added_faces.len(), 8);
-    assert_eq!(result.added_halfedges.len(), 14);
-
-    assert_eq!(marked_halfedges.len(), 14);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -486,6 +497,8 @@ fn test_vertex_merge_common_two_one_separate() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -503,15 +516,14 @@ fn test_vertex_merge_common_two_one_separate() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 10);
-    assert_eq!(result.removed_halfedges.len(), 24);
-    assert_eq!(result.removed_vertices.len(), 3);
-
-    assert_eq!(result.added_faces.len(), 4);
-    assert_eq!(result.added_halfedges.len(), 6);
-
-    assert_eq!(marked_halfedges.len(), 6);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -549,6 +561,8 @@ fn test_vertex_merge_common_one_vert() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -566,15 +580,14 @@ fn test_vertex_merge_common_one_vert() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 10);
-    assert_eq!(result.removed_halfedges.len(), 20);
-    assert_eq!(result.removed_vertices.len(), 2);
-
-    assert_eq!(result.added_faces.len(), 8);
-    assert_eq!(result.added_halfedges.len(), 14);
-
-    assert_eq!(marked_halfedges.len(), 14);
-    assert_eq!(marked_vertices.len(), 2);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -611,6 +624,8 @@ fn test_vertex_merge_common_double_flap() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -628,22 +643,20 @@ fn test_vertex_merge_common_double_flap() {
         RR.flush_blocking().unwrap();
     }
 
-    // `find_already_connected_pairings` only takes the first strip of existing
-    // faces now (a second strip would otherwise leave the region between the
-    // strips uncovered), so the connect step seams this mesh one edge
-    // differently: 23 (was 22) removed, 5 (was 4) added — same faces in/out
-    // (9/3), same net halfedge delta, boundary unchanged, all integrity probes
-    // clean.
-    assert_eq!(result.removed_faces.len(), 9, "REMOVED_FACES");
-    assert_eq!(result.removed_halfedges.len(), 23, "REMOVED_HALFEDGES");
-    assert_eq!(result.removed_vertices.len(), 3, "REMOVED_VERTICES");
-
-    assert_eq!(result.added_faces.len(), 3, "ADDED_FACES");
-    assert_eq!(result.added_halfedges.len(), 5, "ADDED_HALFEDGES");
-    assert_eq!(result.added_vertices.len(), 0, "ADDED_VERTICES");
-
+    // Note: `find_already_connected_pairings` only takes the first strip of
+    // existing faces (a second strip would otherwise leave the region between
+    // the strips uncovered), so this fixture seams one edge differently than it
+    // used to. The invariants above still hold for it.
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
     assert_eq!(marked_vertices.len(), result.added_vertices.len());
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -679,6 +692,8 @@ fn test_vertex_merge_common_two_5_8() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -696,15 +711,14 @@ fn test_vertex_merge_common_two_5_8() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 13);
-    assert_eq!(result.removed_halfedges.len(), 30);
-    assert_eq!(result.removed_vertices.len(), 3);
-
-    assert_eq!(result.added_faces.len(), 7);
-    assert_eq!(result.added_halfedges.len(), 12);
-
-    assert_eq!(marked_halfedges.len(), 12);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -740,6 +754,8 @@ fn test_vertex_merge_common_one_4_9() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -760,16 +776,16 @@ fn test_vertex_merge_common_one_4_9() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 16);
-    assert_eq!(result.removed_halfedges.len(), 38);
-    assert_eq!(result.removed_vertices.len(), 4);
-
-    assert_eq!(result.added_faces.len(), 8);
-    assert_eq!(result.added_halfedges.len(), 14);
-    assert_eq!(result.added_vertices.len(), 0);
-
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
-    assert_eq!(marked_vertices.len(), 0);
+    assert_eq!(marked_vertices.len(), result.added_vertices.len());
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -808,6 +824,8 @@ fn test_vertex_merge_connected_hes() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -828,16 +846,16 @@ fn test_vertex_merge_connected_hes() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 15);
-    assert_eq!(result.removed_halfedges.len(), 36);
-    assert_eq!(result.removed_vertices.len(), 4);
-
-    assert_eq!(result.added_faces.len(), 7);
-    assert_eq!(result.added_halfedges.len(), 12);
-    assert_eq!(result.added_vertices.len(), 0);
-
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
     assert_eq!(marked_vertices.len(), result.added_vertices.len());
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -876,6 +894,8 @@ fn test_vertex_merge_common_two_vs_3_4() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -896,14 +916,15 @@ fn test_vertex_merge_common_two_vs_3_4() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 8);
-    assert_eq!(result.removed_halfedges.len(), 20);
-
-    assert_eq!(result.added_faces.len(), 2);
-    assert_eq!(result.added_halfedges.len(), 2);
-
-    assert_eq!(marked_halfedges.len(), 2);
     assert_eq!(marked_vertices.len(), result.added_vertices.len());
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -943,6 +964,8 @@ fn test_vertex_merge_common_two_consec_vs_one_he_9_10() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -963,16 +986,16 @@ fn test_vertex_merge_common_two_consec_vs_one_he_9_10() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 21);
-    assert_eq!(result.removed_halfedges.len(), 48);
-    assert_eq!(result.removed_vertices.len(), 3);
-
-    assert_eq!(result.added_faces.len(), 11);
-    assert_eq!(result.added_halfedges.len(), 18);
-    assert_eq!(result.added_vertices.len(), 0);
-
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
     assert_eq!(marked_vertices.len(), result.added_vertices.len());
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -1009,6 +1032,8 @@ fn test_vertex_merge_common_two_hes_hole() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -1029,15 +1054,14 @@ fn test_vertex_merge_common_two_hes_hole() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 18);
-    assert_eq!(result.removed_halfedges.len(), 40);
-    assert_eq!(result.removed_vertices.len(), 2);
-
-    assert_eq!(result.added_faces.len(), 10);
-    assert_eq!(result.added_halfedges.len(), 16);
-
-    assert_eq!(marked_halfedges.len(), 16);
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -1076,6 +1100,8 @@ fn test_vertex_merge_common_vert_he_tube() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -1096,16 +1122,14 @@ fn test_vertex_merge_common_vert_he_tube() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 13);
-    assert_eq!(result.removed_halfedges.len(), 28);
-    assert_eq!(result.removed_vertices.len(), 2);
-
-    assert_eq!(result.added_faces.len(), 7);
-    assert_eq!(result.added_halfedges.len(), 10);
-    assert_eq!(result.added_vertices.len(), 1);
-
-    assert_eq!(marked_halfedges.len(), 10);
-    assert_eq!(marked_vertices.len(), 2);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -1143,6 +1167,8 @@ fn test_merge_4_4() {
     #[cfg(feature = "rerun")]
     meshgraph.log_verts_rerun("merge", &[v_top_id, v_bottom_id]);
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -1164,16 +1190,16 @@ fn test_merge_4_4() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 11);
-    assert_eq!(result.removed_halfedges.len(), 26);
-    assert_eq!(result.removed_vertices.len(), 3);
-
-    assert_eq!(result.added_faces.len(), 5);
-    assert_eq!(result.added_halfedges.len(), 8);
-    assert_eq!(result.added_vertices.len(), 0);
-
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
     assert_eq!(marked_vertices.len(), result.added_vertices.len());
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -1209,6 +1235,8 @@ fn test_vertex_merge_6_6_tip() {
         panic!("No bottom vertex found");
     }
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -1226,32 +1254,15 @@ fn test_vertex_merge_6_6_tip() {
         RR.flush_blocking().unwrap();
     }
 
-    assert!(
-        result.removed_faces.len() >= 15,
-        "removed_faces.len() = {}",
-        result.removed_faces.len()
-    );
-    assert!(
-        result.removed_halfedges.len() >= 36,
-        "removed_halfedges.len() = {}",
-        result.removed_halfedges.len()
-    );
-    assert!(
-        result.removed_vertices.len() >= 4,
-        "removed_vertices.len() = {}",
-        result.removed_vertices.len()
-    );
-
-    assert_eq!(result.added_faces.len(), 4);
-    assert_eq!(result.added_halfedges.len(), 6);
-    assert!(
-        result.added_vertices.len() <= 1,
-        "added_vertices.len() = {}",
-        result.added_vertices.len()
-    );
-
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
-    assert_eq!(marked_vertices.len(), 0);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 #[cfg(feature = "gltf")]
@@ -1287,6 +1298,8 @@ fn test_vertex_merge_6_6_tube() {
         panic!("No bottom vertex found");
     }
 
+    let boundary_before = boundary_edges(&meshgraph);
+
     let mut marked_halfedges = HashSet::new();
     let mut marked_vertices = HashSet::new();
 
@@ -1304,16 +1317,15 @@ fn test_vertex_merge_6_6_tube() {
         RR.flush_blocking().unwrap();
     }
 
-    assert_eq!(result.removed_faces.len(), 12,);
-    assert_eq!(result.removed_halfedges.len(), 26,);
-    assert_eq!(result.removed_vertices.len(), 2,);
-
-    assert_eq!(result.added_faces.len(), 8,);
-    assert_eq!(result.added_halfedges.len(), 14,);
-    assert_eq!(result.added_vertices.len(), 2,);
-
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
-    assert_eq!(marked_vertices.len(), 4);
+    assert_merge_invariants(
+        &meshgraph,
+        &result,
+        [v_top_id, v_bottom_id],
+        &boundary_before,
+        &marked_halfedges,
+        &marked_vertices,
+    );
 }
 
 /// Regression test for the weld-hole defect: `merge_vertices_one_rings` used to
@@ -1482,6 +1494,7 @@ fn test_merge_one_ring_weld_hole_reproduction() {
         RR.flush_blocking().unwrap();
     }
 
+    drain_rim_taxonomy();
     let boundary_after = boundary_edges(&mesh_graph);
 
     let capture_id = |v_id: VertexId| -> String {
@@ -1630,6 +1643,7 @@ fn test_merge_one_ring_punch_cleanup_hole_reproduction() {
         RR.flush_blocking().unwrap();
     }
 
+    drain_rim_taxonomy();
     let boundary_after = boundary_edges(&mesh_graph);
 
     let capture_id = |v_id: VertexId| -> String {
@@ -1655,6 +1669,161 @@ fn test_merge_one_ring_punch_cleanup_hole_reproduction() {
         boundary_before.len(),
         boundary_after.len()
     );
+}
+
+/// Scoped invariants a successful one-ring merge must satisfy.
+///
+/// This replaces the per-fixture exact-count snapshots: the counts legitimately
+/// change when the rebuild is reworked, but these properties must not. The
+/// scoping is part of the contract:
+///
+/// - *New* boundary edges (undirected vertex pairs) are always a defect - they
+///   are the hole this op opened. Boundary edges that existed before may
+///   disappear: a merge on an open rim legitimately consumes them.
+/// - Both merged vertices must be gone when the band rebuilt faces. The single
+///   shared halfedge shortcut (flip + collapse) removes only one, so that path
+///   is exempt.
+/// - `wire` (an edge whose two halves are both face-less) and parallel edges
+///   (two halfedges with the same start and end) are never valid.
+/// - Added ids must be live, removed ids must be dead, the two sets must be
+///   disjoint, and every marked id that survives the op must be live.
+fn assert_merge_invariants(
+    mesh: &MeshGraph,
+    result: &MergeVerticesOneRing,
+    merged: [VertexId; 2],
+    boundary_before: &std::collections::BTreeSet<(VertexId, VertexId)>,
+    marked_halfedges: &HashSet<HalfedgeId>,
+    marked_vertices: &HashSet<VertexId>,
+) {
+    for &v_id in &result.added_vertices {
+        assert!(
+            mesh.vertices.contains_key(v_id),
+            "added vertex {v_id:?} is not live"
+        );
+    }
+    for &he_id in &result.added_halfedges {
+        assert!(
+            mesh.halfedges.contains_key(he_id),
+            "added halfedge {he_id:?} is not live"
+        );
+    }
+    for &face_id in &result.added_faces {
+        assert!(
+            mesh.faces.contains_key(face_id),
+            "added face {face_id:?} is not live"
+        );
+    }
+
+    for &v_id in &result.removed_vertices {
+        assert!(
+            !mesh.vertices.contains_key(v_id),
+            "removed vertex {v_id:?} is still live"
+        );
+        assert!(
+            !result.added_vertices.contains(&v_id),
+            "vertex {v_id:?} is reported as both added and removed"
+        );
+    }
+    for &he_id in &result.removed_halfedges {
+        assert!(
+            !mesh.halfedges.contains_key(he_id),
+            "removed halfedge {he_id:?} is still live"
+        );
+        assert!(
+            !result.added_halfedges.contains(&he_id),
+            "halfedge {he_id:?} is reported as both added and removed"
+        );
+    }
+    for &face_id in &result.removed_faces {
+        assert!(
+            !mesh.faces.contains_key(face_id),
+            "removed face {face_id:?} is still live"
+        );
+        assert!(
+            !result.added_faces.contains(&face_id),
+            "face {face_id:?} is reported as both added and removed"
+        );
+    }
+
+    let gone1 = !mesh.vertices.contains_key(merged[0]);
+    let gone2 = !mesh.vertices.contains_key(merged[1]);
+    if result.added_faces.is_empty() {
+        assert!(
+            gone1 || gone2,
+            "merge removed neither of its input vertices {merged:?}"
+        );
+    } else {
+        assert!(
+            gone1 && gone2,
+            "band merge left its input vertices behind: {merged:?}"
+        );
+    }
+
+    let boundary_after = boundary_edges(mesh);
+    let opened: Vec<(VertexId, VertexId)> = boundary_after
+        .difference(boundary_before)
+        .copied()
+        .collect();
+    assert!(
+        opened.is_empty(),
+        "merge opened new boundary edges: {opened:?}"
+    );
+
+    for (he_id, he) in mesh.halfedges.iter() {
+        if he.face.is_none()
+            && let Some(twin) = he.twin.and_then(|twin_id| mesh.halfedges.get(twin_id))
+        {
+            assert!(
+                twin.face.is_some(),
+                "wire edge (both halves face-less) at {he_id:?}"
+            );
+        }
+    }
+
+    for (v_id, out_hes) in &mesh.outgoing_halfedges {
+        let mut ends: Vec<VertexId> = Vec::with_capacity(out_hes.len());
+        for &he_id in out_hes {
+            if let Some(he) = mesh.halfedges.get(he_id) {
+                assert!(
+                    !ends.contains(&he.end_vertex),
+                    "parallel edges from {v_id:?} to {:?}",
+                    he.end_vertex
+                );
+                ends.push(he.end_vertex);
+            }
+        }
+    }
+
+    for &he_id in marked_halfedges {
+        assert!(
+            mesh.halfedges.contains_key(he_id),
+            "marked halfedge {he_id:?} is dead"
+        );
+    }
+    for &v_id in marked_vertices {
+        assert!(
+            mesh.vertices.contains_key(v_id),
+            "marked vertex {v_id:?} is dead"
+        );
+    }
+
+    // Phase 0 rim taxonomy: drain this test's probe records (thread-local).
+    // Printed only on demand so a normal run stays quiet.
+    drain_rim_taxonomy();
+}
+
+/// Drain and, with `MESH_GRAPH_RIM_TAXONOMY=1`, print this thread's rim probes.
+fn drain_rim_taxonomy() {
+    let label = std::thread::current()
+        .name()
+        .unwrap_or("<unnamed>")
+        .to_string();
+    let probes = super::rim_probe::drain();
+    if std::env::var("MESH_GRAPH_RIM_TAXONOMY").is_ok() {
+        for probe in &probes {
+            println!("RIM {label} {}", probe.summary());
+        }
+    }
 }
 
 // Boundary edges of the region (the cut against the rest of the mesh), as
@@ -1788,6 +1957,7 @@ fn test_merge_one_ring_close_hole_reproduction() {
         RR.flush_blocking().unwrap();
     }
 
+    drain_rim_taxonomy();
     let boundary_after = boundary_edges(&mesh_graph);
 
     let capture_id = |v_id: VertexId| -> String {
@@ -1999,6 +2169,7 @@ fn test_merge_one_ring_lens_stays_watertight() {
     );
 
     let (mesh_graph, vertex_ids) = merge_lens_region(true);
+    drain_rim_taxonomy();
     let boundary_after = boundary_edges(&mesh_graph);
 
     let capture_id = |v_id: VertexId| -> String {
@@ -2186,6 +2357,7 @@ fn test_merge_one_ring_parallel_edge_leftover_stays_watertight() {
         &mut marked_vertices,
     );
 
+    drain_rim_taxonomy();
     let boundary_after = boundary_edges(&mesh_graph);
     assert!(
         boundary_after == boundary_before,
@@ -2324,6 +2496,7 @@ fn test_merge_one_ring_asymmetric_lens_stays_watertight() {
         &mut marked_vertices,
     );
 
+    drain_rim_taxonomy();
     let boundary_after = boundary_edges(&mesh_graph);
     assert!(
         boundary_after == boundary_before,
@@ -2642,6 +2815,7 @@ fn test_weld_cases_stay_watertight() {
 
     for case in WELD_CASES {
         let (before, after, opened) = case.replay();
+        drain_rim_taxonomy();
         if !opened.is_empty() {
             failures.push(format!(
                 "  {:?}: boundary {before} -> {after}, opened interior edges {opened:?}",
@@ -2674,4 +2848,81 @@ fn diag_open_case() {
     );
     let (before, after, opened) = case.replay();
     println!("DIAG boundary {before} -> {after} opened {opened:?}");
+}
+
+/// Phase 0 baseline of the rim taxonomy, pinned so drift shows up as a test.
+///
+/// These are pre-net numbers: measured right after `add_planned_faces`, before
+/// `weld_parallel_edges`/`close_triangular_holes` run. They are expected to
+/// move when Phase 1/2 make the rebuild consume the rim structurally; when they
+/// do, update this table - the point is that the change is explicit, not
+/// silent. `(unconsumed, new_boundary, wire)`.
+#[test]
+fn test_rim_taxonomy_baseline() {
+    get_tracing_subscriber();
+
+    let assert_case = |label: &str, expected: [usize; 3]| {
+        let probes = super::rim_probe::drain();
+        assert_eq!(
+            probes.len(),
+            1,
+            "{label}: expected exactly one band-merge probe, got {}",
+            probes.len()
+        );
+        let probe = &probes[0];
+        assert_eq!(
+            (
+                probe.unconsumed.len(),
+                probe.new_boundary.len(),
+                probe.wire.len()
+            ),
+            (expected[0], expected[1], expected[2]),
+            "{label}: taxonomy drifted: {}",
+            probe.summary()
+        );
+        assert_eq!(
+            probe.rim_bad,
+            0,
+            "{label}: rim walk broke: {}",
+            probe.summary()
+        );
+    };
+
+    let _ = merge_lens_region(false);
+    assert_case("lens(reconstruct=false)", [5, 5, 0]);
+
+    let _ = merge_lens_region(true);
+    assert_case("lens(reconstruct=true)", [0, 0, 0]);
+
+    for case in WELD_CASES {
+        let expected = match case.what {
+            "band wraps the full ring and leaves one seam triangle" => [2, 1, 0],
+            other => panic!("no pinned rim taxonomy for weld case {other:?}"),
+        };
+        let _ = case.replay();
+        assert_case(case.what, expected);
+    }
+}
+
+/// Phase 0 diagnostic: print the rim taxonomy of the captured defect classes.
+///
+/// `cargo test --features gltf --lib diag_rim_taxonomy -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn diag_rim_taxonomy() {
+    get_tracing_subscriber();
+
+    for reconstruct in [false, true] {
+        let _ = merge_lens_region(reconstruct);
+        for probe in super::rim_probe::drain() {
+            println!("RIM lens(reconstruct={reconstruct}) {}", probe.summary());
+        }
+    }
+
+    for case in WELD_CASES {
+        let _ = case.replay();
+        for probe in super::rim_probe::drain() {
+            println!("RIM weld {:?} {}", case.what, probe.summary());
+        }
+    }
 }

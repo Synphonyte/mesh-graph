@@ -1,4 +1,8 @@
 #[cfg(test)]
+mod rim;
+#[cfg(test)]
+mod rim_probe;
+#[cfg(test)]
 mod tests;
 
 use std::ops::RangeInclusive;
@@ -22,6 +26,34 @@ pub struct MergeVerticesOneRing {
     pub added_vertices: Vec<VertexId>,
     pub added_halfedges: Vec<HalfedgeId>,
     pub added_faces: Vec<FaceId>,
+}
+
+/// The three post-hoc repair passes of the merge ("the nets"):
+/// `weld_parallel_edges` (before and after the neighborhood cleanup) and
+/// `close_triangular_holes`.
+///
+/// Enabled by default; production behavior is unchanged (the non-test branch
+/// folds to `true`). Test builds can turn them off with
+/// `MESH_GRAPH_MERGE_NETS=0`, which is the rim-first rebuild's oracle: with the
+/// nets off, the corpus measures whether the rebuild itself closes exactly what
+/// the removals opened, instead of whether the nets mop up afterwards.
+///
+/// Phase 0 baseline with the nets off: `parallel_edge_leftover` and
+/// `weld_cases_stay_watertight` fail; the rest of the corpus passes.
+#[cfg(test)]
+fn merge_nets_enabled() -> bool {
+    use std::sync::OnceLock;
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MESH_GRAPH_MERGE_NETS").map_or(true, |value| value != "0" && value != "off")
+    })
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn merge_nets_enabled() -> bool {
+    true
 }
 
 impl MeshGraph {
@@ -110,6 +142,15 @@ impl MeshGraph {
             return result;
         }
 
+        // Phase 0 rim taxonomy: measure the boundary the op opens and closes.
+        // Test-only; records one probe per band merge into a thread-local.
+        #[cfg(test)]
+        let mut test_rim_probe = rim_probe::RimProbe::default();
+        #[cfg(test)]
+        {
+            test_rim_probe.before = rim::boundary_halves(self);
+        }
+
         // Weld position-coincident cross-ring vertices before planning the band.
         //
         // When the two sheets touch (morphological close / collision merge), a
@@ -179,6 +220,13 @@ impl MeshGraph {
 
         self.remove_neighbor_faces(&vertex1, &vertex2, &mut result);
 
+        #[cfg(test)]
+        {
+            test_rim_probe
+                .rim
+                .extend(rim::opened_rim(self, &test_rim_probe.before));
+        }
+
         #[cfg(feature = "rerun")]
         self.log_rerun();
 
@@ -246,6 +294,14 @@ impl MeshGraph {
             }
         }
 
+        #[cfg(test)]
+        {
+            test_rim_probe
+                .rim
+                .extend(rim::opened_rim(self, &test_rim_probe.before));
+            test_rim_probe.classify(self);
+        }
+
         self.add_planned_faces(
             planned_faces,
             &one_ring_v_set1,
@@ -254,15 +310,23 @@ impl MeshGraph {
             &mut result,
         );
 
-        self.weld_parallel_edges(
-            one_ring_v_ids1
-                .iter()
-                .chain(&one_ring_v_ids2)
-                .chain(&result.added_vertices)
-                .copied()
-                .collect_vec(),
-            &mut result,
-        );
+        #[cfg(test)]
+        {
+            test_rim_probe.finish(self);
+            rim_probe::push(test_rim_probe);
+        }
+
+        if merge_nets_enabled() {
+            self.weld_parallel_edges(
+                one_ring_v_ids1
+                    .iter()
+                    .chain(&one_ring_v_ids2)
+                    .chain(&result.added_vertices)
+                    .copied()
+                    .collect_vec(),
+                &mut result,
+            );
+        }
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
@@ -284,25 +348,27 @@ impl MeshGraph {
         // Again after the cleanup: a pair can still be parallel here that was not
         // weldable above, because the two faces hung off the *same* side of the
         // edge until the cleanup rebuilt one of them.
-        self.weld_parallel_edges(
-            one_ring_v_ids1
-                .iter()
-                .chain(&one_ring_v_ids2)
-                .chain(&result.added_vertices)
-                .copied()
-                .collect_vec(),
-            &mut result,
-        );
+        if merge_nets_enabled() {
+            self.weld_parallel_edges(
+                one_ring_v_ids1
+                    .iter()
+                    .chain(&one_ring_v_ids2)
+                    .chain(&result.added_vertices)
+                    .copied()
+                    .collect_vec(),
+                &mut result,
+            );
 
-        self.close_triangular_holes(
-            &one_ring_v_ids1
-                .iter()
-                .chain(&one_ring_v_ids2)
-                .chain(&result.added_vertices)
-                .copied()
-                .collect_vec(),
-            &mut result,
-        );
+            self.close_triangular_holes(
+                &one_ring_v_ids1
+                    .iter()
+                    .chain(&one_ring_v_ids2)
+                    .chain(&result.added_vertices)
+                    .copied()
+                    .collect_vec(),
+                &mut result,
+            );
+        }
 
         self.smooth_vertices(
             one_ring_v_ids1
