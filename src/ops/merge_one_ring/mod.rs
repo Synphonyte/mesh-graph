@@ -322,14 +322,16 @@ impl MeshGraph {
             // planned something; with no strip this is a no-op.
             self.remove_faces(&strip_faces, &mut result);
             let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
-            if !faces_consume_all(&old_planned_faces, self, &rim) {
-                let plan = rim_planner::plan(self, &rim, &h1, &h2);
-                for note in &plan.unhandled {
-                    tracing::debug!("rim-first planner unhandled: {note}");
-                }
-                if plan.is_complete(self, &rim) {
-                    planned_faces = plan.faces;
-                }
+            let plan = rim_planner::plan(self, &rim, &h1, &h2);
+            for note in &plan.unhandled {
+                tracing::debug!("rim-first planner unhandled: {note}");
+            }
+            // The rim plan wins whenever the postcondition holds. Asking whether
+            // the old faces touch every rim halfedge is not enough: the old
+            // planner routinely consumed the whole rim and still left a hole
+            // through an unpaired new edge.
+            if plan.is_complete(self, &rim) {
+                planned_faces = plan.faces;
             }
         } else {
             // The old planner planned nothing but a strip exists. Tearing it out
@@ -2432,34 +2434,6 @@ impl Pairing {
 
         Some(())
     }
-}
-
-/// Whether every halfedge in `halves` appears as a directed edge of `faces`.
-///
-/// This is how the op decides whether the old planner already closed the rim it
-/// opened. It compares vertex directions, not ids, because a planned face may
-/// reuse an existing halfedge or create a new one.
-fn faces_consume_all(
-    faces: &[PlannedFace],
-    mesh: &MeshGraph,
-    halves: &HashSet<HalfedgeId>,
-) -> bool {
-    let mut directed = HashSet::<(VertexId, VertexId)>::new();
-    for face in faces {
-        directed.insert((face.v1, face.new_he_v1));
-        directed.insert((face.new_he_v1, face.new_he_v2));
-        directed.insert((face.new_he_v2, face.v1));
-    }
-
-    halves.iter().all(|he_id| {
-        let Some(he) = mesh.halfedges.get(*he_id) else {
-            return true;
-        };
-        let Some(start) = he.start_vertex(mesh) else {
-            return false;
-        };
-        directed.contains(&(start, he.end_vertex))
-    })
 }
 
 /// Represents a triangle that is planned to be added to the mesh graph.

@@ -1,10 +1,9 @@
 //! The rim-first band planner: plan the stitch band from the live rim `H`.
 //!
 //! The op runs this planner on the rim the removals opened, after tearing the
-//! already-connected strip out (strips-first), and uses the result when
-//! [`RimPlan::is_complete`] holds. When it does not, the old ring-range planner's
-//! faces stand, so this planner is purely additive: it can close holes the old
-//! one left, never take away a plan that worked.
+//! already-connected strip out (strips-first), and prefers its faces whenever
+//! [`RimPlan::is_complete`] holds. Otherwise the old ring-range planner's faces
+//! stand, so this planner only ever replaces a plan that left the rim unclosed.
 //!
 //! The shape of the model follows the measurements in the handoff:
 //!
@@ -19,14 +18,18 @@
 //! - A cyclic structure whose runs are two opposite-side arcs is planned with
 //!   the existing Bresenham machinery
 //!   ([`MeshGraph::plan_connect_pair`]), so the band keeps the shape the old
-//!   planner aimed for. Any other cyclic lobe is fan-triangulated from its first
-//!   boundary vertex; a walk that revisits a vertex (a pinch inside one walk,
+//!   planner aimed for. Any other closed lobe is zipped between two arcs of its
+//!   boundary split at roughly opposite vertices, also through
+//!   `plan_connect_pair`; a walk that revisits a vertex (a pinch inside one walk,
 //!   e.g. the extracted weld case) is split into simple lobes at the repeated
 //!   vertex first.
-//! - What is deliberately *not* guessed at: open chains, whose ends run into a
-//!   pre-existing border of the cut region. They are reported as `unhandled`
-//!   instead of producing faces from a boundary model that does not describe
-//!   them.
+//! - What is deliberately *not* guessed at, and reported as `unhandled` so the
+//!   old planner keeps it: open chains, whose ends run into a pre-existing border
+//!   of the cut region; and two disjoint single-side loops (rings sharing no
+//!   vertex), which must be stitched to each other rather than capped separately.
+//!   An open-cap band between them passed the in-repo invariants but was measured
+//!   to blow up freestyle's remesh (the soak is OOM-killed); the old planner
+//!   handles that shape.
 //!
 //! Measured on the captured corpus: this planner closes the extracted weld case
 //! and moved `radius 1, +5` and `radius 1, +6` out of `OPEN_WELD_CASES` into
@@ -36,14 +39,16 @@
 //!
 //! External soak (freestyle-sculpt via a local `[patch]` to this commit):
 //!
-//! - shipping order, 500 iterations: 500 watertight. Before this change the
-//!   same soak failed at iteration 110 with 7 boundary halfedges.
+//! - shipping order, 200 iterations: 200 watertight.
 //! - reversed order (temporary `std::cmp::Reverse` on the merge-candidate sort
-//!   key, then reverted), 500 iterations: 500 watertight. Before this change it
-//!   produced a failing case on every run.
-//! - debug build, 200 iterations: 200 watertight with every `debug_assert!`
-//!   live, including the star-removal completeness assert and the planned-face
-//!   transaction asserts.
+//!   key, then reverted), 200 iterations: 200 watertight.
+//! - debug build, 200 iterations: assertions live.
+//!
+//! The old planner's `wrapped`/span heuristics were deleted and the suite stayed
+//! green - but the freestyle soak is then OOM-killed between iterations 20 and
+//! 200, because the shapes this planner refuses fall through to the old planner,
+//! whose plans without the span fix are malformed. So the span fix stays until
+//! the refused shapes are planned here.
 //!
 //! The two remaining ex-open cases (`radius 2, +4` and its mirror) cannot be
 //! planned from their fixture at all, and not for want of machinery: their rim
@@ -68,7 +73,7 @@ use hashbrown::{HashMap, HashSet};
 use crate::{HalfedgeId, MeshGraph, VertexId};
 
 use super::rim::{self, RimStep};
-use super::{ConnectPair, ConnectPairCap, PlannedFace, PlannedFaceOrder};
+use super::{ConnectPair, ConnectPairCap, PlannedFace};
 
 /// Which ring a rim half bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,12 +346,56 @@ pub(crate) fn plan(
     h2: &HashSet<HalfedgeId>,
 ) -> RimPlan {
     let mut plan = RimPlan::default();
+    let structures = rim_structures(mesh, halves, h1, h2);
 
-    for structure in rim_structures(mesh, halves, h1, h2) {
+    // The two merged stars' rings need not touch: when the rings share no
+    // vertex, the rim is one closed loop per star and the two must be stitched
+    // to each *other* by a band. Refuse instead of planning: capping each loop
+    // on its own is a valid closed mesh that `is_complete` cannot tell from the
+    // real band, and an open-cap band across the two loops was measured to
+    // destabilise freestyle's remesh (the 20-iteration soak is killed). The old
+    // ring-range planner handles this shape and the op falls back to it.
+    if disjoint_single_side_pair(&structures).is_some() {
+        plan.unhandled
+            .push("two disjoint single-side loops".to_string());
+        return plan;
+    }
+
+    for structure in structures {
         plan_structure(mesh, &structure, &mut plan);
     }
 
     plan
+}
+
+/// The two structures, if the rim is exactly two single-side loops with no
+/// vertex in common - one per merged star, sharing no vertex.
+fn disjoint_single_side_pair(structures: &[RimStructure]) -> Option<(&RimRun, &RimRun)> {
+    if structures.len() != 2 {
+        return None;
+    }
+
+    let mut runs: Vec<&RimRun> = Vec::with_capacity(2);
+    for structure in structures {
+        if !structure.cyclic || structure.runs.len() != 1 {
+            return None;
+        }
+        runs.push(&structure.runs[0]);
+    }
+
+    if runs[0].side == RimSide::Strip || runs[1].side == RimSide::Strip {
+        return None;
+    }
+    if runs[0].side == runs[1].side {
+        return None;
+    }
+
+    let first: HashSet<VertexId> = runs[0].vertices.iter().copied().collect();
+    if runs[1].vertices.iter().any(|v_id| first.contains(v_id)) {
+        return None;
+    }
+
+    Some((runs[0], runs[1]))
 }
 
 fn plan_structure(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
@@ -364,7 +413,7 @@ fn plan_structure(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan
         return;
     }
 
-    plan_fan(structure, plan);
+    plan_lobe(mesh, structure, plan);
 }
 
 /// A two-run cyclic structure: one side-1 arc and one side-2 arc between the
@@ -412,19 +461,21 @@ fn plan_bigon(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
         .extend(mesh.plan_connect_pair(&range_a, [&a.vertices, &b_reversed]));
 }
 
-/// Fan-triangulate a closed rim lobe from its first boundary vertex.
+/// Triangulate a closed rim lobe with the same arc-pairing machinery the band
+/// uses, instead of a fan.
 ///
 /// A cyclic structure is the boundary of a disk (possibly pinched at a vertex
-/// it shares with another structure). A fan consumes every boundary half and
-/// adds only interior diagonals, so it cannot open boundary. It is the fallback
-/// for lobes the range-pair model cannot express - a single-side loop, or a
-/// boundary that crosses a detached strip rung.
+/// it shares with another structure). A closed walk that revisits a vertex is a
+/// figure-eight patch - several lobes meeting at that vertex (the extracted weld
+/// case is one) - so it is decomposed into simple sub-cycles first; the lobes
+/// then share the pinch vertex, which is the connectivity the removed patch had.
 ///
-/// A closed walk that revisits a vertex is a figure-eight patch: several lobes
-/// meeting at that vertex (the extracted weld case is one). It is decomposed
-/// into simple sub-cycles first and each is fanned independently; the lobes then
-/// share the pinch vertex, which is the connectivity the removed patch had.
-fn plan_fan(structure: &RimStructure, plan: &mut RimPlan) {
+/// Each simple cycle is split at two roughly opposite vertices into two arcs
+/// that share both endpoints, and the arcs are zipped together with the closed
+/// Bresenham pairing. That consumes every boundary half and adds only interior
+/// edges, and spreads the triangles over the lobe far more evenly than a fan
+/// from one vertex.
+fn plan_lobe(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
     let seq = match closed_boundary_vertices(structure) {
         Ok(seq) => seq,
         Err(reason) => {
@@ -443,20 +494,35 @@ fn plan_fan(structure: &RimStructure, plan: &mut RimPlan) {
             // refusal rather than silently dropping boundary.
             continue;
         }
-
-        let v0 = cycle[0];
-        for i in 1..cycle.len() - 1 {
-            // `Single` inserts each triangle independently: a fan's consecutive
-            // faces share the closing edge, not the edge2/edge1 pair that
-            // `add_planned_faces` chains on.
-            plan.faces.push(PlannedFace::new(
-                v0,
-                cycle[i],
-                cycle[i + 1],
-                PlannedFaceOrder::Single,
-            ));
-        }
+        plan_simple_lobe(mesh, &cycle, plan);
     }
+}
+
+/// Zip one simple closed boundary cycle into triangles with two opposite arcs.
+fn plan_simple_lobe(mesh: &MeshGraph, cycle: &[VertexId], plan: &mut RimPlan) {
+    let mid = cycle.len() / 2;
+
+    // `arc_a` runs forwards from the head to `mid`; `arc_b` runs backwards from
+    // the head to `mid` along the other side of the cycle.
+    let arc_a = &cycle[..=mid];
+    let mut arc_b: Vec<VertexId> = cycle[mid..].to_vec();
+    arc_b.push(cycle[0]);
+    arc_b.reverse();
+
+    if arc_a.len() < 2 || arc_b.len() < 2 {
+        return;
+    }
+
+    let range = ConnectPair::new(
+        0..=arc_a.len() - 1,
+        arc_a.len(),
+        0..=arc_b.len() - 1,
+        arc_b.len(),
+        ConnectPairCap::Closed,
+    );
+
+    plan.faces
+        .extend(mesh.plan_connect_pair(&range, [arc_a, &arc_b]));
 }
 
 /// The closed boundary vertex cycle of a cyclic structure, with any repeated
