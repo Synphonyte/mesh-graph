@@ -45,7 +45,7 @@
 //!   live, including the star-removal completeness assert and the planned-face
 //!   transaction asserts.
 //!
-//! The remaining two open cases (`radius 2, +4` and its mirror) cannot be
+//! The two remaining ex-open cases (`radius 2, +4` and its mirror) cannot be
 //! planned from their fixture at all, and not for want of machinery: their rim
 //! is an **open chain**. A triangulation's boundary is always a union of closed
 //! curves, so no set of triangles can consume an open chain using only rim
@@ -54,10 +54,14 @@
 //! and is exactly what `close_triangular_holes` is written to avoid. See
 //! `tests::test_open_weld_chain_cases_are_cut_truncated`.
 //!
-//! So those two fixtures are cut-truncated, not closable: the extraction's
-//! faithfulness check (both merged vertices interior) is too weak, because a
-//! *ring* vertex can still sit on the cut and open a chain in the rim. The fix
-//! is a wider re-extraction, not a planner change.
+//! They are unfaithful fixtures, not defects: the extractor's
+//! `NO STANDALONE REPRO` fallback prints the widest cut *without* minimising it,
+//! which drops one-ring faces and leaves a *ring* vertex on the cut. They now
+//! live in `CUT_TRUNCATED_CASES` and `OPEN_WELD_CASES` is empty. Re-running that
+//! same reversed soak with this planner temporarily disabled and the capture
+//! radius raised reproduces a genuine, minimised case at radius 1; it is
+//! `WELD_CASES`'s `re-extracted reversed weld order, radius 1, +4` entry, and
+//! this planner closes it (`boundary 13 -> 13`).
 
 use hashbrown::{HashMap, HashSet};
 

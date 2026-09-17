@@ -2991,18 +2991,105 @@ const WELD_CASES: &[WeldCase] = &[
         merge: (34, 24),
         protected: &[22],
     },
+    // ==== re-extracted run: radius 1, +4 opened, 33 faces ====
+    WeldCase {
+        what: "re-extracted reversed weld order, radius 1, +4 boundary halfedges",
+        verts: &[
+            (1.4374998, 0.3750002, 0.24962425),
+            (1.5067351, 0.4945724, 0.25583982),
+            (1.4933177, 0.62461275, 0.3489351),
+            (1.4375, 0.37499997, 0.37499997),
+            (1.4375, 0.5, 0.37499997),
+            (1.4514543, 0.71893513, 0.39973378),
+            (1.4940202, 0.35729223, 0.5034016),
+            (1.5063298, 0.48580903, 0.48171258),
+            (1.4479167, 0.6250626, 0.5416666),
+            (1.4374998, 0.750376, 0.5),
+            (1.4427084, 0.5625313, 0.4583333),
+            (1.4961016, 0.7320268, 0.6284971),
+            (1.5026203, 0.631256, 0.6254212),
+            (1.5548742, 0.3993808, 0.3377111),
+            (1.5625, 0.5, 0.37499997),
+            (1.527909, 0.6874944, 0.42446756),
+            (1.5041058, 0.768136, 0.24835946),
+            (1.5331594, 0.74423194, 0.33999056),
+            (1.5625002, 0.750376, 0.5),
+            (1.5632365, 0.898358, 0.37499934),
+            (1.498734, 0.8880255, 0.47460926),
+            (1.5174797, 0.8773632, 0.6241799),
+            (1.5414314, 0.596817, 0.5241195),
+        ],
+        faces: &[
+            (1, 4, 0),
+            (4, 3, 0),
+            (9, 8, 5),
+            (2, 4, 1),
+            (16, 5, 2),
+            (4, 7, 3),
+            (7, 6, 3),
+            (10, 2, 8),
+            (10, 7, 4),
+            (5, 8, 2),
+            (8, 22, 7),
+            (9, 11, 8),
+            (22, 8, 12),
+            (4, 2, 10),
+            (8, 7, 10),
+            (12, 8, 11),
+            (6, 7, 13),
+            (7, 14, 13),
+            (2, 17, 16),
+            (14, 2, 1),
+            (7, 22, 14),
+            (22, 2, 14),
+            (15, 22, 18),
+            (15, 17, 2),
+            (11, 18, 22),
+            (17, 19, 16),
+            (18, 20, 17),
+            (20, 19, 17),
+            (11, 21, 18),
+            (21, 20, 18),
+            (11, 22, 12),
+            (18, 17, 15),
+            (2, 22, 15),
+        ],
+        outgoing: &[
+            (2, &[16, 1, 4, 5, 8, 14, 22, 17, 10, 15], 5),
+            (4, &[1, 0, 3, 2, 7, 10], 7),
+            (7, &[4, 3, 8, 22, 6, 13, 14, 10], 22),
+            (8, &[5, 2, 9, 7, 22, 11, 12, 10], 2),
+            (9, &[5, 8, 20, 11, 21], 5),
+            (10, &[8, 4, 2, 7], 4),
+            (11, &[9, 21, 8, 22, 18, 12], 8),
+            (12, &[11, 22, 8], 22),
+            (14, &[13, 1, 7, 2, 22], 13),
+            (15, &[22, 17, 18, 2], 2),
+            (17, &[2, 16, 18, 19, 20, 15], 2),
+            (18, &[15, 22, 17, 11, 20, 21], 20),
+            (21, &[20, 9, 11, 18], 11),
+            (22, &[8, 7, 14, 2, 18, 11, 12, 15], 8),
+        ],
+        merge: (15, 10),
+        protected: &[12, 22],
+    },
 ];
 
-/// Weld merges whose fixture cannot be closed, extracted with `WELD_CAPTURE=1`
-/// from the reversed-order weld loop (the sensitive order).
+/// Weld merges whose standalone fixture cannot be closed, kept as evidence.
 ///
-/// Both remaining cases are cut-truncated: their rim is an open chain ending on
-/// a pre-existing border halfedge, so no boundary-respecting triangulation can
-/// consume it (see [`test_open_weld_chain_cases_are_cut_truncated`]). They need a
-/// wider re-extraction before they can serve as targets. Two earlier members of
-/// this list (`radius 1, +5` and `radius 1, +6`) were genuinely closable and are
-/// now in [`WELD_CASES`].
-const OPEN_WELD_CASES: &[WeldCase] = &[
+/// Both were printed by the extractor's `NO STANDALONE REPRO` fallback, which
+/// emits the widest cut *without* minimising it when no radius reproduces the
+/// defect. That branch is not a reproduction: it drops faces of the one-rings'
+/// stars, so a *ring* vertex ends up on the cut and its rim becomes an open
+/// chain. No boundary-respecting triangulation can consume an open chain (a
+/// triangulation's boundary is always closed), so these entries can never be
+/// "fixed" by a planner - they are fixture bugs. See
+/// [`test_open_weld_chain_cases_are_cut_truncated`].
+///
+/// A genuine re-extraction of the same reversed soak, done with the rim-first
+/// planner temporarily disabled and the capture radius raised, reproduces at
+/// radius 1 and *is* closed by the planner; it is in [`WELD_CASES`].
+const CUT_TRUNCATED_CASES: &[WeldCase] = &[
     // ==== run 1: radius 2, +4 opened, 36 faces ====
     WeldCase {
         what: "reversed weld order, radius 2, +4 boundary halfedges",
@@ -3177,6 +3264,16 @@ const OPEN_WELD_CASES: &[WeldCase] = &[
     },
 ];
 
+/// Genuinely-open weld cases: entries whose standalone fixture *reproduces* and
+/// that the band planner still fails to close.
+///
+/// Empty as of the rim-first planner: the two entries that used to be here
+/// (`radius 1, +5` and `radius 1, +6`) are closed and live in [`WELD_CASES`],
+/// the re-extracted reversed-soak case is closed too, and the only other
+/// ex-members turned out to be unfaithful fixtures ([`CUT_TRUNCATED_CASES`]).
+/// [`test_open_weld_cases_are_open`] keeps watching this list.
+const OPEN_WELD_CASES: &[WeldCase] = &[];
+
 /// The extracted cases reproduce identically on every run - that is what makes
 /// them usable as tests while the weld that produced them is still
 /// nondeterministic. This guards the extraction, not the defect, so it passes
@@ -3185,7 +3282,7 @@ const OPEN_WELD_CASES: &[WeldCase] = &[
 fn test_weld_cases_are_deterministic() {
     get_tracing_subscriber();
 
-    for case in WELD_CASES.iter().chain(OPEN_WELD_CASES) {
+    for case in WELD_CASES.iter().chain(CUT_TRUNCATED_CASES) {
         let mut outcomes = std::collections::BTreeSet::new();
         for _ in 0..100 {
             let (before, after, opened) = case.replay();
@@ -3209,7 +3306,7 @@ fn test_weld_cases_are_deterministic() {
 fn test_weld_cases_are_faithful() {
     get_tracing_subscriber();
 
-    for case in WELD_CASES.iter().chain(OPEN_WELD_CASES) {
+    for case in WELD_CASES.iter().chain(CUT_TRUNCATED_CASES) {
         let (mesh_graph, vertex_ids) = case.build();
         let rim: std::collections::BTreeSet<VertexId> = boundary_edges(&mesh_graph)
             .iter()
@@ -3299,7 +3396,7 @@ fn diag_open_case() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     let case = if std::env::var("OPEN").is_ok() {
-        &OPEN_WELD_CASES[idx]
+        &CUT_TRUNCATED_CASES[idx]
     } else {
         &WELD_CASES[idx]
     };
@@ -3450,13 +3547,17 @@ fn test_rim_taxonomy_baseline() {
             // closed rim it consumes exactly.
             "reversed weld order, radius 1, +5 boundary halfedges" => [0; 11],
             "reversed weld order, radius 1, +6 boundary halfedges" => [0; 11],
+            // Re-extracted from the reversed soak with the rim-first planner
+            // disabled and the capture radius raised: a genuine, minimised
+            // reproduction that this planner closes.
+            "re-extracted reversed weld order, radius 1, +4 boundary halfedges" => [0; 11],
             other => panic!("no pinned rim taxonomy for weld case {other:?}"),
         };
         let _ = case.replay();
         assert_case(case.what, expected);
     }
 
-    for case in OPEN_WELD_CASES {
+    for case in CUT_TRUNCATED_CASES {
         // Cut-truncated (see `test_open_weld_chain_cases_are_cut_truncated`):
         // the old planner leaves them open and the rim-first planner refuses
         // because their rim is an open chain. The pins are the old planner's
@@ -3533,13 +3634,14 @@ fn test_rim_planner_corpus_measurement() {
             // strip removal the planner itself performs.
             "reversed weld order, radius 1, +5 boundary halfedges" => [2, 4, 4, 0],
             "reversed weld order, radius 1, +6 boundary halfedges" => [10, 14, 14, 0],
+            "re-extracted reversed weld order, radius 1, +4 boundary halfedges" => [5, 9, 9, 0],
             other => panic!("no pinned rim-plan measurement for weld case {other:?}"),
         };
         let _ = case.replay();
         assert_case(case.what, expected);
     }
 
-    for case in OPEN_WELD_CASES {
+    for case in CUT_TRUNCATED_CASES {
         let expected = match case.what {
             // The chain ends at a pre-existing border of the cut region: only
             // the pinched single-side loop can be filled from rim data alone, so
@@ -3553,7 +3655,7 @@ fn test_rim_planner_corpus_measurement() {
     }
 }
 
-/// The remaining [`OPEN_WELD_CASES`] are cut-truncated, not closable.
+/// The [`CUT_TRUNCATED_CASES`] fixtures are cut-truncated, not closable.
 ///
 /// Their rim is an **open chain**: `rim::next_rim_half` ends on a half that was
 /// already boundary before the merge. A triangulation's boundary is always a
@@ -3571,7 +3673,7 @@ fn test_rim_planner_corpus_measurement() {
 fn test_open_weld_chain_cases_are_cut_truncated() {
     get_tracing_subscriber();
 
-    for case in OPEN_WELD_CASES {
+    for case in CUT_TRUNCATED_CASES {
         let _ = case.replay();
         let probes = super::rim_probe::drain();
         assert_eq!(probes.len(), 1, "{}: one probe expected", case.what);
@@ -3630,7 +3732,7 @@ fn diag_rim_taxonomy() {
         }
     }
 
-    for case in OPEN_WELD_CASES {
+    for case in CUT_TRUNCATED_CASES {
         let _ = case.replay();
         for probe in super::rim_probe::drain() {
             println!("RIM open weld {:?} {}", case.what, probe.summary());
