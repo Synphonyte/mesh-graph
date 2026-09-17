@@ -3289,13 +3289,65 @@ fn diag_open_case() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
-    let case = &WELD_CASES[idx];
+    let case = if std::env::var("OPEN").is_ok() {
+        &OPEN_WELD_CASES[idx]
+    } else {
+        &WELD_CASES[idx]
+    };
     println!(
         "DIAG case {:?} merge {:?} protected {:?}",
         case.what, case.merge, case.protected
     );
-    let (before, after, opened) = case.replay();
-    println!("DIAG boundary {before} -> {after} opened {opened:?}");
+
+    let (mut mesh_graph, vertex_ids) = case.build();
+    println!("DIAG vertex_ids {vertex_ids:?}");
+    let boundary_before = boundary_edges(&mesh_graph);
+    let cut_rim: std::collections::BTreeSet<VertexId> =
+        boundary_before.iter().flat_map(|(a, b)| [*a, *b]).collect();
+
+    let capture_id = |v_id: VertexId| -> String {
+        vertex_ids
+            .iter()
+            .position(|v| *v == v_id)
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| format!("{v_id:?}"))
+    };
+
+    for (a, b) in &boundary_before {
+        println!("DIAG cut edge ({}, {})", capture_id(*a), capture_id(*b));
+    }
+
+    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::new();
+    let mut marked_vertices: HashSet<VertexId> = HashSet::new();
+    for i in case.protected {
+        marked_vertices.insert(vertex_ids[*i]);
+    }
+    mesh_graph.merge_vertices_one_rings(
+        vertex_ids[case.merge.0],
+        vertex_ids[case.merge.1],
+        0.0096,
+        &mut marked_halfedges,
+        &mut marked_vertices,
+    );
+
+    let boundary_after = boundary_edges(&mesh_graph);
+    println!(
+        "DIAG boundary {} -> {}",
+        boundary_before.len(),
+        boundary_after.len()
+    );
+    for (a, b) in boundary_after.difference(&boundary_before) {
+        let on_rim = cut_rim.contains(a) || cut_rim.contains(b);
+        println!(
+            "DIAG new boundary ({}, {})  on_cut_rim {on_rim}",
+            capture_id(*a),
+            capture_id(*b)
+        );
+    }
+
+    for probe in super::rim_probe::drain() {
+        println!("DIAG probe {}", probe.summary());
+    }
 }
 
 /// Phase 0 baseline of the rim taxonomy, pinned so drift shows up as a test.
@@ -3490,9 +3542,9 @@ fn test_rim_planner_prototype_consumption() {
 
     for case in WELD_CASES {
         let expected = match case.what {
-            // A pinch inside a single cyclic walk (vertex 30 repeats), so it is
-            // not yet a simple disk the fan can fill.
-            "band wraps the full ring and leaves one seam triangle" => [0, 0, 12, 1],
+            // A pinch inside a single cyclic walk (vertex 30 repeats); the pinch
+            // decomposition splits it into simple lobes and fans each.
+            "band wraps the full ring and leaves one seam triangle" => [8, 12, 12, 0],
             other => panic!("no pinned prototype measurement for weld case {other:?}"),
         };
         let _ = case.replay();
@@ -3514,6 +3566,88 @@ fn test_rim_planner_prototype_consumption() {
         };
         let _ = case.replay();
         assert_case(case.what, expected);
+    }
+}
+
+/// Two of the four [`OPEN_WELD_CASES`] are cut-truncated, not closable.
+///
+/// Their rim is an **open chain**: `rim::next_rim_half` ends on a half that was
+/// already boundary before the merge. A triangulation's boundary is always a
+/// union of closed curves, so no plan that consumes only rim halves and adds
+/// only interior edges can consume an open chain. The only way to "close" these
+/// fixtures is to consume the pre-existing border halfedges the chain runs into,
+/// which would seal a genuine open border - exactly what `close_triangular_holes`
+/// is written to avoid.
+///
+/// The extraction's faithfulness check (`test_weld_cases_are_faithful`) requires
+/// both *merged* vertices to be interior; these cases satisfy that, but a vertex
+/// of their one-ring still sits on the cut, which is what opens the chain. A
+/// wider re-extraction is needed before they can serve as Phase 2 targets.
+#[test]
+fn test_open_weld_chain_cases_are_cut_truncated() {
+    get_tracing_subscriber();
+
+    if std::env::var("MESH_GRAPH_RIM_PLANNER").is_ok() {
+        eprintln!("skipping: rim-planner experiment mode measures a different rim");
+        return;
+    }
+
+    for case in OPEN_WELD_CASES {
+        let _ = case.replay();
+        let probes = super::rim_probe::drain();
+        assert_eq!(probes.len(), 1, "{}: one probe expected", case.what);
+        let probe = &probes[0];
+
+        let open_structures: Vec<&String> = probe
+            .proto_structure_detail
+            .iter()
+            .filter(|detail| detail.starts_with("open"))
+            .collect();
+
+        let truncated = matches!(
+            case.what,
+            "reversed weld order, radius 2, +4 boundary halfedges"
+                | "reversed weld order, radius 2, +4 boundary halfedges (mirror)"
+        );
+
+        if truncated {
+            assert_eq!(
+                open_structures.len(),
+                1,
+                "{}: expected exactly one open chain in the rim: {:?}",
+                case.what,
+                probe.proto_structure_detail
+            );
+            assert!(
+                probe
+                    .proto_unhandled
+                    .iter()
+                    .any(|unhandled| unhandled.starts_with("open chain")),
+                "{}: the open chain must be reported unhandled: {}",
+                case.what,
+                probe.summary()
+            );
+            assert!(
+                probe.proto_consumed < probe.rim.len(),
+                "{}: a truncated rim cannot be fully consumed: {}",
+                case.what,
+                probe.summary()
+            );
+        } else {
+            assert!(
+                open_structures.is_empty(),
+                "{}: not truncated, so its rim must be closed: {:?}",
+                case.what,
+                probe.proto_structure_detail
+            );
+            assert_eq!(
+                probe.proto_consumed,
+                probe.rim.len(),
+                "{}: a closed rim must be fully consumable: {}",
+                case.what,
+                probe.summary()
+            );
+        }
     }
 }
 

@@ -30,17 +30,30 @@
 //!
 //! Measured on the captured corpus (pinned by
 //! `tests::test_rim_planner_prototype_consumption`): the planner consumes the
-//! whole rim of both lens variants and of two of the four `OPEN_WELD_CASES` -
-//! `radius 1, +5` (the sharp case) and `radius 1, +6`. The test-only
-//! `MESH_GRAPH_RIM_PLANNER` op switch drives the op with this planner, tearing
-//! the already-connected strip out first as the design requires; under it those
-//! two open cases stop opening (`boundary 8 -> 8` and `22 -> 22`).
+//! whole rim of both lens variants, the extracted weld case, and two of the four
+//! `OPEN_WELD_CASES` - `radius 1, +5` (the sharp case) and `radius 1, +6`. The
+//! test-only `MESH_GRAPH_RIM_PLANNER` op switch drives the op with this planner,
+//! tearing the already-connected strip out first as the design requires; under
+//! it those two open cases stop opening (`boundary 8 -> 8` and `22 -> 22`).
 //!
 //! That switch has no fallback yet, so the rest of the corpus regresses under
-//! it: the `unhandled` structures above need the pinch decomposition and the
-//! chain/border handling before this planner can replace the old one.
+//! it.
+//!
+//! The remaining two open cases (`radius 2, +4` and its mirror) cannot be
+//! planned from their fixture at all, and not for want of machinery: their rim
+//! is an **open chain**. A triangulation's boundary is always a union of closed
+//! curves, so no set of triangles can consume an open chain using only rim
+//! halves and interior edges. Closing it would mean consuming the pre-existing
+//! border halfedges the chain runs into - which would seal a genuine open border
+//! and is exactly what `close_triangular_holes` is written to avoid. See
+//! `tests::test_open_weld_chain_cases_are_cut_truncated`.
+//!
+//! So those two fixtures are cut-truncated, not closable: the extraction's
+//! faithfulness check (both merged vertices interior) is too weak, because a
+//! *ring* vertex can still sit on the cut and open a chain in the rim. The fix
+//! is a wider re-extraction, not a planner change.
 
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 
 use crate::{HalfedgeId, MeshGraph, VertexId};
 
@@ -336,36 +349,49 @@ fn plan_bigon(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
 /// adds only interior diagonals, so it cannot open boundary. It is the fallback
 /// for lobes the range-pair model cannot express - a single-side loop, or a
 /// boundary that crosses a detached strip rung.
+///
+/// A closed walk that revisits a vertex is a figure-eight patch: several lobes
+/// meeting at that vertex (the extracted weld case is one). It is decomposed
+/// into simple sub-cycles first and each is fanned independently; the lobes then
+/// share the pinch vertex, which is the connectivity the removed patch had.
 fn plan_fan(structure: &RimStructure, plan: &mut RimPlan) {
-    let seq = match boundary_vertices(structure) {
+    let seq = match closed_boundary_vertices(structure) {
         Ok(seq) => seq,
         Err(reason) => {
             plan.unhandled.push(format!(
-                "cyclic structure of {} runs is not a simple disk: {reason}",
+                "cyclic structure of {} runs is not a closed area: {reason}",
                 structure.runs.len()
             ));
             return;
         }
     };
 
-    let v0 = seq[0];
-    for i in 1..seq.len() - 1 {
-        // `Single` inserts each triangle independently: a fan's consecutive
-        // faces share the closing edge, not the edge2/edge1 pair that
-        // `add_planned_faces` chains on.
-        plan.faces.push(PlannedFace::new(
-            v0,
-            seq[i],
-            seq[i + 1],
-            PlannedFaceOrder::Single,
-        ));
+    for cycle in decompose_pinch_cycles(&seq) {
+        if cycle.len() < 3 {
+            // A lobe bounded by fewer than three vertices has no area; leaving
+            // it unconsumed makes the plan incomplete, which callers treat as a
+            // refusal rather than silently dropping boundary.
+            continue;
+        }
+
+        let v0 = cycle[0];
+        for i in 1..cycle.len() - 1 {
+            // `Single` inserts each triangle independently: a fan's consecutive
+            // faces share the closing edge, not the edge2/edge1 pair that
+            // `add_planned_faces` chains on.
+            plan.faces.push(PlannedFace::new(
+                v0,
+                cycle[i],
+                cycle[i + 1],
+                PlannedFaceOrder::Single,
+            ));
+        }
     }
 }
 
-/// The boundary vertex cycle of a cyclic structure, or `None` when it is
-/// degenerate (repeated vertex, fewer than three vertices). The caller must only
-/// pass cyclic structures.
-fn boundary_vertices(structure: &RimStructure) -> Result<Vec<VertexId>, String> {
+/// The closed boundary vertex cycle of a cyclic structure, with any repeated
+/// vertices kept. Errors when the walk is too small to bound an area.
+fn closed_boundary_vertices(structure: &RimStructure) -> Result<Vec<VertexId>, String> {
     let mut seq: Vec<VertexId> = Vec::new();
     for (i, run) in structure.runs.iter().enumerate() {
         let start = usize::from(i > 0);
@@ -377,16 +403,39 @@ fn boundary_vertices(structure: &RimStructure) -> Result<Vec<VertexId>, String> 
         seq.pop();
     }
 
-    let mut seen: HashSet<VertexId> = HashSet::new();
-    for v_id in &seq {
-        if !seen.insert(*v_id) {
-            return Err(format!("vertex {v_id:?} repeats on the boundary"));
-        }
-    }
-
     if seq.len() < 3 {
         return Err(format!("only {} boundary vertices", seq.len()));
     }
 
     Ok(seq)
+}
+
+/// Split a closed walk into simple cycles at its repeated vertices.
+///
+/// The first repeated vertex `v` (positions `j < i`) splits the walk into the
+/// lobe `seq[j..i]` and its complement, both closed at `v`; each is split again
+/// recursively. Deterministic: the scan is in walk order and only lookups touch
+/// the map.
+fn decompose_pinch_cycles(seq: &[VertexId]) -> Vec<Vec<VertexId>> {
+    let mut first_index: HashMap<VertexId, usize> = HashMap::new();
+
+    for (i, v_id) in seq.iter().enumerate() {
+        if let Some(&j) = first_index.get(v_id) {
+            let inner = &seq[j..i];
+            let mut outer = seq[..j].to_vec();
+            outer.extend_from_slice(&seq[i..]);
+
+            let mut cycles = Vec::new();
+            if inner.len() >= 3 {
+                cycles.extend(decompose_pinch_cycles(inner));
+            }
+            if outer.len() >= 3 {
+                cycles.extend(decompose_pinch_cycles(&outer));
+            }
+            return cycles;
+        }
+        first_index.insert(*v_id, i);
+    }
+
+    vec![seq.to_vec()]
 }
