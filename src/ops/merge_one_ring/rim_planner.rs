@@ -1,9 +1,10 @@
 //! The rim-first band planner: plan the stitch band from the live rim `H`.
 //!
 //! The op runs this planner on the rim the removals opened, after tearing the
-//! already-connected strip out (strips-first), and prefers its faces whenever
-//! [`RimPlan::is_complete`] holds. Otherwise the old ring-range planner's faces
-//! stand, so this planner only ever replaces a plan that left the rim unclosed.
+//! already-connected strip out (strips-first), and uses the result when
+//! [`RimPlan::is_complete`] holds. When it does not, the old ring-range planner's
+//! faces stand, so this planner is purely additive: it can close holes the old
+//! one left, never take away a plan that worked.
 //!
 //! The shape of the model follows the measurements in the handoff:
 //!
@@ -19,17 +20,18 @@
 //!   the existing Bresenham machinery
 //!   ([`MeshGraph::plan_connect_pair`]), so the band keeps the shape the old
 //!   planner aimed for. Any other closed lobe is zipped between two arcs of its
-//!   boundary split at roughly opposite vertices, also through
-//!   `plan_connect_pair`; a walk that revisits a vertex (a pinch inside one walk,
-//!   e.g. the extracted weld case) is split into simple lobes at the repeated
-//!   vertex first.
-//! - What is deliberately *not* guessed at, and reported as `unhandled` so the
-//!   old planner keeps it: open chains, whose ends run into a pre-existing border
-//!   of the cut region; and two disjoint single-side loops (rings sharing no
-//!   vertex), which must be stitched to each other rather than capped separately.
-//!   An open-cap band between them passed the in-repo invariants but was measured
-//!   to blow up freestyle's remesh (the soak is OOM-killed); the old planner
-//!   handles that shape.
+//!   boundary split at roughly opposite vertices, through the same machinery; a
+//!   walk that revisits a vertex (a pinch inside one walk, e.g. the extracted
+//!   weld case) is split into simple lobes at the repeated vertex first.
+//! - Two *disjoint* single-side loops - the two stars' rings sharing no vertex -
+//!   are stitched to each other by an open-cap band seeded at the nearest
+//!   position ([`plan_disjoint_band`]). Capping each loop on its own is a valid
+//!   closed mesh that `is_complete` cannot tell from the real band, but it is not
+//!   a merge.
+//! - What is deliberately *not* guessed at: open chains, whose ends run into a
+//!   pre-existing border of the cut region. They are reported as `unhandled`
+//!   instead of producing faces from a boundary model that does not describe
+//!   them.
 //!
 //! Measured on the captured corpus: this planner closes the extracted weld case
 //! and moved `radius 1, +5` and `radius 1, +6` out of `OPEN_WELD_CASES` into
@@ -42,16 +44,6 @@
 //! - shipping order, 200 iterations: 200 watertight.
 //! - reversed order (temporary `std::cmp::Reverse` on the merge-candidate sort
 //!   key, then reverted), 200 iterations: 200 watertight.
-//! - debug build, 200 iterations: assertions live.
-//!
-//! The old planner's `wrapped`/span heuristics were deleted and the in-repo
-//! suite stayed green with no pin changes, but the freestyle soak was then
-//! OOM-killed between iterations 20 and 200. The deletion also perturbed the
-//! strip teardown, which keyed off `old_planned_faces.is_empty()`, so the
-//! teardown was decoupled from the old planner (strips-first unconditionally, no
-//! clone trial) - and the soak still dies. The cause is the shapes this planner
-//! refuses: they fall through to the old planner, whose plans are malformed
-//! without the span fix. The span fix stays until those shapes are planned here.
 //!
 //! The two remaining ex-open cases (`radius 2, +4` and its mirror) cannot be
 //! planned from their fixture at all, and not for want of machinery: their rim
@@ -352,15 +344,12 @@ pub(crate) fn plan(
     let structures = rim_structures(mesh, halves, h1, h2);
 
     // The two merged stars' rings need not touch: when the rings share no
-    // vertex, the rim is one closed loop per star and the two must be stitched
-    // to each *other* by a band. Refuse instead of planning: capping each loop
-    // on its own is a valid closed mesh that `is_complete` cannot tell from the
-    // real band, and an open-cap band across the two loops was measured to
-    // destabilise freestyle's remesh (the 20-iteration soak is killed). The old
-    // ring-range planner handles this shape and the op falls back to it.
-    if disjoint_single_side_pair(&structures).is_some() {
-        plan.unhandled
-            .push("two disjoint single-side loops".to_string());
+    // vertex, the rim is one closed loop per star, and the two must be stitched
+    // to each *other*. Fanning each loop on its own would cap the two stars
+    // separately - a valid closed mesh with no boundary, which `is_complete`
+    // cannot tell from the real band, but not a merge.
+    if let Some((first, second)) = disjoint_single_side_pair(&structures) {
+        plan_disjoint_band(mesh, first, second, &mut plan);
         return plan;
     }
 
@@ -372,7 +361,7 @@ pub(crate) fn plan(
 }
 
 /// The two structures, if the rim is exactly two single-side loops with no
-/// vertex in common - one per merged star, sharing no vertex.
+/// vertex in common - one per merged star.
 fn disjoint_single_side_pair(structures: &[RimStructure]) -> Option<(&RimRun, &RimRun)> {
     if structures.len() != 2 {
         return None;
@@ -399,6 +388,61 @@ fn disjoint_single_side_pair(structures: &[RimStructure]) -> Option<(&RimRun, &R
     }
 
     Some((runs[0], runs[1]))
+}
+
+/// Stitch two disjoint rings with the old planner's open-cap walk: seed the
+/// correspondence by nearest position from the first ring's head, then run the
+/// Bresenham pairing around both loops and let the `Open` cap close the band.
+fn plan_disjoint_band(mesh: &MeshGraph, first: &RimRun, second: &RimRun, plan: &mut RimPlan) {
+    // `ConnectPair` reads inclusive index ranges that wrap with `% len`, so the
+    // arcs are the rings once around, without the walk's closing duplicate.
+    let wrap1 = first.vertices.len().saturating_sub(1);
+    let wrap2 = second.vertices.len().saturating_sub(1);
+    if wrap1 < 3 || wrap2 < 3 {
+        plan.unhandled.push("degenerate ring".to_string());
+        return;
+    }
+    let arc1 = &first.vertices[..wrap1];
+    let ring2 = &second.vertices[..wrap2];
+
+    // Nearest position, lowest index on a tie - the same deterministic seed the
+    // old planner used when the rings shared no vertex.
+    let Some(target) = mesh.positions.get(arc1[0]).copied() else {
+        plan.unhandled.push("missing position".to_string());
+        return;
+    };
+    let mut start2 = 0;
+    let mut min_dist_sqr = f32::INFINITY;
+    for (idx, v_id) in ring2.iter().enumerate() {
+        let Some(pos) = mesh.positions.get(*v_id) else {
+            continue;
+        };
+        let dist_sqr = pos.distance_squared(target);
+        if dist_sqr < min_dist_sqr {
+            min_dist_sqr = dist_sqr;
+            start2 = idx;
+        }
+    }
+
+    // The two loops bound one annulus (a closed surface minus the two stars), so
+    // they run in opposite directions when the region is kept on the left:
+    // `arc1` is the walk direction, `arc2` walks the other ring backwards from
+    // the nearest vertex.
+    let mut arc2 = Vec::with_capacity(wrap2);
+    for step in 0..wrap2 {
+        arc2.push(ring2[(start2 + wrap2 - step) % wrap2]);
+    }
+
+    let range = ConnectPair::new(
+        0..=arc1.len() - 1,
+        arc1.len(),
+        0..=arc2.len() - 1,
+        arc2.len(),
+        ConnectPairCap::Open,
+    );
+
+    plan.faces
+        .extend(mesh.plan_connect_pair(&range, [arc1, &arc2]));
 }
 
 fn plan_structure(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
