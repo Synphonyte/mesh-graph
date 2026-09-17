@@ -2,7 +2,7 @@
 //! the op's removals *actually* open.
 //!
 //! Test-only for now; the rim-first rebuild promotes this to production use.
-//! Two definitions here are load-bearing and were both wrong in the obvious
+//! One definition here is load-bearing and was wrong in the obvious
 //! formulation:
 //!
 //! - [`opened_rim`] is `boundary(after) \ boundary(before)`, **not** the twins
@@ -10,11 +10,13 @@
 //!   detaches the dominant rim members in place (`face = None`, `next = None`,
 //!   id kept) and only *returns* the halves it actually frees. The removal
 //!   lists therefore miss exactly the dense part of the rim.
-//! - [`next_rim_half`] scans the raw `outgoing_halfedges` list of the end
-//!   vertex. Rotation-based walks cannot traverse a boundary:
-//!   `cw_rotated_neighbour` is `twin.next`, boundary halves have `next = None`,
-//!   and the `outgoing_halfedges` iterator is built on that rotation, so it
-//!   stops one step short of the next rim half.
+//!
+//! [`next_rim_half`] deliberately rotates counter-clockwise through the face fan
+//! from `twin(b)` rather than scanning the raw `outgoing_halfedges` list: at a
+//! pinched vertex shared by both rings more than one face-less outgoing half
+//! exists, and only the rotation knows which one continues `b`. Clockwise
+//! rotation cannot be used either (`cw_rotated_neighbour` is `twin.next`, and a
+//! boundary half's `next` is `None`). See its own doc comment.
 
 use hashbrown::HashSet;
 

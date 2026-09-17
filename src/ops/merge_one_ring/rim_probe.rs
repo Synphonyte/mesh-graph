@@ -30,6 +30,17 @@ pub(crate) struct RimProbe {
     pub h2: HashSet<HalfedgeId>,
     /// Composition of the unconsumed rim, one entry per loop/chain walk.
     pub unconsumed_shape: String,
+    /// Ordered walk of the full opened rim `H`, one entry per half: side, half,
+    /// start -> end, and whether the half was already boundary before the op.
+    /// Only filled when `MESH_GRAPH_RIM_TAXONOMY` is set.
+    pub rim_walk_detail: Vec<String>,
+    /// Phase 2 prototype measurement: faces the rim-first planner would emit on
+    /// this rim, how many rim halves they consume, and what it could not plan.
+    pub proto_faces: usize,
+    pub proto_consumed: usize,
+    pub proto_unhandled: Vec<String>,
+    /// Per-structure run composition of the rim, for diagnostics.
+    pub proto_structure_detail: Vec<String>,
     /// Lengths of the ordered ring each star's rim forms. The old planner ran
     /// on the pre-removal one-rings, which include vertices that are *not* on
     /// the rim (strip-connected and hole-interior ones); these lengths are the
@@ -217,6 +228,86 @@ impl RimProbe {
             }
             self.walk_rim(mesh, start, &mut visited);
         }
+
+        if std::env::var("MESH_GRAPH_RIM_TAXONOMY").is_ok() {
+            self.record_walk_detail(mesh, &starts);
+        }
+    }
+
+    /// Dump the ordered rim walk (head-first, ascending ids) with per-half side
+    /// and endpoints. Diagnostics only; the planner must not depend on this.
+    fn record_walk_detail(&mut self, mesh: &MeshGraph, starts: &[HalfedgeId]) {
+        let mut has_predecessor = HashSet::new();
+        for &he_id in starts {
+            if let RimStep::Continue(next) = rim::next_rim_half(mesh, he_id, &self.rim) {
+                has_predecessor.insert(next);
+            }
+        }
+
+        let side_of = |he_id: &HalfedgeId| -> &'static str {
+            if self.h1.contains(he_id) {
+                "h1"
+            } else if self.h2.contains(he_id) {
+                "h2"
+            } else {
+                "strip"
+            }
+        };
+        let describe = |mesh: &MeshGraph, he_id: HalfedgeId| -> String {
+            let he = mesh.halfedges.get(he_id);
+            let start = he.and_then(|he| he.start_vertex(mesh));
+            let end = he.map(|he| he.end_vertex);
+            format!(
+                "{he_id:?} {} {start:?}->{end:?}{}",
+                side_of(&he_id),
+                if self.before.contains(&he_id) {
+                    " (pre-existing)"
+                } else {
+                    ""
+                }
+            )
+        };
+
+        let mut visited = HashSet::new();
+        let walk = |start: HalfedgeId, visited: &mut HashSet<HalfedgeId>, out: &mut Vec<String>| {
+            let mut current = start;
+            let mut chain = Vec::new();
+            loop {
+                chain.push(describe(mesh, current));
+                match rim::next_rim_half(mesh, current, &self.rim) {
+                    RimStep::Continue(next) => {
+                        if !visited.insert(next) {
+                            out.push(format!(
+                                "{} [{}]",
+                                if next == start { "loop" } else { "broken" },
+                                chain.join(" | ")
+                            ));
+                            return;
+                        }
+                        current = next;
+                    }
+                    RimStep::ChainEnd => {
+                        out.push(format!("chain-end [{}]", chain.join(" | ")));
+                        return;
+                    }
+                    RimStep::Isolated => {
+                        out.push(format!("isolated [{}]", chain.join(" | ")));
+                        return;
+                    }
+                }
+            }
+        };
+
+        for &start in starts.iter().filter(|he| !has_predecessor.contains(*he)) {
+            if visited.insert(start) {
+                walk(start, &mut visited, &mut self.rim_walk_detail);
+            }
+        }
+        for &start in starts {
+            if visited.insert(start) {
+                walk(start, &mut visited, &mut self.rim_walk_detail);
+            }
+        }
     }
 
     /// One full walk from `start`; updates the loop/chain/bad counters.
@@ -251,6 +342,33 @@ impl RimProbe {
                 }
             }
         }
+    }
+
+    /// Measure the Phase 2 prototype planner on the current rim. Read-only: the
+    /// planned faces are never inserted, so the op's behavior is unchanged.
+    /// Call after [`Self::classify`], when `rim`/`h1`/`h2` describe the live rim.
+    pub(crate) fn measure_prototype(&mut self, mesh: &MeshGraph) {
+        let structures = super::rim_planner::rim_structures(mesh, &self.rim, &self.h1, &self.h2);
+        self.proto_structure_detail = structures
+            .iter()
+            .map(|s| {
+                let runs: Vec<String> = s
+                    .runs
+                    .iter()
+                    .map(|r| format!("{:?}/{}v", r.side, r.vertices.len()))
+                    .collect();
+                format!(
+                    "{} runs [{}]",
+                    if s.cyclic { "cyclic" } else { "open" },
+                    runs.join(", ")
+                )
+            })
+            .collect();
+
+        let plan = super::rim_planner::plan(mesh, &self.rim, &self.h1, &self.h2);
+        self.proto_faces = plan.faces.len();
+        self.proto_consumed = plan.consumed_halves(mesh, &self.rim).len();
+        self.proto_unhandled = plan.unhandled;
     }
 
     pub(crate) fn finish(&mut self, mesh: &MeshGraph) {
@@ -350,6 +468,20 @@ impl RimProbe {
         );
         if !self.unconsumed_shape.is_empty() {
             summary.push_str(&format!(" shape [{}]", self.unconsumed_shape));
+        }
+        summary.push_str(&format!(
+            " proto (faces {} consumed {}/{}{})",
+            self.proto_faces,
+            self.proto_consumed,
+            self.rim.len(),
+            if self.proto_unhandled.is_empty() {
+                String::new()
+            } else {
+                format!(" unhandled {:?}", self.proto_unhandled)
+            }
+        ));
+        if !self.proto_structure_detail.is_empty() {
+            summary.push_str(&format!(" structs {:?}", self.proto_structure_detail));
         }
         summary
     }

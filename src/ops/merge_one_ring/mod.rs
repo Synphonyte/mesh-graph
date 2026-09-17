@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod rim;
 #[cfg(test)]
+mod rim_planner;
+#[cfg(test)]
 mod rim_probe;
 #[cfg(test)]
 mod tests;
@@ -282,6 +284,30 @@ impl MeshGraph {
 
         let planned_faces =
             self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
+
+        // The rim-first test path replaces `planned_faces` after the strip
+        // removal, so the binding is mutable in test builds only.
+        #[cfg(test)]
+        let mut planned_faces = planned_faces;
+
+        // Test-only switch: plan the band from the live rim instead of the old
+        // ring-range planner. Off by default; production never sets it.
+        #[cfg(test)]
+        let rim_planner_mode = std::env::var("MESH_GRAPH_RIM_PLANNER").is_ok();
+        #[cfg(not(test))]
+        let rim_planner_mode = false;
+
+        #[cfg(test)]
+        if std::env::var("MESH_GRAPH_RIM_TAXONOMY").is_ok() {
+            self.dump_plan_debug(
+                &one_ring_v_ids1,
+                &one_ring_v_ids2,
+                &shared_v_ids,
+                &already_connected_face_ids,
+                &range_pairs_to_connect,
+                &planned_faces,
+            );
+        }
         for pf in &planned_faces {
             tracing::debug!(
                 "planned {:?} v1={:?} a={:?} b={:?}",
@@ -294,9 +320,10 @@ impl MeshGraph {
 
         // The already-connected strip is torn out to make room for the new faces.
         // With nothing planned there is nothing to make room for, so keep it -
-        // removing it would only widen the hole.
-        if !planned_faces.is_empty() {
-            for face_id in already_connected_face_ids {
+        // removing it would only widen the hole. The rim-first path always tears
+        // it out: it plans from the rim the strip removal opens.
+        if rim_planner_mode || !planned_faces.is_empty() {
+            for &face_id in &already_connected_face_ids {
                 let (v_ids, he_ids) = self.remove_face(face_id);
                 result.removed_faces.push(face_id);
                 result.removed_halfedges.extend(he_ids);
@@ -310,6 +337,19 @@ impl MeshGraph {
                 .rim
                 .extend(rim::opened_rim(self, &test_rim_probe.before));
             test_rim_probe.classify(self);
+            if rim_planner_mode {
+                let plan = rim_planner::plan(
+                    self,
+                    &test_rim_probe.rim,
+                    &test_rim_probe.h1,
+                    &test_rim_probe.h2,
+                );
+                for note in &plan.unhandled {
+                    tracing::debug!("rim planner unhandled: {note}");
+                }
+                planned_faces = plan.faces;
+            }
+            test_rim_probe.measure_prototype(self);
         }
 
         self.add_planned_faces(
@@ -1335,14 +1375,34 @@ impl MeshGraph {
         let mut planned_faces = Vec::with_capacity(one_ring_v_ids1.len());
 
         for range_pair_to_connect in range_pairs_to_connect {
-            let start_pairing_index = planned_faces.len();
+            planned_faces.extend(
+                self.plan_connect_pair(range_pair_to_connect, [one_ring_v_ids1, one_ring_v_ids2]),
+            );
+        }
 
+        planned_faces
+    }
+
+    /// Plan the faces of a single range pair over two vertex rings.
+    ///
+    /// Extracted from [`Self::plan_new_faces`] so the rim-first planner can
+    /// reuse the identical Bresenham pairing and face-order machinery on
+    /// rim-derived arcs instead of the pre-removal one-rings.
+    fn plan_connect_pair(
+        &self,
+        range_pair_to_connect: &ConnectPair,
+        rings: [&[VertexId]; 2],
+    ) -> Vec<PlannedFace> {
+        let [one_ring_v_ids1, one_ring_v_ids2] = rings;
+        let mut planned_faces = Vec::new();
+
+        {
             let pairings = range_pair_to_connect.compute_pairings();
 
             tracing::debug!("Pairings: {:#?}", pairings);
 
             if pairings.is_empty() {
-                continue;
+                return planned_faces;
             }
 
             let mut prev_single_v_id = None;
@@ -1421,20 +1481,20 @@ impl MeshGraph {
                 prev_other_v_id = Some(other_v_id);
             }
 
-            if planned_faces.len() == start_pairing_index {
+            if planned_faces.is_empty() {
                 // This range pair produced no faces (e.g. a single shared vertex).
-                continue;
+                return planned_faces;
             }
 
             if !matches!(
                 range_pair_to_connect.start_cap,
                 ConnectPairCap::AlreadyConnected
             ) {
-                planned_faces[start_pairing_index].order = PlannedFaceOrder::Start;
+                planned_faces[0].order = PlannedFaceOrder::Start;
             }
 
             let len = planned_faces.len();
-            planned_faces[len - 1].order = if len - 1 == start_pairing_index {
+            planned_faces[len - 1].order = if len == 1 {
                 PlannedFaceOrder::Single
             } else {
                 PlannedFaceOrder::End
@@ -1442,6 +1502,46 @@ impl MeshGraph {
         }
 
         planned_faces
+    }
+
+    /// Env-gated diagnostic: dump the old planner's inputs and output so the
+    /// rim walk can be read side-by-side with it. Test-only.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    fn dump_plan_debug(
+        &self,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        shared_v_ids: &HashSet<VertexId>,
+        already_connected_face_ids: &[FaceId],
+        range_pairs_to_connect: &[ConnectPair],
+        planned_faces: &[PlannedFace],
+    ) {
+        println!("PLAN ring1 {one_ring_v_ids1:?}");
+        println!("PLAN ring2 {one_ring_v_ids2:?}");
+        println!("PLAN shared_v {shared_v_ids:?}");
+        for face_id in already_connected_face_ids {
+            if let Some(face) = self.faces.get(*face_id) {
+                let mut vs: Vec<VertexId> = Vec::new();
+                for he_id in face.halfedges(self) {
+                    if let Some(he) = self.halfedges.get(he_id) {
+                        vs.push(he.end_vertex);
+                    }
+                }
+                println!("PLAN strip_face {face_id:?} vs {vs:?}");
+            } else {
+                println!("PLAN strip_face {face_id:?} (dead)");
+            }
+        }
+        for cp in range_pairs_to_connect {
+            println!("PLAN range_pair {:?} cap {:?}", cp.ranges, cp.start_cap);
+        }
+        for pf in planned_faces {
+            println!(
+                "PLAN face {:?} v1={:?} a={:?} b={:?}",
+                pf.order, pf.v1, pf.new_he_v1, pf.new_he_v2
+            );
+        }
     }
 
     #[instrument(skip_all)]

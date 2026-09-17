@@ -3309,6 +3309,14 @@ fn diag_open_case() {
 fn test_rim_taxonomy_baseline() {
     get_tracing_subscriber();
 
+    // The `MESH_GRAPH_RIM_PLANNER` experiment changes the op's own flow
+    // (strips-first) and therefore every number below; it is not a drift of the
+    // pinned production baseline.
+    if std::env::var("MESH_GRAPH_RIM_PLANNER").is_ok() {
+        eprintln!("skipping: rim-planner experiment mode changes the op flow");
+        return;
+    }
+
     // (unconsumed, new_boundary, wire, skipped, parallel_before, parallel_after,
     //  end_unconsumed, end_new_boundary, end_wire, end_parallel, rim_bad). The
     //  pre-net half is mode-independent; the end half pins the shipping
@@ -3421,6 +3429,94 @@ fn test_rim_taxonomy_baseline() {
     }
 }
 
+/// Phase 2 prototype measurement: the rim-first planner
+/// ([`super::rim_planner`]) is run read-only on the live rim of every captured
+/// case, without inserting anything, and its result is pinned here.
+///
+/// This is the handoff's "standalone function compared against the corpus
+/// before wiring it into the op" step. The table is expected to move as the
+/// planner learns more structures; a failure is a prompt to confirm the change,
+/// not a regression.
+///
+/// `(faces, consumed, rim_len, unhandled)`. A case with `consumed == rim_len`
+/// is one whose rim the planner can plan in full - the prerequisite for wiring
+/// it in.
+#[test]
+fn test_rim_planner_prototype_consumption() {
+    get_tracing_subscriber();
+
+    // In the `MESH_GRAPH_RIM_PLANNER` experiment the op itself plans from the
+    // rim (and tears the strip out first), so it measures a different rim. The
+    // pins below describe the read-only, production-flow measurement.
+    if std::env::var("MESH_GRAPH_RIM_PLANNER").is_ok() {
+        eprintln!("skipping: rim-planner experiment mode measures a different rim");
+        return;
+    }
+
+    let assert_case = |label: &str, expected: [usize; 4]| {
+        let probes = super::rim_probe::drain();
+        assert_eq!(
+            probes.len(),
+            1,
+            "{label}: expected exactly one band-merge probe, got {}",
+            probes.len()
+        );
+        let probe = &probes[0];
+        assert_eq!(
+            (
+                probe.proto_faces,
+                probe.proto_consumed,
+                probe.rim.len(),
+                probe.proto_unhandled.len(),
+            ),
+            (expected[0], expected[1], expected[2], expected[3]),
+            "{label}: prototype measurement drifted: {}",
+            probe.summary()
+        );
+        if probe.proto_consumed == probe.rim.len() {
+            assert!(
+                probe.proto_unhandled.is_empty(),
+                "{label}: fully consumed rim must have no unhandled structures: {}",
+                probe.summary()
+            );
+        }
+    };
+
+    let _ = merge_lens_region(false);
+    assert_case("lens(reconstruct=false)", [6, 8, 8, 0]);
+
+    let _ = merge_lens_region(true);
+    assert_case("lens(reconstruct=true)", [7, 11, 11, 0]);
+
+    for case in WELD_CASES {
+        let expected = match case.what {
+            // A pinch inside a single cyclic walk (vertex 30 repeats), so it is
+            // not yet a simple disk the fan can fill.
+            "band wraps the full ring and leaves one seam triangle" => [0, 0, 12, 1],
+            other => panic!("no pinned prototype measurement for weld case {other:?}"),
+        };
+        let _ = case.replay();
+        assert_case(case.what, expected);
+    }
+
+    for case in OPEN_WELD_CASES {
+        let expected = match case.what {
+            // The chain ends at a pre-existing border of the cut region: only
+            // the pinched single-side loop can be filled from rim data alone.
+            "reversed weld order, radius 2, +4 boundary halfedges" => [2, 4, 9, 1],
+            // The sharp case: the walk is `h2, h1, h2` but closes at a pinch, so
+            // the wrap merge turns it into the two-run bigon it really is and the
+            // whole rim is planned.
+            "reversed weld order, radius 1, +5 boundary halfedges" => [7, 9, 9, 0],
+            "reversed weld order, radius 1, +6 boundary halfedges" => [10, 14, 14, 0],
+            "reversed weld order, radius 2, +4 boundary halfedges (mirror)" => [2, 4, 9, 1],
+            other => panic!("no pinned prototype measurement for open weld case {other:?}"),
+        };
+        let _ = case.replay();
+        assert_case(case.what, expected);
+    }
+}
+
 /// Phase 0 diagnostic: print the rim taxonomy of the captured defect classes.
 ///
 /// `cargo test --features gltf --lib diag_rim_taxonomy -- --ignored --nocapture`
@@ -3447,6 +3543,9 @@ fn diag_rim_taxonomy() {
         let _ = case.replay();
         for probe in super::rim_probe::drain() {
             println!("RIM open weld {:?} {}", case.what, probe.summary());
+            for line in &probe.rim_walk_detail {
+                println!("WALK {:?} {line}", case.what);
+            }
         }
     }
 }
