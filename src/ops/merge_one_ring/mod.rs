@@ -317,42 +317,22 @@ impl MeshGraph {
         // rim; otherwise keep the old faces, so the fallback is exactly the
         // previous behavior.
         let strip_faces = already_connected_face_ids;
-        if strip_faces.is_empty() || !old_planned_faces.is_empty() {
-            // The old flow tears the already-connected strip out whenever it
-            // planned something; with no strip this is a no-op.
-            self.remove_faces(&strip_faces, &mut result);
-            let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
-            let plan = rim_planner::plan(self, &rim, &h1, &h2);
-            for note in &plan.unhandled {
-                tracing::debug!("rim-first planner unhandled: {note}");
-            }
-            // The rim plan wins whenever the postcondition holds. Asking whether
-            // the old faces touch every rim halfedge is not enough: the old
-            // planner routinely consumed the whole rim and still left a hole
-            // through an unpaired new edge.
-            if plan.is_complete(self, &rim) {
-                planned_faces = plan.faces;
-            }
-        } else {
-            // The old planner planned nothing but a strip exists. Tearing it out
-            // would only widen the hole unless the rim-first plan closes exactly
-            // what it opens, and that cannot be known before the removal, so
-            // decide on a clone and only touch the real mesh when it does.
-            let mut trial = self.clone();
-            for &face_id in &strip_faces {
-                trial.remove_face(face_id);
-            }
-            let (trial_rim, trial_h1, trial_h2) = trial.strip_first_rim(&boundary_before, &star_h1);
-            if rim_planner::plan(&trial, &trial_rim, &trial_h1, &trial_h2)
-                .is_complete(&trial, &trial_rim)
-            {
-                self.remove_faces(&strip_faces, &mut result);
-                let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
-                let plan = rim_planner::plan(self, &rim, &h1, &h2);
-                if plan.is_complete(self, &rim) {
-                    planned_faces = plan.faces;
-                }
-            }
+
+        // Strips-first, unconditionally. The strip faces lie inside the rim the
+        // band has to consume, and the decision must not depend on whether the
+        // old planner happened to plan something: that coupling tied the strip
+        // teardown to the old `wrapped`/span logic (deleting the span fix made
+        // far more merges skip the teardown and leave holes). `is_complete` is
+        // the only gate on the rim plan; when it does not hold the old faces
+        // stand, which is the plan the old flow produced after the same teardown.
+        self.remove_faces(&strip_faces, &mut result);
+        let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
+        let plan = rim_planner::plan(self, &rim, &h1, &h2);
+        for note in &plan.unhandled {
+            tracing::debug!("rim-first planner unhandled: {note}");
+        }
+        if plan.is_complete(self, &rim) {
+            planned_faces = plan.faces;
         }
 
         for pf in &planned_faces {

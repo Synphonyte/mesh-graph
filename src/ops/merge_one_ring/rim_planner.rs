@@ -44,11 +44,14 @@
 //!   key, then reverted), 200 iterations: 200 watertight.
 //! - debug build, 200 iterations: assertions live.
 //!
-//! The old planner's `wrapped`/span heuristics were deleted and the suite stayed
-//! green - but the freestyle soak is then OOM-killed between iterations 20 and
-//! 200, because the shapes this planner refuses fall through to the old planner,
-//! whose plans without the span fix are malformed. So the span fix stays until
-//! the refused shapes are planned here.
+//! The old planner's `wrapped`/span heuristics were deleted and the in-repo
+//! suite stayed green with no pin changes, but the freestyle soak was then
+//! OOM-killed between iterations 20 and 200. The deletion also perturbed the
+//! strip teardown, which keyed off `old_planned_faces.is_empty()`, so the
+//! teardown was decoupled from the old planner (strips-first unconditionally, no
+//! clone trial) - and the soak still dies. The cause is the shapes this planner
+//! refuses: they fall through to the old planner, whose plans are malformed
+//! without the span fix. The span fix stays until those shapes are planned here.
 //!
 //! The two remaining ex-open cases (`radius 2, +4` and its mirror) cannot be
 //! planned from their fixture at all, and not for want of machinery: their rim
