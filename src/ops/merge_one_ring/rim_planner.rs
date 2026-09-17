@@ -34,6 +34,17 @@
 //! repair nets disabled (`MESH_GRAPH_MERGE_NETS=0`), which was the Phase 2
 //! oracle.
 //!
+//! External soak (freestyle-sculpt via a local `[patch]` to this commit):
+//!
+//! - shipping order, 500 iterations: 500 watertight. Before this change the
+//!   same soak failed at iteration 110 with 7 boundary halfedges.
+//! - reversed order (temporary `std::cmp::Reverse` on the merge-candidate sort
+//!   key, then reverted), 500 iterations: 500 watertight. Before this change it
+//!   produced a failing case on every run.
+//! - debug build, 200 iterations: 200 watertight with every `debug_assert!`
+//!   live, including the star-removal completeness assert and the planned-face
+//!   transaction asserts.
+//!
 //! The remaining two open cases (`radius 2, +4` and its mirror) cannot be
 //! planned from their fixture at all, and not for want of machinery: their rim
 //! is an **open chain**. A triangulation's boundary is always a union of closed
