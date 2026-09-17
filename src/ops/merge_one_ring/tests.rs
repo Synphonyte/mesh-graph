@@ -1495,6 +1495,7 @@ fn test_merge_one_ring_weld_hole_reproduction() {
     }
 
     drain_rim_taxonomy();
+    assert_manifold_region(&mesh_graph);
     let boundary_after = boundary_edges(&mesh_graph);
 
     let capture_id = |v_id: VertexId| -> String {
@@ -1644,6 +1645,7 @@ fn test_merge_one_ring_punch_cleanup_hole_reproduction() {
     }
 
     drain_rim_taxonomy();
+    assert_manifold_region(&mesh_graph);
     let boundary_after = boundary_edges(&mesh_graph);
 
     let capture_id = |v_id: VertexId| -> String {
@@ -1807,9 +1809,54 @@ fn assert_merge_invariants(
         );
     }
 
-    // Phase 0 rim taxonomy: drain this test's probe records (thread-local).
-    // Printed only on demand so a normal run stays quiet.
-    drain_rim_taxonomy();
+    // Phase 0/1 rim taxonomy: drain this test's probe records (thread-local).
+    // The end-of-op sample is the wire gate: whatever the planner samples
+    // pre-net, the op must not leave wire edges behind. Printed only on demand.
+    let probes = super::rim_probe::drain();
+    for probe in &probes {
+        assert!(
+            probe.end_wire.is_empty(),
+            "merge op ended with wire edges: {}",
+            probe.summary()
+        );
+    }
+    if std::env::var("MESH_GRAPH_RIM_TAXONOMY").is_ok() {
+        for probe in &probes {
+            println!("RIM {}", probe.summary());
+        }
+    }
+}
+
+/// The final mesh must not contain parallel edges (two halfedges with the same
+/// start and end) or wire edges (both halves face-less). The boundary-set
+/// comparison alone cannot see them: a parallel leftover whose undirected pair
+/// already exists adds no new boundary edge, and a vertex split into coincident
+/// duplicates keeps the pair set identical.
+fn assert_manifold_region(mesh: &MeshGraph) {
+    for (v_id, out_hes) in mesh.outgoing_halfedges.iter() {
+        let mut ends: Vec<VertexId> = Vec::with_capacity(out_hes.len());
+        for &he_id in out_hes {
+            if let Some(he) = mesh.halfedges.get(he_id) {
+                assert!(
+                    !ends.contains(&he.end_vertex),
+                    "parallel edges from {v_id:?} to {:?}",
+                    he.end_vertex
+                );
+                ends.push(he.end_vertex);
+            }
+        }
+    }
+
+    for (he_id, he) in mesh.halfedges.iter() {
+        if he.face.is_none()
+            && let Some(twin) = he.twin.and_then(|twin_id| mesh.halfedges.get(twin_id))
+        {
+            assert!(
+                twin.face.is_some(),
+                "wire edge (both halves face-less) at {he_id:?}"
+            );
+        }
+    }
 }
 
 /// Drain and, with `MESH_GRAPH_RIM_TAXONOMY=1`, print this thread's rim probes.
@@ -1958,6 +2005,7 @@ fn test_merge_one_ring_close_hole_reproduction() {
     }
 
     drain_rim_taxonomy();
+    assert_manifold_region(&mesh_graph);
     let boundary_after = boundary_edges(&mesh_graph);
 
     let capture_id = |v_id: VertexId| -> String {
@@ -2170,6 +2218,7 @@ fn test_merge_one_ring_lens_stays_watertight() {
 
     let (mesh_graph, vertex_ids) = merge_lens_region(true);
     drain_rim_taxonomy();
+    assert_manifold_region(&mesh_graph);
     let boundary_after = boundary_edges(&mesh_graph);
 
     let capture_id = |v_id: VertexId| -> String {
@@ -2358,6 +2407,7 @@ fn test_merge_one_ring_parallel_edge_leftover_stays_watertight() {
     );
 
     drain_rim_taxonomy();
+    assert_manifold_region(&mesh_graph);
     let boundary_after = boundary_edges(&mesh_graph);
     assert!(
         boundary_after == boundary_before,
@@ -2497,6 +2547,7 @@ fn test_merge_one_ring_asymmetric_lens_stays_watertight() {
     );
 
     drain_rim_taxonomy();
+    assert_manifold_region(&mesh_graph);
     let boundary_after = boundary_edges(&mesh_graph);
     assert!(
         boundary_after == boundary_before,
@@ -2751,6 +2802,372 @@ const WELD_CASES: &[WeldCase] = &[WeldCase {
     protected: &[26, 27],
 }];
 
+/// Weld merges that still open a watertight region, extracted with
+/// `WELD_CAPTURE=1` from the reversed-order weld loop (the sensitive order; the
+/// shipping order passes 500/500). These are Phase 2's target list:
+/// `test_open_weld_cases_are_open` pins that each one is still open, and the
+/// taxonomy baseline pins their pre-net and end-of-op numbers. When Phase 2
+/// closes one, move it to [`WELD_CASES`] and update both pins.
+const OPEN_WELD_CASES: &[WeldCase] = &[
+    // ==== run 1: radius 2, +4 opened, 36 faces ====
+    WeldCase {
+        what: "reversed weld order, radius 2, +4 boundary halfedges",
+        verts: &[
+            (1.3093596, 1.3093596, 0.37499982),
+            (1.3093596, 1.3093596, 0.5),
+            (1.4374995, 0.75036615, 0.24963474),
+            (1.4374998, 0.75037587, 0.37499997),
+            (1.4367635, 0.8983578, 0.37499928),
+            (1.4371406, 1.1182438, 0.4349519),
+            (1.6906404, 1.3093592, 0.5),
+            (1.5625005, 0.750367, 0.24963427),
+            (1.5625002, 0.75037587, 0.37499997),
+            (1.5011928, 0.89758074, 0.2332556),
+            (1.5632365, 0.898358, 0.37499934),
+            (1.5079055, 0.8533567, 0.50018746),
+            (1.5157567, 0.8215121, 0.1699916),
+            (1.503637, 1.0320529, 0.3029821),
+            (1.5040874, 1.030797, 0.4158027),
+            (1.5040874, 1.030797, 0.4158027),
+            (1.4268423, 1.1804459, 0.61133164),
+            (1.5848209, 1.1674366, 0.6233738),
+            (1.3786334, 1.1549265, 0.35936746),
+            (1.3701937, 1.2056906, 0.45410115),
+            (1.562401, 1.162938, 0.48437628),
+            (1.6213622, 1.1549145, 0.35938823),
+            (1.4226751, 1.1762068, 0.21613856),
+            (1.5846666, 1.1656626, 0.24123849),
+            (1.3439963, 1.2321428, 0.30448413),
+            (1.6560037, 1.2321429, 0.4296868),
+            (1.3439965, 1.2321426, 0.55468804),
+            (1.6560034, 1.2321424, 0.5546873),
+        ],
+        faces: &[
+            (9, 2, 12),
+            (9, 4, 2),
+            (4, 3, 2),
+            (24, 0, 18),
+            (13, 4, 9),
+            (4, 11, 3),
+            (14, 11, 4),
+            (19, 20, 5),
+            (12, 7, 9),
+            (8, 10, 7),
+            (10, 9, 7),
+            (11, 10, 8),
+            (15, 18, 5),
+            (14, 13, 10),
+            (18, 15, 13),
+            (13, 23, 22),
+            (9, 10, 13),
+            (10, 11, 14),
+            (25, 21, 20),
+            (27, 20, 17),
+            (4, 13, 14),
+            (22, 18, 13),
+            (13, 15, 21),
+            (5, 18, 19),
+            (20, 16, 17),
+            (5, 20, 15),
+            (19, 18, 0),
+            (26, 19, 1),
+            (16, 20, 19),
+            (15, 20, 21),
+            (13, 21, 23),
+            (18, 22, 24),
+            (20, 6, 25),
+            (16, 19, 26),
+            (0, 1, 19),
+            (6, 20, 27),
+        ],
+        outgoing: &[
+            (4, &[9, 2, 3, 11, 13, 14], 14),
+            (5, &[20, 18, 15, 19], 19),
+            (9, &[2, 4, 7, 10, 13, 12], 12),
+            (10, &[8, 7, 9, 11, 13, 14], 14),
+            (13, &[9, 22, 4, 10, 15, 14, 18, 21, 23], 14),
+            (14, &[4, 10, 11, 13], 13),
+            (15, &[18, 5, 20, 13, 21], 13),
+            (18, &[0, 5, 13, 15, 22, 24, 19], 19),
+            (19, &[5, 20, 0, 18, 16, 26, 1], 5),
+            (20, &[5, 15, 19, 6, 16, 17, 21, 25, 27], 15),
+        ],
+        merge: (13, 5),
+        protected: &[14],
+    },
+    // ==== run 2: radius 1, +5 opened, 26 faces ====
+    WeldCase {
+        what: "reversed weld order, radius 1, +5 boundary halfedges",
+        verts: &[
+            (1.46697, 0.6317977, 0.25214934),
+            (1.4374995, 0.75036615, 0.24963474),
+            (1.4970202, 0.90742147, 0.3722189),
+            (1.4972193, 0.78404593, 0.32863516),
+            (1.4616873, 0.8957703, 0.3890407),
+            (1.4495934, 0.82306826, 0.31933773),
+            (1.4921471, 0.7405966, 0.10240269),
+            (1.5004282, 0.9080494, 0.31580862),
+            (1.5011928, 0.89758074, 0.2332556),
+            (1.4946833, 0.76232123, 0.21551892),
+            (1.5157567, 0.8215121, 0.1699916),
+            (1.503637, 1.0320529, 0.3029821),
+            (1.4968212, 1.030797, 0.4158027),
+            (1.4968212, 1.030797, 0.4158027),
+            (1.3786334, 1.1549265, 0.35936746),
+            (1.6213622, 1.1549145, 0.35938823),
+            (1.4226751, 1.1762068, 0.21613856),
+            (1.5846666, 1.1656626, 0.24123849),
+        ],
+        faces: &[
+            (8, 1, 10),
+            (6, 1, 0),
+            (10, 1, 6),
+            (3, 10, 9),
+            (1, 3, 0),
+            (3, 4, 2),
+            (5, 8, 4),
+            (5, 3, 1),
+            (11, 4, 8),
+            (6, 0, 9),
+            (4, 3, 5),
+            (1, 8, 5),
+            (11, 8, 7),
+            (9, 0, 3),
+            (10, 3, 8),
+            (3, 2, 7),
+            (7, 2, 11),
+            (14, 13, 11),
+            (11, 17, 16),
+            (7, 8, 3),
+            (2, 4, 12),
+            (4, 11, 12),
+            (16, 14, 11),
+            (11, 13, 15),
+            (9, 10, 6),
+            (11, 15, 17),
+        ],
+        outgoing: &[
+            (0, &[1, 3, 6, 9], 3),
+            (1, &[10, 6, 0, 8, 3, 5], 0),
+            (2, &[12, 11, 3, 4, 7], 12),
+            (3, &[1, 4, 0, 9, 8, 7, 2, 10, 5], 0),
+            (4, &[8, 5, 3, 11, 12, 2], 3),
+            (5, &[1, 8, 4, 3], 1),
+            (6, &[0, 1, 9, 10], 0),
+            (7, &[3, 2, 11, 8], 3),
+            (8, &[1, 4, 3, 11, 10, 7, 5], 3),
+            (9, &[6, 0, 3, 10], 6),
+            (10, &[6, 8, 3, 1, 9], 3),
+            (11, &[8, 16, 4, 7, 13, 12, 14, 15, 17, 2], 13),
+            (12, &[2, 4, 11], 4),
+        ],
+        merge: (9, 8),
+        protected: &[13],
+    },
+    // ==== run 3: radius 1, +6 opened, 52 faces ====
+    WeldCase {
+        what: "reversed weld order, radius 1, +6 boundary halfedges",
+        verts: &[
+            (1.3093596, 0.37499982, 1.3093596),
+            (1.3093596, 0.5, 1.3093596),
+            (1.3093692, 0.6249998, 1.3093499),
+            (1.4374998, 0.37499997, 0.75037587),
+            (1.4374998, 0.5, 0.750376),
+            (1.4367635, 0.37499925, 0.898358),
+            (1.4367634, 0.5, 0.89835876),
+            (1.5008514, 0.59192085, 0.8613802),
+            (1.69064, 0.37499475, 1.3093587),
+            (1.6902308, 0.4999436, 1.3089455),
+            (1.6946573, 0.6250747, 1.3130403),
+            (1.5077914, 0.27509907, 0.88640124),
+            (1.5625002, 0.375, 0.7503758),
+            (1.5632364, 0.37499958, 0.89835626),
+            (1.5625002, 0.50000006, 0.750376),
+            (1.5301834, 0.49542326, 0.90014625),
+            (1.4945834, 0.5461893, 0.95348686),
+            (1.3551339, 0.7116632, 1.2293802),
+            (1.6364484, 0.7043385, 1.1903403),
+            (1.5445898, 0.41506463, 1.1139808),
+            (1.5055845, 0.33813843, 1.0295433),
+            (1.4165065, 0.40624997, 1.040559),
+            (1.4670306, 0.60281163, 1.1013482),
+            (1.358845, 0.3296609, 1.2320743),
+            (1.4883152, 0.5004578, 1.0455935),
+            (1.3743107, 0.52626896, 1.1771944),
+            (1.4142686, 0.1871017, 1.1966355),
+            (1.6008643, 0.32967144, 1.182368),
+            (1.6019799, 0.5948021, 1.174322),
+            (1.4380281, 0.33481583, 1.1546514),
+            (1.5594375, 0.6905519, 1.1465756),
+            (1.6213715, 0.45300648, 1.1549394),
+            (1.5692087, 0.20108268, 1.1939099),
+            (1.4457461, 0.70516545, 1.1571027),
+            (1.4061694, 0.4305424, 1.1659229),
+            (1.3439966, 0.4296874, 1.2321427),
+            (1.5257758, 0.4377287, 0.97197485),
+        ],
+        faces: &[
+            (19, 20, 27),
+            (27, 31, 19),
+            (4, 6, 3),
+            (6, 5, 3),
+            (7, 6, 4),
+            (21, 20, 5),
+            (24, 21, 6),
+            (20, 13, 11),
+            (13, 15, 12),
+            (15, 14, 12),
+            (36, 15, 13),
+            (15, 7, 14),
+            (22, 25, 24),
+            (30, 33, 28),
+            (11, 5, 20),
+            (23, 26, 29),
+            (5, 6, 21),
+            (34, 35, 29),
+            (16, 6, 7),
+            (13, 20, 36),
+            (17, 25, 33),
+            (25, 35, 34),
+            (20, 29, 27),
+            (36, 20, 24),
+            (33, 25, 22),
+            (22, 28, 33),
+            (16, 15, 24),
+            (19, 31, 24),
+            (31, 28, 24),
+            (20, 21, 29),
+            (27, 29, 32),
+            (21, 24, 25),
+            (35, 1, 0),
+            (25, 2, 1),
+            (8, 9, 31),
+            (9, 10, 28),
+            (24, 28, 22),
+            (29, 35, 23),
+            (28, 10, 18),
+            (24, 20, 19),
+            (7, 15, 16),
+            (26, 32, 29),
+            (8, 31, 27),
+            (34, 21, 25),
+            (9, 28, 31),
+            (24, 6, 16),
+            (2, 25, 17),
+            (29, 21, 34),
+            (23, 35, 0),
+            (25, 1, 35),
+            (28, 18, 30),
+            (24, 15, 36),
+        ],
+        outgoing: &[
+            (6, &[4, 3, 5, 7, 21, 24, 16], 24),
+            (15, &[13, 12, 14, 24, 7, 36, 16], 24),
+            (16, &[7, 15, 24, 6], 7),
+            (19, &[24, 20, 27, 31], 24),
+            (20, &[11, 13, 5, 24, 21, 27, 29, 19, 36], 24),
+            (21, &[5, 6, 20, 24, 25, 29, 34], 29),
+            (22, &[33, 25, 24, 28], 33),
+            (24, &[6, 19, 36, 15, 16, 22, 21, 20, 25, 31, 28], 19),
+            (25, &[21, 2, 24, 1, 33, 34, 17, 35, 22], 24),
+            (28, &[33, 9, 30, 10, 24, 18, 31, 22], 33),
+            (29, &[21, 27, 20, 23, 32, 26, 34, 35], 23),
+            (31, &[8, 24, 9, 27, 28, 19], 24),
+            (34, &[25, 35, 29, 21], 25),
+            (35, &[23, 25, 0, 29, 1, 34], 0),
+            (36, &[24, 15, 13, 20], 24),
+        ],
+        merge: (34, 24),
+        protected: &[22],
+    },
+    // ==== run 4: radius 2, +4 opened, 36 faces ====
+    WeldCase {
+        what: "reversed weld order, radius 2, +4 boundary halfedges (mirror)",
+        verts: &[
+            (1.3093596, 1.3093596, 0.37499982),
+            (1.3093596, 1.3093596, 0.5),
+            (1.4374995, 0.75036615, 0.24963474),
+            (1.4374998, 0.75037587, 0.37499997),
+            (1.4367635, 0.8983578, 0.37499928),
+            (1.4371406, 1.1182438, 0.4349519),
+            (1.6906404, 1.3093592, 0.5),
+            (1.5625005, 0.750367, 0.24963427),
+            (1.5625002, 0.75037587, 0.37499997),
+            (1.5011928, 0.89758074, 0.2332556),
+            (1.5632365, 0.898358, 0.37499934),
+            (1.5079055, 0.8533567, 0.50018746),
+            (1.5157567, 0.8215121, 0.1699916),
+            (1.503637, 1.0320529, 0.3029821),
+            (1.5040874, 1.030797, 0.4158027),
+            (1.5040874, 1.030797, 0.4158027),
+            (1.4268423, 1.1804459, 0.61133164),
+            (1.5848209, 1.1674366, 0.6233738),
+            (1.3786334, 1.1549265, 0.35936746),
+            (1.3701937, 1.2056906, 0.45410115),
+            (1.562401, 1.162938, 0.48437628),
+            (1.6213622, 1.1549145, 0.35938823),
+            (1.4226751, 1.1762068, 0.21613856),
+            (1.5846666, 1.1656626, 0.24123849),
+            (1.3439963, 1.2321428, 0.30448413),
+            (1.6560037, 1.2321429, 0.4296868),
+            (1.3439965, 1.2321426, 0.55468804),
+            (1.6560034, 1.2321424, 0.5546873),
+        ],
+        faces: &[
+            (9, 2, 12),
+            (9, 4, 2),
+            (4, 3, 2),
+            (24, 0, 18),
+            (13, 4, 9),
+            (4, 11, 3),
+            (14, 11, 4),
+            (19, 20, 5),
+            (12, 7, 9),
+            (8, 10, 7),
+            (10, 9, 7),
+            (11, 10, 8),
+            (15, 18, 5),
+            (14, 13, 10),
+            (18, 15, 13),
+            (13, 23, 22),
+            (9, 10, 13),
+            (10, 11, 14),
+            (25, 21, 20),
+            (27, 20, 17),
+            (4, 13, 14),
+            (22, 18, 13),
+            (13, 15, 21),
+            (5, 18, 19),
+            (20, 16, 17),
+            (5, 20, 15),
+            (19, 18, 0),
+            (26, 19, 1),
+            (16, 20, 19),
+            (15, 20, 21),
+            (13, 21, 23),
+            (18, 22, 24),
+            (20, 6, 25),
+            (16, 19, 26),
+            (0, 1, 19),
+            (6, 20, 27),
+        ],
+        outgoing: &[
+            (4, &[9, 2, 3, 11, 13, 14], 14),
+            (5, &[20, 18, 15, 19], 19),
+            (9, &[2, 4, 7, 10, 13, 12], 12),
+            (10, &[8, 7, 9, 11, 13, 14], 14),
+            (13, &[9, 22, 4, 10, 15, 14, 18, 21, 23], 14),
+            (14, &[4, 10, 11, 13], 13),
+            (15, &[18, 5, 20, 13, 21], 13),
+            (18, &[0, 5, 13, 15, 22, 24, 19], 19),
+            (19, &[5, 20, 0, 18, 16, 26, 1], 5),
+            (20, &[5, 15, 19, 6, 16, 17, 21, 25, 27], 15),
+        ],
+        merge: (5, 13),
+        protected: &[14],
+    },
+];
+
 /// The extracted cases reproduce identically on every run - that is what makes
 /// them usable as tests while the weld that produced them is still
 /// nondeterministic. This guards the extraction, not the defect, so it passes
@@ -2759,7 +3176,7 @@ const WELD_CASES: &[WeldCase] = &[WeldCase {
 fn test_weld_cases_are_deterministic() {
     get_tracing_subscriber();
 
-    for case in WELD_CASES {
+    for case in WELD_CASES.iter().chain(OPEN_WELD_CASES) {
         let mut outcomes = std::collections::BTreeSet::new();
         for _ in 0..100 {
             let (before, after, opened) = case.replay();
@@ -2783,7 +3200,7 @@ fn test_weld_cases_are_deterministic() {
 fn test_weld_cases_are_faithful() {
     get_tracing_subscriber();
 
-    for case in WELD_CASES {
+    for case in WELD_CASES.iter().chain(OPEN_WELD_CASES) {
         let (mesh_graph, vertex_ids) = case.build();
         let rim: std::collections::BTreeSet<VertexId> = boundary_edges(&mesh_graph)
             .iter()
@@ -2833,6 +3250,37 @@ fn test_weld_cases_stay_watertight() {
     );
 }
 
+/// The extracted open cases must still open: this pins the Phase 2 target list.
+///
+/// When a case starts closing, this test fails and the case moves to
+/// [`WELD_CASES`] (with the taxonomy baseline updated). That failure is the
+/// progress signal, not a regression.
+#[test]
+fn test_open_weld_cases_are_open() {
+    get_tracing_subscriber();
+
+    let mut failures = Vec::new();
+
+    for case in OPEN_WELD_CASES {
+        let (before, after, opened) = case.replay();
+        drain_rim_taxonomy();
+        if opened.is_empty() {
+            failures.push(format!(
+                "  {:?}: boundary {before} -> {after} - no longer opens; move it to WELD_CASES",
+                case.what
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} of {} open weld cases no longer open:\n{}",
+        failures.len(),
+        OPEN_WELD_CASES.len(),
+        failures.join("\n"),
+    );
+}
+
 #[test]
 #[ignore]
 fn diag_open_case() {
@@ -2861,7 +3309,13 @@ fn diag_open_case() {
 fn test_rim_taxonomy_baseline() {
     get_tracing_subscriber();
 
-    let assert_case = |label: &str, expected: [usize; 3]| {
+    // (unconsumed, new_boundary, wire, skipped, parallel_before, parallel_after,
+    //  end_unconsumed, end_new_boundary, end_wire, end_parallel, rim_bad). The
+    //  pre-net half is mode-independent; the end half pins the shipping
+    //  (nets-on) exit state and is skipped when the nets are disabled on
+    //  purpose.
+    let nets_enabled = super::merge_nets_enabled();
+    let assert_case = |label: &str, expected: [usize; 11]| {
         let probes = super::rim_probe::drain();
         assert_eq!(
             probes.len(),
@@ -2874,30 +3328,90 @@ fn test_rim_taxonomy_baseline() {
             (
                 probe.unconsumed.len(),
                 probe.new_boundary.len(),
-                probe.wire.len()
+                probe.wire.len(),
+                probe.skipped_faces,
+                probe.parallel_before,
+                probe.parallel_edges,
             ),
-            (expected[0], expected[1], expected[2]),
-            "{label}: taxonomy drifted: {}",
+            (
+                expected[0],
+                expected[1],
+                expected[2],
+                expected[3],
+                expected[4],
+                expected[5],
+            ),
+            "{label}: pre-net taxonomy drifted: {}",
             probe.summary()
         );
+        if nets_enabled {
+            assert_eq!(
+                (
+                    probe.end_unconsumed,
+                    probe.end_new_boundary,
+                    probe.end_wire.len(),
+                    probe.end_parallel_edges,
+                ),
+                (expected[6], expected[7], expected[8], expected[9]),
+                "{label}: end-of-op taxonomy drifted: {}",
+                probe.summary()
+            );
+        }
         assert_eq!(
             probe.rim_bad,
-            0,
-            "{label}: rim walk broke: {}",
+            expected[10],
+            "{label}: rim walk classification drifted: {}",
             probe.summary()
         );
     };
 
     let _ = merge_lens_region(false);
-    assert_case("lens(reconstruct=false)", [5, 5, 0]);
+    // Degenerate synthetic variant: its repair leaves rim halves unconsumed, but
+    // no wire and no parallel edges. It is only used for order-independence.
+    assert_case("lens(reconstruct=false)", [5, 5, 0, 7, 0, 4, 6, 3, 0, 0, 0]);
 
     let _ = merge_lens_region(true);
-    assert_case("lens(reconstruct=true)", [0, 0, 0]);
+    assert_case("lens(reconstruct=true)", [0; 11]);
 
     for case in WELD_CASES {
+        // The weld case closes its boundary (end unconsumed/new_boundary 0) but
+        // ends with 2 parallel halfedges: `merge_remaining_unconnected` runs
+        // after the neighborhood cleanup and welds a non-manifold edge (two
+        // faces in one direction), which `weld_parallel_edges` deliberately
+        // leaves alone. Phase 2 target.
         let expected = match case.what {
-            "band wraps the full ring and leaves one seam triangle" => [2, 1, 0],
+            "band wraps the full ring and leaves one seam triangle" => {
+                [2, 1, 0, 0, 0, 2, 0, 0, 0, 2, 0]
+            }
             other => panic!("no pinned rim taxonomy for weld case {other:?}"),
+        };
+        let _ = case.replay();
+        assert_case(case.what, expected);
+    }
+
+    for case in OPEN_WELD_CASES {
+        // Extracted from the reversed-order weld loop. Their pins are the Phase 2
+        // target list; all four end with unconsumed rim halves (end wire stays
+        // 0, so nothing structural leaks). Two structural facts shape Phase 2:
+        // `radius 1, +5` is an *open chain* (loops 0, chains 1) - its rim
+        // terminates on a pre-existing border and the rebuild consumed none of
+        // it, so open chains must be handled from the start; and the mirror case
+        // has both a loop and a chain. When a case closes, it moves to
+        // `WELD_CASES` and these pins move with it.
+        let expected = match case.what {
+            "reversed weld order, radius 2, +4 boundary halfedges" => {
+                [2, 2, 0, 0, 0, 4, 2, 2, 0, 0, 0]
+            }
+            "reversed weld order, radius 1, +5 boundary halfedges" => {
+                [9, 0, 0, 0, 0, 0, 4, 3, 0, 0, 0]
+            }
+            "reversed weld order, radius 1, +6 boundary halfedges" => {
+                [6, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0]
+            }
+            "reversed weld order, radius 2, +4 boundary halfedges (mirror)" => {
+                [3, 1, 0, 0, 0, 0, 3, 1, 0, 0, 0]
+            }
+            other => panic!("no pinned rim taxonomy for open weld case {other:?}"),
         };
         let _ = case.replay();
         assert_case(case.what, expected);
@@ -2923,6 +3437,13 @@ fn diag_rim_taxonomy() {
         let _ = case.replay();
         for probe in super::rim_probe::drain() {
             println!("RIM weld {:?} {}", case.what, probe.summary());
+        }
+    }
+
+    for case in OPEN_WELD_CASES {
+        let _ = case.replay();
+        for probe in super::rim_probe::drain() {
+            println!("RIM open weld {:?} {}", case.what, probe.summary());
         }
     }
 }

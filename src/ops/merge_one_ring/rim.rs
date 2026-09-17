@@ -113,3 +113,62 @@ pub(crate) fn next_rim_half(mesh: &MeshGraph, b: HalfedgeId, rim: &HashSet<Halfe
 
     RimStep::Isolated
 }
+
+/// The rim halves as an ordered ring: for every structure in `halves`, walks it
+/// head-first (chains from their heads, then the loops) in ascending id order
+/// and collects each half's end vertex and the half itself.
+///
+/// This is the live replacement for the pre-removal `one_ring()` arrays: every
+/// vertex and halfedge in it is on the boundary the removals actually opened,
+/// so the band planner can no longer index stale or off-rim elements.
+pub(crate) fn ring_from_halves(
+    mesh: &MeshGraph,
+    halves: &HashSet<HalfedgeId>,
+) -> (Vec<crate::VertexId>, Vec<HalfedgeId>) {
+    let mut starts: Vec<HalfedgeId> = halves.iter().copied().collect();
+    starts.sort_unstable();
+
+    let mut has_predecessor = HashSet::new();
+    for &he_id in &starts {
+        if let RimStep::Continue(next) = next_rim_half(mesh, he_id, halves) {
+            has_predecessor.insert(next);
+        }
+    }
+
+    let mut visited = HashSet::new();
+    let mut v_ids = Vec::with_capacity(halves.len());
+    let mut he_ids = Vec::with_capacity(halves.len());
+
+    let mut walk = |start: HalfedgeId, visited: &mut HashSet<HalfedgeId>| {
+        let mut current = start;
+        loop {
+            let Some(he) = mesh.halfedges.get(current) else {
+                return;
+            };
+            he_ids.push(current);
+            v_ids.push(he.end_vertex);
+            match next_rim_half(mesh, current, halves) {
+                RimStep::Continue(next) => {
+                    if !visited.insert(next) {
+                        return;
+                    }
+                    current = next;
+                }
+                RimStep::ChainEnd | RimStep::Isolated => return,
+            }
+        }
+    };
+
+    for &start in starts.iter().filter(|he| !has_predecessor.contains(*he)) {
+        if visited.insert(start) {
+            walk(start, &mut visited);
+        }
+    }
+    for &start in &starts {
+        if visited.insert(start) {
+            walk(start, &mut visited);
+        }
+    }
+
+    (v_ids, he_ids)
+}
