@@ -1,8 +1,16 @@
-use hashbrown::HashSet;
 use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId};
+
+/// Append `id` unless it is already in `list`. Used where a small collection has
+/// to stay free of duplicates *and* keep a deterministic order (a `HashSet`
+/// would give the first but not the second).
+fn push_unique<T: PartialEq>(list: &mut Vec<T>, id: T) {
+    if !list.contains(&id) {
+        list.push(id);
+    }
+}
 
 impl MeshGraph {
     /// Deletes a face from the mesh graph.
@@ -35,25 +43,31 @@ impl MeshGraph {
             halfedges.iter().map(|(id, _)| id).collect_vec()
         );
 
-        let mut removed_halfedges = HashSet::with_capacity(4);
-
+        // Ordered, not a `HashSet`: this list decides the order in which the
+        // halfedges are freed from the slotmap (and therefore which ids the
+        // next allocations reuse), which vertices are visited below, and what
+        // the caller gets back. hashbrown seeds every table it creates from a
+        // random source, so draining a set here would make all of that vary
+        // between runs of the very same operation. The scan above is in slotmap
+        // order, so keeping that order makes them a pure function of the mesh.
+        let mut removed_halfedges: Vec<HalfedgeId> = Vec::with_capacity(4);
         for (he_id, he) in halfedges {
             // A twinless member (left over by a re-pair sever or a dangling-twin clear)
             // must not abort the face removal: remove the member itself. Same for a
             // member whose twin reference is dead.
             let Some(twin_id) = he.twin else {
-                removed_halfedges.insert(he_id);
+                push_unique(&mut removed_halfedges, he_id);
                 continue;
             };
             let Some(twin) = self.halfedges.get(twin_id) else {
-                removed_halfedges.insert(he_id);
+                push_unique(&mut removed_halfedges, he_id);
                 continue;
             };
             if twin.is_boundary() {
-                removed_halfedges.insert(he_id);
-                removed_halfedges.insert(twin_id);
+                push_unique(&mut removed_halfedges, he_id);
+                push_unique(&mut removed_halfedges, twin_id);
             } else if twin.twin != Some(he_id) {
-                removed_halfedges.insert(he_id);
+                push_unique(&mut removed_halfedges, he_id);
             } else {
                 // already checked above
                 self.halfedges[he_id].face = None;
@@ -62,13 +76,13 @@ impl MeshGraph {
         }
 
         #[cfg(feature = "rerun")]
-        self.log_hes_rerun(
-            "deleted_by_face_deletion",
-            &removed_halfedges.iter().copied().collect::<Vec<_>>(),
-        );
+        self.log_hes_rerun("deleted_by_face_deletion", &removed_halfedges);
 
         let mut removed_vertices = Vec::with_capacity(3);
-        let mut touched_start_vertices = HashSet::with_capacity(3);
+        // Ordered for the same reason as `removed_halfedges`: the visit order
+        // below decides which vertices are freed first and hence the returned
+        // `removed_vertices` order.
+        let mut touched_start_vertices: Vec<VertexId> = Vec::with_capacity(3);
 
         // Update connections from vertices to deleted halfedges
         for &he_id in &removed_halfedges {
@@ -81,7 +95,9 @@ impl MeshGraph {
             let Some(start_v_id) = self.halfedges[he_id].start_vertex(self) else {
                 continue;
             };
-            touched_start_vertices.insert(start_v_id);
+            if !touched_start_vertices.contains(&start_v_id) {
+                touched_start_vertices.push(start_v_id);
+            }
             if let Some(out_he_ids) = self.outgoing_halfedges.get_mut(start_v_id) {
                 out_he_ids.retain(|&id| id != he_id);
             } else {
@@ -89,7 +105,7 @@ impl MeshGraph {
             }
         }
 
-        for start_v_id in touched_start_vertices {
+        for start_v_id in touched_start_vertices.iter().copied() {
             // A vertex survives if it still has a live outgoing halfedge; in that
             // case refresh its seed pointer. Otherwise it is now isolated.
             let surviving_out_he = self
@@ -110,10 +126,7 @@ impl MeshGraph {
         }
 
         #[cfg(feature = "instrumentation")]
-        self.probe_live_face_removal(
-            &removed_halfedges.iter().copied().collect::<Vec<_>>(),
-            "remove_face_tail",
-        );
+        self.probe_live_face_removal(&removed_halfedges, "remove_face_tail");
 
         for he_id in &removed_halfedges {
             self.halfedges.remove(*he_id);
@@ -125,7 +138,7 @@ impl MeshGraph {
         #[cfg(feature = "instrumentation")]
         crate::record_face_death(face_id);
 
-        (removed_vertices, Vec::from_iter(removed_halfedges))
+        (removed_vertices, removed_halfedges)
     }
 
     /// Deletes only a vertex, without deleting any faces or halfedges connected to it.

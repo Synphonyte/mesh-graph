@@ -311,3 +311,54 @@ pub(crate) fn extend_with(
 
     new_vertex_ids
 }
+
+/// A canonical, comparable rendering of everything an operation can change
+/// about a mesh: which faces exist (as vertex triples), which edges are left
+/// open, and how many elements survive.
+///
+/// The raw slotmap ids are part of it on purpose - two runs that free elements
+/// in different orders reuse different slots afterwards, so including the ids
+/// makes this catch ordering differences that the shape alone would hide.
+#[cfg(test)]
+pub(crate) fn topology_fingerprint(mesh: &MeshGraph) -> String {
+    let mut faces = Vec::new();
+    for face in mesh.faces.values() {
+        let mut v_ids: Vec<VertexId> = face.vertices(mesh).collect();
+        // Rotate to start at the smallest id: the winding is significant, the
+        // halfedge the face happens to point at is not.
+        if let Some(offset) = v_ids
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, v_id)| **v_id)
+            .map(|(i, _)| i)
+        {
+            v_ids.rotate_left(offset);
+        }
+        faces.push(format!("{v_ids:?}"));
+    }
+    faces.sort();
+
+    let mut boundary = Vec::new();
+    for (_, he) in mesh.halfedges.iter().filter(|(_, h)| h.face.is_none()) {
+        let Some(start) = he.start_vertex(mesh) else {
+            continue;
+        };
+        let end = he.end_vertex;
+        let (a, b) = if start < end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        boundary.push(format!("{a:?}-{b:?}"));
+    }
+    boundary.sort();
+    boundary.dedup();
+
+    format!(
+        "vertices {} halfedges {} faces {:?} boundary {:?}",
+        mesh.vertices.len(),
+        mesh.halfedges.len(),
+        faces,
+        boundary,
+    )
+}

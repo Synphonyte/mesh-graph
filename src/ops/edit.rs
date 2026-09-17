@@ -53,11 +53,19 @@ impl MeshGraph {
             avg_pos /= count;
         }
 
-        // Find faces to remove: any face with 2+ vertices in the merge set becomes degenerate
-        let mut faces_to_remove = HashSet::new();
+        // Find faces to remove: any face with 2+ vertices in the merge set becomes degenerate.
+        //
+        // Kept as a list next to the membership set: the order decides in which
+        // order the faces and their halfedges are freed from the slotmaps (and
+        // hence which ids the next allocations reuse) and what the caller gets
+        // back in `removed_faces`. Draining a `HashSet` instead would tie all of
+        // that to hashbrown's per-table random seed, so the same merge would
+        // take different repair paths from run to run.
+        let mut faces_to_remove: Vec<FaceId> = Vec::new();
+        let mut faces_to_remove_set: HashSet<FaceId> = HashSet::new();
         for &v_id in &vertex_ids {
             for face_id in self.vertex_adjacent_faces(v_id) {
-                if faces_to_remove.contains(&face_id) {
+                if faces_to_remove_set.contains(&face_id) {
                     continue;
                 }
                 if let Some(face) = self.faces.get(face_id) {
@@ -66,7 +74,8 @@ impl MeshGraph {
                         .filter(|v| vertex_set.contains(v))
                         .count();
                     if merged_count >= 2 {
-                        faces_to_remove.insert(face_id);
+                        faces_to_remove_set.insert(face_id);
+                        faces_to_remove.push(face_id);
                     }
                 }
             }
@@ -79,8 +88,9 @@ impl MeshGraph {
             faces_to_remove
         );
 
-        // Determine which halfedges to remove vs make boundary
-        let mut halfedges_to_remove = HashSet::new();
+        // Determine which halfedges to remove vs make boundary (ordered, see above)
+        let mut halfedges_to_remove: Vec<HalfedgeId> = Vec::new();
+        let mut halfedges_to_remove_set: HashSet<HalfedgeId> = HashSet::new();
         for &face_id in &faces_to_remove {
             let face_hes: Vec<_> = self
                 .halfedges
@@ -98,10 +108,15 @@ impl MeshGraph {
                 if let Some(twin_id) = he.twin
                     && let Some(twin) = self.halfedges.get(twin_id)
                 {
-                    if twin.is_boundary() || twin.face.is_some_and(|f| faces_to_remove.contains(&f))
+                    if twin.is_boundary()
+                        || twin.face.is_some_and(|f| faces_to_remove_set.contains(&f))
                     {
-                        halfedges_to_remove.insert(he_id);
-                        halfedges_to_remove.insert(twin_id);
+                        if halfedges_to_remove_set.insert(he_id) {
+                            halfedges_to_remove.push(he_id);
+                        }
+                        if halfedges_to_remove_set.insert(twin_id) {
+                            halfedges_to_remove.push(twin_id);
+                        }
                     } else {
                         // detach the surviving halfedge: it keeps its twin but no face
                         if let Some(he_mut) = self.halfedges.get_mut(he_id) {
@@ -142,10 +157,7 @@ impl MeshGraph {
         // also in the batch (collected pairwise above), so no survivor references a
         // removed id.
         #[cfg(feature = "instrumentation")]
-        self.probe_live_face_removal(
-            &halfedges_to_remove.iter().copied().collect::<Vec<_>>(),
-            "merge_batch",
-        );
+        self.probe_live_face_removal(&halfedges_to_remove, "merge_batch");
         for &he_id in &halfedges_to_remove {
             self.halfedges.remove(he_id);
         }
@@ -196,8 +208,8 @@ impl MeshGraph {
             self.remove_only_vertex(v_id);
         }
 
-        let mut removed_halfedges: Vec<HalfedgeId> = halfedges_to_remove.into_iter().collect();
-        let removed_faces: Vec<FaceId> = faces_to_remove.into_iter().collect();
+        let mut removed_halfedges: Vec<HalfedgeId> = halfedges_to_remove;
+        let removed_faces: Vec<FaceId> = faces_to_remove;
 
         // Check if survivor still exists (could have been removed if all faces were removed)
         if !self.vertices.contains_key(survivor_id) {
@@ -225,15 +237,24 @@ impl MeshGraph {
                 .unwrap_or_default();
 
             let mut by_end: HashMap<VertexId, Vec<HalfedgeId>> = HashMap::new();
+            // Distinct end vertices in `out_hes` order: the loop below frees
+            // halfedges, so iterating the map itself would order those removals
+            // by hashbrown's random per-table seed.
+            let mut end_order: Vec<VertexId> = Vec::new();
             for &he_id in &out_hes {
                 if let Some(he) = self.halfedges.get(he_id) {
-                    by_end.entry(he.end_vertex).or_default().push(he_id);
+                    let group = by_end.entry(he.end_vertex).or_default();
+                    if group.is_empty() {
+                        end_order.push(he.end_vertex);
+                    }
+                    group.push(he_id);
                 }
             }
 
             let mut affected_vertices = HashSet::new();
 
-            for (end_v, group) in by_end {
+            for end_v in end_order {
+                let group = by_end[&end_v].clone();
                 if group.len() < 2 {
                     continue;
                 }
@@ -622,6 +643,73 @@ mod tests {
     use glam::Vec3;
 
     use super::*;
+
+    /// `merge_vertices` decides on the spot which faces and halfedges have to
+    /// go, and the order it frees them in is visible afterwards: slotmap hands
+    /// out the freed ids again to the next allocations, and the removal lists it
+    /// returns drive the caller's bookkeeping. Collecting those into hash sets
+    /// tied that order to hashbrown's per-table random seed, so the same merge
+    /// left a differently-keyed mesh behind on every run.
+    #[test]
+    fn test_merge_vertices_is_order_independent() {
+        const RUNS: usize = 200;
+
+        let mut fingerprints = std::collections::BTreeSet::new();
+
+        for _ in 0..RUNS {
+            let mut mg = crate::utils::build_grid(4);
+
+            // Three mutually adjacent interior vertices: merging them collapses
+            // a whole cluster of faces, so several halfedges are freed at once.
+            let corners = [
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(2.0, 1.0, 0.0),
+                Vec3::new(2.0, 2.0, 0.0),
+            ];
+            let to_merge: Vec<VertexId> = corners
+                .iter()
+                .map(|target| {
+                    mg.positions
+                        .iter()
+                        .find(|(_, pos)| *pos == target)
+                        .map(|(v_id, _)| v_id)
+                        .expect("grid vertex")
+                })
+                .collect();
+
+            let removed = mg.merge_vertices(to_merge);
+
+            // The freed slots are handed out again in reverse free order, so
+            // allocating afterwards makes the removal order observable - that
+            // is how it reaches the ops that run after this one.
+            let reused: Vec<HalfedgeId> = (0..4)
+                .map(|_| {
+                    mg.halfedges.insert(crate::Halfedge {
+                        twin: None,
+                        next: None,
+                        face: None,
+                        end_vertex: VertexId::default(),
+                    })
+                })
+                .collect();
+
+            fingerprints.insert(format!(
+                "{} | removed {:?} {:?} {:?} | reused {reused:?}",
+                crate::utils::topology_fingerprint(&mg),
+                removed.removed_vertices,
+                removed.removed_halfedges,
+                removed.removed_faces,
+            ));
+        }
+
+        assert_eq!(
+            fingerprints.len(),
+            1,
+            "merge_vertices is not order-independent: {RUNS} runs of the same input \
+             produced {} different results",
+            fingerprints.len(),
+        );
+    }
 
     #[cfg(feature = "gltf")]
     #[test]
