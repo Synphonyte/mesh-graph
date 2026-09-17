@@ -34,8 +34,9 @@ pub(crate) struct RimProbe {
     /// start -> end, and whether the half was already boundary before the op.
     /// Only filled when `MESH_GRAPH_RIM_TAXONOMY` is set.
     pub rim_walk_detail: Vec<String>,
-    /// Phase 2 prototype measurement: faces the rim-first planner would emit on
-    /// this rim, how many rim halves they consume, and what it could not plan.
+    /// Read-only measurement of the rim-first planner on this rim: faces it
+    /// would emit, how many rim halves they consume, and what it could not
+    /// plan. Independent of whether the op actually used the plan.
     pub proto_faces: usize,
     pub proto_consumed: usize,
     pub proto_unhandled: Vec<String>,
@@ -344,10 +345,10 @@ impl RimProbe {
         }
     }
 
-    /// Measure the Phase 2 prototype planner on the current rim. Read-only: the
-    /// planned faces are never inserted, so the op's behavior is unchanged.
+    /// Measure the rim-first planner on the current rim. Read-only: the planned
+    /// faces are never inserted, so the op's behavior is unchanged.
     /// Call after [`Self::classify`], when `rim`/`h1`/`h2` describe the live rim.
-    pub(crate) fn measure_prototype(&mut self, mesh: &MeshGraph) {
+    pub(crate) fn measure_rim_plan(&mut self, mesh: &MeshGraph) {
         let structures = super::rim_planner::rim_structures(mesh, &self.rim, &self.h1, &self.h2);
         self.proto_structure_detail = structures
             .iter()

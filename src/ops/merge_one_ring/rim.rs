@@ -123,6 +123,7 @@ pub(crate) fn next_rim_half(mesh: &MeshGraph, b: HalfedgeId, rim: &HashSet<Halfe
 /// This is the live replacement for the pre-removal `one_ring()` arrays: every
 /// vertex and halfedge in it is on the boundary the removals actually opened,
 /// so the band planner can no longer index stale or off-rim elements.
+#[cfg(test)]
 pub(crate) fn ring_from_halves(
     mesh: &MeshGraph,
     halves: &HashSet<HalfedgeId>,

@@ -1,9 +1,10 @@
-//! Phase 2 prototype: plan the stitch band from the live rim `H`.
+//! The rim-first band planner: plan the stitch band from the live rim `H`.
 //!
-//! Test-only until it is wired into the op. The handoff's sanctioned order is
-//! "a standalone function that returns `Vec<PlannedFace>`, compared against
-//! `assert_merge_invariants` on the glb corpus before wiring it into the op"
-//! (`HANDOFF-phase2-rim-first.md`, "Suggested first steps").
+//! The op runs this planner on the rim the removals opened, after tearing the
+//! already-connected strip out (strips-first), and uses the result when
+//! [`RimPlan::is_complete`] holds. When it does not, the old ring-range planner's
+//! faces stand, so this planner is purely additive: it can close holes the old
+//! one left, never take away a plan that worked.
 //!
 //! The shape of the model follows the measurements in the handoff:
 //!
@@ -18,26 +19,20 @@
 //! - A cyclic structure whose runs are two opposite-side arcs is planned with
 //!   the existing Bresenham machinery
 //!   ([`MeshGraph::plan_connect_pair`]), so the band keeps the shape the old
-//!   planner aimed for. Any other cyclic lobe that is a *simple* disk (no
-//!   repeated boundary vertex) is fan-triangulated from its first boundary
-//!   vertex, which consumes the whole boundary and adds only interior
-//!   diagonals.
-//! - What is deliberately *not* guessed at: open chains (their ends run into a
-//!   pre-existing border of the cut region) and cyclic walks that revisit a
-//!   vertex (a pinch inside one walk, e.g. the extracted weld case). Those are
-//!   reported as `unhandled` instead of producing faces from a boundary model
-//!   that does not describe them.
+//!   planner aimed for. Any other cyclic lobe is fan-triangulated from its first
+//!   boundary vertex; a walk that revisits a vertex (a pinch inside one walk,
+//!   e.g. the extracted weld case) is split into simple lobes at the repeated
+//!   vertex first.
+//! - What is deliberately *not* guessed at: open chains, whose ends run into a
+//!   pre-existing border of the cut region. They are reported as `unhandled`
+//!   instead of producing faces from a boundary model that does not describe
+//!   them.
 //!
-//! Measured on the captured corpus (pinned by
-//! `tests::test_rim_planner_prototype_consumption`): the planner consumes the
-//! whole rim of both lens variants, the extracted weld case, and two of the four
-//! `OPEN_WELD_CASES` - `radius 1, +5` (the sharp case) and `radius 1, +6`. The
-//! test-only `MESH_GRAPH_RIM_PLANNER` op switch drives the op with this planner,
-//! tearing the already-connected strip out first as the design requires; under
-//! it those two open cases stop opening (`boundary 8 -> 8` and `22 -> 22`).
-//!
-//! That switch has no fallback yet, so the rest of the corpus regresses under
-//! it.
+//! Measured on the captured corpus: this planner closes the extracted weld case
+//! and moved `radius 1, +5` and `radius 1, +6` out of `OPEN_WELD_CASES` into
+//! `WELD_CASES`. With it driving the op, the whole corpus is green with the
+//! repair nets disabled (`MESH_GRAPH_MERGE_NETS=0`), which was the Phase 2
+//! oracle.
 //!
 //! The remaining two open cases (`radius 2, +4` and its mirror) cannot be
 //! planned from their fixture at all, and not for want of machinery: their rim
@@ -225,7 +220,7 @@ fn structure_from_walk(
     RimStructure { cyclic, runs }
 }
 
-/// What the prototype planner produced for one rim.
+/// What the rim-first planner produced for one rim.
 #[derive(Debug, Default)]
 pub(crate) struct RimPlan {
     pub faces: Vec<PlannedFace>,
@@ -236,6 +231,7 @@ pub(crate) struct RimPlan {
 impl RimPlan {
     /// Number of rim halves consumed by the planned faces: a half `u -> v` is
     /// consumed when some planned triangle carries the directed edge `u -> v`.
+    #[cfg(test)]
     pub fn consumed_halves(
         &self,
         mesh: &MeshGraph,
@@ -260,6 +256,65 @@ impl RimPlan {
                 directed.contains(&(start, end))
             })
             .collect()
+    }
+
+    /// Whether this plan consumes the whole rim and nothing else.
+    ///
+    /// The op only replaces the old planner's faces with this plan when this
+    /// returns `true`, so it is the safety contract, not a heuristic:
+    ///
+    /// - every structure was planned (no `unhandled`),
+    /// - no face is degenerate and no directed edge appears twice (a
+    ///   consistently oriented triangulation has each interior edge once per
+    ///   direction and each boundary edge once),
+    /// - every rim halfedge is consumed,
+    /// - and no face runs along a *pre-existing* border halfedge, which would
+    ///   seal a genuine open border rather than the hole the merge opened.
+    pub fn is_complete(&self, mesh: &MeshGraph, halves: &HashSet<HalfedgeId>) -> bool {
+        if !self.unhandled.is_empty() {
+            return false;
+        }
+        if self.faces.is_empty() {
+            return halves.is_empty();
+        }
+
+        let mut directed: HashSet<(VertexId, VertexId)> = HashSet::new();
+        for face in &self.faces {
+            let v = [face.v1, face.new_he_v1, face.new_he_v2];
+            if v[0] == v[1] || v[1] == v[2] || v[0] == v[2] {
+                return false;
+            }
+            for edge in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+                if !directed.insert(edge) {
+                    return false;
+                }
+            }
+        }
+
+        for he_id in halves {
+            let Some(he) = mesh.halfedges.get(*he_id) else {
+                continue;
+            };
+            let Some(start) = he.start_vertex(mesh) else {
+                return false;
+            };
+            if !directed.contains(&(start, he.end_vertex)) {
+                return false;
+            }
+        }
+
+        for &(start, end) in &directed {
+            for he_id in mesh.halfedges_from_to(start, end) {
+                if let Some(he) = mesh.halfedges.get(he_id)
+                    && he.face.is_none()
+                    && !halves.contains(&he_id)
+                {
+                    return false;
+                }
+            }
+        }
+
+        true
     }
 }
 

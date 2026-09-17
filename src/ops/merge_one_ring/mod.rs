@@ -1,6 +1,4 @@
-#[cfg(test)]
 mod rim;
-#[cfg(test)]
 mod rim_planner;
 #[cfg(test)]
 mod rim_probe;
@@ -221,23 +219,35 @@ impl MeshGraph {
             return self.finish_merge(result);
         }
 
+        // The boundary the removals open. `H = boundary(after) \ boundary(before)`:
+        // `remove_face` detaches most rim members in place instead of freeing
+        // them, so the twins of the removed halfedges are *not* the rim the op
+        // has to close (see `rim::opened_rim`). Snapshot after the coincident
+        // fusion so the delta is exactly the stars' doing.
+        let boundary_before = rim::boundary_halves(self);
+
         self.remove_vertex_faces(vertex_id1, &mut result);
 
         #[cfg(test)]
         {
             test_rim_probe.h1 = rim::opened_rim(self, &test_rim_probe.before);
         }
+        let star_h1_raw = rim::opened_rim(self, &boundary_before);
 
         self.remove_vertex_faces(vertex_id2, &mut result);
 
         #[cfg(test)]
         {
-            test_rim_probe
-                .rim
-                .extend(rim::opened_rim(self, &test_rim_probe.before));
+            test_rim_probe.rim = rim::opened_rim(self, &test_rim_probe.before);
             let h1 = test_rim_probe.h1.clone();
             test_rim_probe.h2 = test_rim_probe.rim.difference(&h1).copied().collect();
         }
+
+        let star_h1: HashSet<HalfedgeId> = star_h1_raw
+            .iter()
+            .copied()
+            .filter(|he_id| self.halfedges.contains_key(*he_id))
+            .collect();
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
@@ -282,20 +292,9 @@ impl MeshGraph {
 
         tracing::debug!("Range pairs to connect: {range_pairs_to_connect:?}");
 
-        let planned_faces =
+        let old_planned_faces =
             self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
-
-        // The rim-first test path replaces `planned_faces` after the strip
-        // removal, so the binding is mutable in test builds only.
-        #[cfg(test)]
-        let mut planned_faces = planned_faces;
-
-        // Test-only switch: plan the band from the live rim instead of the old
-        // ring-range planner. Off by default; production never sets it.
-        #[cfg(test)]
-        let rim_planner_mode = std::env::var("MESH_GRAPH_RIM_PLANNER").is_ok();
-        #[cfg(not(test))]
-        let rim_planner_mode = false;
+        let mut planned_faces = old_planned_faces.clone();
 
         #[cfg(test)]
         if std::env::var("MESH_GRAPH_RIM_TAXONOMY").is_ok() {
@@ -305,9 +304,55 @@ impl MeshGraph {
                 &shared_v_ids,
                 &already_connected_face_ids,
                 &range_pairs_to_connect,
-                &planned_faces,
+                &old_planned_faces,
             );
         }
+
+        // ---- rim-first band planner (Phase 2b) ------------------------------
+        //
+        // The old planner walks the pre-removal one-rings, which cannot describe
+        // the hole the removals actually opened: a pinched star opens more rim
+        // than `one_ring()` sees, and a chain can end on the cut. Plan the band
+        // from the live rim too, and use that plan when it consumes the whole
+        // rim; otherwise keep the old faces, so the fallback is exactly the
+        // previous behavior.
+        let strip_faces = already_connected_face_ids;
+        if strip_faces.is_empty() || !old_planned_faces.is_empty() {
+            // The old flow tears the already-connected strip out whenever it
+            // planned something; with no strip this is a no-op.
+            self.remove_faces(&strip_faces, &mut result);
+            let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
+            if !faces_consume_all(&old_planned_faces, self, &rim) {
+                let plan = rim_planner::plan(self, &rim, &h1, &h2);
+                for note in &plan.unhandled {
+                    tracing::debug!("rim-first planner unhandled: {note}");
+                }
+                if plan.is_complete(self, &rim) {
+                    planned_faces = plan.faces;
+                }
+            }
+        } else {
+            // The old planner planned nothing but a strip exists. Tearing it out
+            // would only widen the hole unless the rim-first plan closes exactly
+            // what it opens, and that cannot be known before the removal, so
+            // decide on a clone and only touch the real mesh when it does.
+            let mut trial = self.clone();
+            for &face_id in &strip_faces {
+                trial.remove_face(face_id);
+            }
+            let (trial_rim, trial_h1, trial_h2) = trial.strip_first_rim(&boundary_before, &star_h1);
+            if rim_planner::plan(&trial, &trial_rim, &trial_h1, &trial_h2)
+                .is_complete(&trial, &trial_rim)
+            {
+                self.remove_faces(&strip_faces, &mut result);
+                let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
+                let plan = rim_planner::plan(self, &rim, &h1, &h2);
+                if plan.is_complete(self, &rim) {
+                    planned_faces = plan.faces;
+                }
+            }
+        }
+
         for pf in &planned_faces {
             tracing::debug!(
                 "planned {:?} v1={:?} a={:?} b={:?}",
@@ -318,38 +363,13 @@ impl MeshGraph {
             );
         }
 
-        // The already-connected strip is torn out to make room for the new faces.
-        // With nothing planned there is nothing to make room for, so keep it -
-        // removing it would only widen the hole. The rim-first path always tears
-        // it out: it plans from the rim the strip removal opens.
-        if rim_planner_mode || !planned_faces.is_empty() {
-            for &face_id in &already_connected_face_ids {
-                let (v_ids, he_ids) = self.remove_face(face_id);
-                result.removed_faces.push(face_id);
-                result.removed_halfedges.extend(he_ids);
-                result.removed_vertices.extend(v_ids);
-            }
-        }
-
         #[cfg(test)]
         {
             test_rim_probe
                 .rim
                 .extend(rim::opened_rim(self, &test_rim_probe.before));
             test_rim_probe.classify(self);
-            if rim_planner_mode {
-                let plan = rim_planner::plan(
-                    self,
-                    &test_rim_probe.rim,
-                    &test_rim_probe.h1,
-                    &test_rim_probe.h2,
-                );
-                for note in &plan.unhandled {
-                    tracing::debug!("rim planner unhandled: {note}");
-                }
-                planned_faces = plan.faces;
-            }
-            test_rim_probe.measure_prototype(self);
+            test_rim_probe.measure_rim_plan(self);
         }
 
         self.add_planned_faces(
@@ -957,6 +977,42 @@ impl MeshGraph {
                 }
             }
         }
+    }
+
+    /// Remove the given faces, recording the removal on `result`.
+    fn remove_faces(&mut self, face_ids: &[FaceId], result: &mut MergeVerticesOneRing) {
+        for &face_id in face_ids {
+            let (v_ids, he_ids) = self.remove_face(face_id);
+            result.removed_faces.push(face_id);
+            result.removed_halfedges.extend(he_ids);
+            result.removed_vertices.extend(v_ids);
+        }
+    }
+
+    /// The live rim after the already-connected strip is torn out, split into
+    /// the two merged stars' halves (the strip's own halves become the third
+    /// category the planner classifies).
+    fn strip_first_rim(
+        &self,
+        boundary_before: &HashSet<HalfedgeId>,
+        star_h1: &HashSet<HalfedgeId>,
+    ) -> (
+        HashSet<HalfedgeId>,
+        HashSet<HalfedgeId>,
+        HashSet<HalfedgeId>,
+    ) {
+        let rim = rim::opened_rim(self, boundary_before);
+        let h1: HashSet<HalfedgeId> = star_h1
+            .iter()
+            .copied()
+            .filter(|he_id| self.halfedges.contains_key(*he_id))
+            .collect();
+        let h2: HashSet<HalfedgeId> = rim
+            .iter()
+            .copied()
+            .filter(|he_id| !h1.contains(he_id))
+            .collect();
+        (rim, h1, h2)
     }
 
     fn add_planned_faces(
@@ -2378,6 +2434,34 @@ impl Pairing {
     }
 }
 
+/// Whether every halfedge in `halves` appears as a directed edge of `faces`.
+///
+/// This is how the op decides whether the old planner already closed the rim it
+/// opened. It compares vertex directions, not ids, because a planned face may
+/// reuse an existing halfedge or create a new one.
+fn faces_consume_all(
+    faces: &[PlannedFace],
+    mesh: &MeshGraph,
+    halves: &HashSet<HalfedgeId>,
+) -> bool {
+    let mut directed = HashSet::<(VertexId, VertexId)>::new();
+    for face in faces {
+        directed.insert((face.v1, face.new_he_v1));
+        directed.insert((face.new_he_v1, face.new_he_v2));
+        directed.insert((face.new_he_v2, face.v1));
+    }
+
+    halves.iter().all(|he_id| {
+        let Some(he) = mesh.halfedges.get(*he_id) else {
+            return true;
+        };
+        let Some(start) = he.start_vertex(mesh) else {
+            return false;
+        };
+        directed.contains(&(start, he.end_vertex))
+    })
+}
+
 /// Represents a triangle that is planned to be added to the mesh graph.
 ///
 /// v1 ()◀───────────────() new_he_v2
@@ -2391,7 +2475,7 @@ impl Pairing {
 ///             ()
 ///         new_he_v1
 ///
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PlannedFace {
     order: PlannedFaceOrder,
     v1: VertexId,
