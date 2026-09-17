@@ -1,5 +1,5 @@
+use crate::hash::{HashMap, HashSet};
 use glam::Vec3;
-use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
 use slotmap::SparseSecondaryMap;
 use tracing::{error, instrument};
@@ -59,10 +59,11 @@ impl MeshGraph {
         // order the faces and their halfedges are freed from the slotmaps (and
         // hence which ids the next allocations reuse) and what the caller gets
         // back in `removed_faces`. Draining a `HashSet` instead would tie all of
-        // that to hashbrown's per-table random seed, so the same merge would
-        // take different repair paths from run to run.
+        // that to the set's iteration order, which follows the insertion history
+        // rather than the mesh, so two equal meshes built in different orders
+        // would take different repair paths.
         let mut faces_to_remove: Vec<FaceId> = Vec::new();
-        let mut faces_to_remove_set: HashSet<FaceId> = HashSet::new();
+        let mut faces_to_remove_set: HashSet<FaceId> = HashSet::default();
         for &v_id in &vertex_ids {
             for face_id in self.vertex_adjacent_faces(v_id) {
                 if faces_to_remove_set.contains(&face_id) {
@@ -90,7 +91,7 @@ impl MeshGraph {
 
         // Determine which halfedges to remove vs make boundary (ordered, see above)
         let mut halfedges_to_remove: Vec<HalfedgeId> = Vec::new();
-        let mut halfedges_to_remove_set: HashSet<HalfedgeId> = HashSet::new();
+        let mut halfedges_to_remove_set: HashSet<HalfedgeId> = HashSet::default();
         for &face_id in &faces_to_remove {
             let face_hes: Vec<_> = self
                 .halfedges
@@ -236,10 +237,10 @@ impl MeshGraph {
                 .cloned()
                 .unwrap_or_default();
 
-            let mut by_end: HashMap<VertexId, Vec<HalfedgeId>> = HashMap::new();
+            let mut by_end: HashMap<VertexId, Vec<HalfedgeId>> = HashMap::default();
             // Distinct end vertices in `out_hes` order: the loop below frees
             // halfedges, so iterating the map itself would order those removals
-            // by hashbrown's random per-table seed.
+            // by the map instead of by the star.
             let mut end_order: Vec<VertexId> = Vec::new();
             for &he_id in &out_hes {
                 if let Some(he) = self.halfedges.get(he_id) {
@@ -251,7 +252,7 @@ impl MeshGraph {
                 }
             }
 
-            let mut affected_vertices = HashSet::new();
+            let mut affected_vertices = HashSet::default();
 
             for end_v in end_order {
                 let group = by_end[&end_v].clone();
@@ -554,7 +555,7 @@ impl MeshGraph {
     pub fn smooth_vertices(&mut self, vertices: impl IntoIterator<Item = VertexId>) {
         let mut new_positions = SparseSecondaryMap::new();
 
-        let mut affected_face_ids = HashSet::new();
+        let mut affected_face_ids = HashSet::default();
 
         for vertex_id in vertices.into_iter() {
             let Some(pos) = self.compute_smoothed_vertex_pos(vertex_id) else {
@@ -648,8 +649,8 @@ mod tests {
     /// go, and the order it frees them in is visible afterwards: slotmap hands
     /// out the freed ids again to the next allocations, and the removal lists it
     /// returns drive the caller's bookkeeping. Collecting those into hash sets
-    /// tied that order to hashbrown's per-table random seed, so the same merge
-    /// left a differently-keyed mesh behind on every run.
+    /// tied that order to the set's iteration order, so two equal meshes built
+    /// in different orders left differently-keyed results.
     #[test]
     fn test_merge_vertices_is_order_independent() {
         const RUNS: usize = 200;

@@ -69,6 +69,7 @@
 
 mod access;
 mod elements;
+pub mod hash;
 pub mod integrations;
 mod iter;
 mod ops;
@@ -87,7 +88,7 @@ pub use ops::*;
 pub use plane_slice::*;
 pub use selection::*;
 
-use hashbrown::HashMap;
+use crate::hash::HashMap;
 use parry3d::partitioning::{Bvh, BvhWorkspace};
 
 use glam::Vec3;
@@ -145,7 +146,7 @@ pub(crate) fn record_face_death(face_id: FaceId) {
 // run ops of independent meshes on parallel threads.
 #[cfg(feature = "instrumentation")]
 thread_local! {
-    static OP_BOUNDARY: std::cell::RefCell<Option<hashbrown::HashSet<(HalfedgeId, HalfedgeId)>>> =
+    static OP_BOUNDARY: std::cell::RefCell<Option<crate::hash::HashSet<(HalfedgeId, HalfedgeId)>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -678,7 +679,10 @@ impl MeshGraph {
         let mut mesh_graph = Self {
             bvh: Bvh::new(),
             bvh_workspace: BvhWorkspace::default(),
-            index_to_face_id: HashMap::with_capacity(face_indices.len() / 3),
+            index_to_face_id: HashMap::with_capacity_and_hasher(
+                face_indices.len() / 3,
+                Default::default(),
+            ),
             next_index: 0,
 
             vertices: SlotMap::with_capacity_and_key(vertex_positions.len()),
@@ -911,8 +915,8 @@ impl MeshGraph {
         // residue: `add_face` re-filed the stray while the face's own chain re-uses
         // (or lost) it elsewhere.
         let mut fork: Option<(FaceId, Vec<HalfedgeId>, Vec<HalfedgeId>)> = None;
-        let mut family_by_face: hashbrown::HashMap<FaceId, Vec<HalfedgeId>> =
-            hashbrown::HashMap::new();
+        let mut family_by_face: crate::hash::HashMap<FaceId, Vec<HalfedgeId>> =
+            crate::hash::HashMap::default();
         for (h_id, h) in &self.halfedges {
             if let Some(f) = h.face {
                 family_by_face.entry(f).or_default().push(h_id);
@@ -973,14 +977,14 @@ impl MeshGraph {
         // log replay), so allocations are retained across calls instead of
         // churning the allocator (which showed up as minutes of sys time).
         struct OutScratch {
-            expected: hashbrown::HashMap<VertexId, Vec<HalfedgeId>>,
-            counts: hashbrown::HashMap<HalfedgeId, usize>,
+            expected: crate::hash::HashMap<VertexId, Vec<HalfedgeId>>,
+            counts: crate::hash::HashMap<HalfedgeId, usize>,
         }
         static OUT_SCRATCH: std::sync::Mutex<Option<OutScratch>> = std::sync::Mutex::new(None);
         let mut scratch = OUT_SCRATCH.lock().unwrap();
         let scratch = scratch.get_or_insert_with(|| OutScratch {
-            expected: hashbrown::HashMap::new(),
-            counts: hashbrown::HashMap::new(),
+            expected: crate::hash::HashMap::default(),
+            counts: crate::hash::HashMap::default(),
         });
         for list in scratch.expected.values_mut() {
             list.clear();
@@ -1259,8 +1263,8 @@ impl MeshGraph {
     /// before/after comparison detects boundary changes without being sensitive
     /// to halfedge iteration order. Only used by the hole-delta probe.
     #[cfg(feature = "instrumentation")]
-    fn boundary_edge_set(&self) -> hashbrown::HashSet<(HalfedgeId, HalfedgeId)> {
-        let mut edges = hashbrown::HashSet::new();
+    fn boundary_edge_set(&self) -> crate::hash::HashSet<(HalfedgeId, HalfedgeId)> {
+        let mut edges = crate::hash::HashSet::default();
         for (he_id, he) in &self.halfedges {
             if he.face.is_none()
                 && let Some(twin_id) = he.twin
@@ -1434,7 +1438,7 @@ impl MeshGraph {
     /// O(F + H), meant to be called once per operation that rewires faces.
     pub fn repair_face_pointers(&mut self) {
         let face_ids: Vec<FaceId> = self.faces.keys().collect();
-        let mut visited: hashbrown::HashMap<HalfedgeId, FaceId> = hashbrown::HashMap::new();
+        let mut visited: crate::hash::HashMap<HalfedgeId, FaceId> = crate::hash::HashMap::default();
 
         for face_id in face_ids {
             let Some(start_he) = self.faces.get(face_id).map(|f| f.halfedge) else {

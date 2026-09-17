@@ -77,7 +77,7 @@
 //! `WELD_CASES`'s `re-extracted reversed weld order, radius 1, +4` entry, and
 //! this planner closes it (`boundary 13 -> 13`).
 
-use hashbrown::{HashMap, HashSet};
+use crate::hash::{HashMap, HashSet};
 
 use crate::{HalfedgeId, MeshGraph, VertexId};
 
@@ -136,14 +136,14 @@ pub(crate) fn rim_structures(
     let mut starts: Vec<HalfedgeId> = halves.iter().copied().collect();
     starts.sort_unstable();
 
-    let mut has_predecessor = HashSet::new();
+    let mut has_predecessor = HashSet::default();
     for &he_id in &starts {
         if let RimStep::Continue(next) = rim::next_rim_half(mesh, he_id, halves) {
             has_predecessor.insert(next);
         }
     }
 
-    let mut visited = HashSet::new();
+    let mut visited = HashSet::default();
     let mut structures = Vec::new();
 
     let mut walk = |start: HalfedgeId, visited: &mut HashSet<HalfedgeId>| {
@@ -266,7 +266,7 @@ impl RimPlan {
         mesh: &MeshGraph,
         halves: &HashSet<HalfedgeId>,
     ) -> HashSet<HalfedgeId> {
-        let mut directed: HashSet<(VertexId, VertexId)> = HashSet::new();
+        let mut directed: HashSet<(VertexId, VertexId)> = HashSet::default();
         for face in &self.faces {
             directed.insert((face.v1, face.new_he_v1));
             directed.insert((face.new_he_v1, face.new_he_v2));
@@ -307,7 +307,7 @@ impl RimPlan {
             return halves.is_empty();
         }
 
-        let mut directed: HashSet<(VertexId, VertexId)> = HashSet::new();
+        let mut directed: HashSet<(VertexId, VertexId)> = HashSet::default();
         for face in &self.faces {
             let v = [face.v1, face.new_he_v1, face.new_he_v2];
             if v[0] == v[1] || v[1] == v[2] || v[0] == v[2] {
@@ -614,7 +614,7 @@ fn closed_boundary_vertices(structure: &RimStructure) -> Result<Vec<VertexId>, S
 /// recursively. Deterministic: the scan is in walk order and only lookups touch
 /// the map.
 fn decompose_pinch_cycles(seq: &[VertexId]) -> Vec<Vec<VertexId>> {
-    let mut first_index: HashMap<VertexId, usize> = HashMap::new();
+    let mut first_index: HashMap<VertexId, usize> = HashMap::default();
 
     for (i, v_id) in seq.iter().enumerate() {
         if let Some(&j) = first_index.get(v_id) {

@@ -1,4 +1,4 @@
-use hashbrown::HashSet;
+use crate::hash::HashSet;
 use itertools::Itertools;
 use tracing::{error, instrument};
 
@@ -174,12 +174,11 @@ impl MeshGraph {
 
         // The outgoing star is stored as a list, and that list order is what
         // every other traversal of this vertex sees. Drive the fan walks from
-        // it directly instead of from a hash set built out of it: hashbrown
-        // seeds every table it creates from a random source, so picking the
-        // walk start with `iter().next()` made both the component that gets
-        // split off and the write-back order below differ between runs for one
-        // and the same mesh. The set is kept only as the "not yet walked"
-        // membership test.
+        // it directly instead of from a hash set built out of it: picking the
+        // walk start with `iter().next()` would make both the component that
+        // gets split off and the write-back order below depend on the set's
+        // iteration order rather than on the mesh. The set is kept only as the
+        // "not yet walked" membership test.
         let outgoing = self
             .outgoing_halfedges
             .get(vertex_id)
@@ -832,10 +831,10 @@ impl MeshGraph {
 
                 // Ordered, not a `HashSet`: the pair loop below removes
                 // halfedges and re-twins their survivors, so the iteration order
-                // decides which candidate pair is repaired first. hashbrown seeds
-                // every table it creates from a random source, so a set here made
-                // the repair differ between runs of the very same flap removal.
-                // The scan is in slotmap order, which depends only on the mesh.
+                // decides which candidate pair is repaired first. A set here
+                // would make the repair depend on the set's iteration order
+                // rather than on the mesh. The scan is in slotmap order, which
+                // depends only on the mesh.
                 let mut halfedges_of_faces = self
                     .halfedges
                     .iter()

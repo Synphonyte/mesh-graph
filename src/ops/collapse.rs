@@ -1,5 +1,5 @@
+use crate::hash::{HashMap, HashSet};
 use glam::Vec3;
-use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
 use tracing::{error, instrument};
 
@@ -50,7 +50,7 @@ impl MeshGraph {
         // equivalently, if `A` or `B` lies in the moved vertex's closed one-ring.
         // Recording when each vertex last moved therefore says exactly which rejected
         // edges are worth another look.
-        let mut vertex_moved_at: HashMap<VertexId, u32> = HashMap::new();
+        let mut vertex_moved_at: HashMap<VertexId, u32> = HashMap::default();
         let mut tick: u32 = 0;
 
         // Bound the work by the initial problem size, not the mesh size: a degenerate
@@ -170,7 +170,7 @@ impl MeshGraph {
                 halfedges_to_collapse.remove(&removed_he_id);
             }
 
-            let mut halfedges_to_check = HashSet::new();
+            let mut halfedges_to_check = HashSet::default();
 
             for vertex_id in vertex_neighborhoods_to_check {
                 let Some(outgoing_halfedges) = self.outgoing_halfedges.get(vertex_id) else {
@@ -916,7 +916,8 @@ mod test {
         mg.positions[w] = Vec3::new(2.5, 3.1, 0.0);
         mg.compute_vertex_normals();
 
-        let outcome = mg.collapse_until_edges_above_min_length(MIN_LEN_SQR, &mut HashSet::new());
+        let outcome =
+            mg.collapse_until_edges_above_min_length(MIN_LEN_SQR, &mut HashSet::default());
 
         assert_eq!(outcome, EdgeLengthCleanup::Stalled);
         assert!(mesh_invariant_violations(&mg).is_empty());
@@ -926,7 +927,7 @@ mod test {
     fn test_collapse_reports_converged_when_it_drains() {
         let mut mg = build_grid(6);
 
-        let outcome = mg.collapse_until_edges_above_min_length(2.0, &mut HashSet::new());
+        let outcome = mg.collapse_until_edges_above_min_length(2.0, &mut HashSet::default());
 
         assert_eq!(outcome, EdgeLengthCleanup::Converged);
         assert_eq!(
@@ -944,7 +945,7 @@ mod test {
         let mut mg = build_grid(3);
         let faces = mg.faces.len();
 
-        let outcome = mg.collapse_until_edges_above_min_length(0.01, &mut HashSet::new());
+        let outcome = mg.collapse_until_edges_above_min_length(0.01, &mut HashSet::default());
 
         assert_eq!(outcome, EdgeLengthCleanup::Converged);
         assert_eq!(mg.faces.len(), faces);
@@ -958,7 +959,7 @@ mod test {
             "initial mesh must satisfy invariants"
         );
 
-        let mut marked = HashSet::new();
+        let mut marked = HashSet::default();
         mg.collapse_until_edges_above_min_length(2.0, &mut marked);
 
         let problems = mesh_invariant_violations(&mg);
@@ -985,7 +986,7 @@ mod test {
         let faces_before = mg.faces.len();
         assert!(below_before > 0, "fixture has no edges below the threshold");
 
-        mg.collapse_until_edges_above_min_length(2.0, &mut HashSet::new());
+        mg.collapse_until_edges_above_min_length(2.0, &mut HashSet::default());
 
         assert!(mesh_invariant_violations(&mg).is_empty());
 
@@ -1035,7 +1036,7 @@ mod test {
         mg.compute_vertex_normals();
 
         let faces_before = mg.faces.len();
-        mg.collapse_until_edges_above_min_length(3.0, &mut HashSet::new());
+        mg.collapse_until_edges_above_min_length(3.0, &mut HashSet::default());
 
         assert!(
             mesh_invariant_violations(&mg).is_empty(),
@@ -1102,7 +1103,7 @@ mod test {
         assert_eq!(below(&mg), 4, "fixture should seed exactly two short edges");
         let faces_before = mg.faces.len();
 
-        mg.collapse_until_edges_above_min_length(MIN_LEN_SQR, &mut HashSet::new());
+        mg.collapse_until_edges_above_min_length(MIN_LEN_SQR, &mut HashSet::default());
 
         assert!(
             mesh_invariant_violations(&mg).is_empty(),

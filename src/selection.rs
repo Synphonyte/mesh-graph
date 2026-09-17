@@ -1,4 +1,4 @@
-use hashbrown::HashSet;
+use crate::hash::HashSet;
 use tracing::{error, instrument};
 
 use super::{FaceId, HalfedgeId, MeshGraph, VertexId};
@@ -81,7 +81,7 @@ impl Selection {
     pub fn grow(&mut self, mesh_graph: &MeshGraph) -> HashSet<VertexId> {
         let existing_verts = self.resolve_to_vertices(mesh_graph);
 
-        let mut new_verts = HashSet::new();
+        let mut new_verts = HashSet::default();
 
         for vert_id in &existing_verts {
             if let Some(vert) = mesh_graph.vertices.get(*vert_id) {
@@ -218,7 +218,7 @@ mod tests {
         let mut mg = build_grid(4);
         let selection = Selection::select_all(&mg);
 
-        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
+        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::default());
 
         assert!(
             selection
@@ -258,7 +258,7 @@ mod tests {
             faces: mg.faces.keys().collect(),
         };
 
-        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
+        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::default());
 
         let live_vertices_before: HashSet<VertexId> = selection
             .vertices

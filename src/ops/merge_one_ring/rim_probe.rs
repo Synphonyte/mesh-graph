@@ -7,7 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use hashbrown::HashSet;
+use crate::hash::HashSet;
 
 use crate::{HalfedgeId, MeshGraph, VertexId};
 
@@ -103,14 +103,14 @@ fn describe_structures(
     let mut starts: Vec<HalfedgeId> = halves.iter().copied().collect();
     starts.sort_unstable();
 
-    let mut has_predecessor = HashSet::new();
+    let mut has_predecessor = HashSet::default();
     for &he_id in &starts {
         if let RimStep::Continue(next) = rim::next_rim_half(mesh, he_id, halves) {
             has_predecessor.insert(next);
         }
     }
 
-    let mut visited = HashSet::new();
+    let mut visited = HashSet::default();
     let mut parts = Vec::new();
 
     let mut walk = |start: HalfedgeId, visited: &mut HashSet<HalfedgeId>| {
@@ -168,7 +168,7 @@ fn describe_structures(
 /// Mesh-wide count of parallel halfedges: directed vertex pairs `(v, u)` with
 /// more than one halfedge from `v` to `u`.
 pub(crate) fn count_parallel_edges(mesh: &MeshGraph) -> usize {
-    let mut seen = HashSet::<(VertexId, VertexId)>::new();
+    let mut seen = HashSet::<(VertexId, VertexId)>::default();
     let mut parallel_edges = 0;
     for (v_id, out_hes) in mesh.outgoing_halfedges.iter() {
         for he_id in out_hes {
@@ -207,14 +207,14 @@ impl RimProbe {
         // `rim_bad` (the Phase 0/1 review caught exactly that). Whatever is
         // left after the head pass is loops (and anything a head pass could not
         // reach).
-        let mut has_predecessor = HashSet::new();
+        let mut has_predecessor = HashSet::default();
         for &he_id in &starts {
             if let RimStep::Continue(next) = rim::next_rim_half(mesh, he_id, &self.rim) {
                 has_predecessor.insert(next);
             }
         }
 
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
 
         for &start in starts.iter().filter(|he| !has_predecessor.contains(*he)) {
             if !visited.insert(start) {
@@ -238,7 +238,7 @@ impl RimProbe {
     /// Dump the ordered rim walk (head-first, ascending ids) with per-half side
     /// and endpoints. Diagnostics only; the planner must not depend on this.
     fn record_walk_detail(&mut self, mesh: &MeshGraph, starts: &[HalfedgeId]) {
-        let mut has_predecessor = HashSet::new();
+        let mut has_predecessor = HashSet::default();
         for &he_id in starts {
             if let RimStep::Continue(next) = rim::next_rim_half(mesh, he_id, &self.rim) {
                 has_predecessor.insert(next);
@@ -269,7 +269,7 @@ impl RimProbe {
             )
         };
 
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let walk = |start: HalfedgeId, visited: &mut HashSet<HalfedgeId>, out: &mut Vec<String>| {
             let mut current = start;
             let mut chain = Vec::new();

@@ -7,7 +7,7 @@ mod tests;
 
 use std::ops::RangeInclusive;
 
-use hashbrown::{HashMap, HashSet};
+use crate::hash::{HashMap, HashSet};
 use itertools::Itertools;
 use tracing::{error, instrument};
 
@@ -501,8 +501,8 @@ impl MeshGraph {
         one_ring_v_ids2: &[VertexId],
         shared_v_ids: &HashSet<VertexId>,
     ) -> Option<(Vec<FaceId>, HashSet<VertexId>, HashSet<HalfedgeId>)> {
-        let mut connected_v_ids = HashSet::new();
-        let mut connected_he_ids = HashSet::new();
+        let mut connected_v_ids = HashSet::default();
+        let mut connected_he_ids = HashSet::default();
         let mut already_connected_face_ids = vec![];
 
         // Only the first strip of already existing faces is taken. A second one
@@ -1071,7 +1071,7 @@ impl MeshGraph {
         region_v_ids: impl IntoIterator<Item = VertexId>,
         result: &mut MergeVerticesOneRing,
     ) {
-        let mut seen = HashSet::<VertexId>::new();
+        let mut seen = HashSet::<VertexId>::default();
 
         for v_id in region_v_ids {
             if !seen.insert(v_id) || !self.vertices.contains_key(v_id) {

@@ -18,7 +18,7 @@
 //! rotation cannot be used either (`cw_rotated_neighbour` is `twin.next`, and a
 //! boundary half's `next` is `None`). See its own doc comment.
 
-use hashbrown::HashSet;
+use crate::hash::HashSet;
 
 use crate::{HalfedgeId, MeshGraph};
 
@@ -131,14 +131,14 @@ pub(crate) fn ring_from_halves(
     let mut starts: Vec<HalfedgeId> = halves.iter().copied().collect();
     starts.sort_unstable();
 
-    let mut has_predecessor = HashSet::new();
+    let mut has_predecessor = HashSet::default();
     for &he_id in &starts {
         if let RimStep::Continue(next) = next_rim_half(mesh, he_id, halves) {
             has_predecessor.insert(next);
         }
     }
 
-    let mut visited = HashSet::new();
+    let mut visited = HashSet::default();
     let mut v_ids = Vec::with_capacity(halves.len());
     let mut he_ids = Vec::with_capacity(halves.len());
 

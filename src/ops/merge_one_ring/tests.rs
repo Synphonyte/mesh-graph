@@ -1,9 +1,9 @@
+use crate::hash::HashSet;
 use crate::{
     utils::{extend_with, get_tracing_subscriber},
     *,
 };
 use glam::*;
-use hashbrown::HashSet;
 
 #[test]
 fn test_vertex_merge_equal_count() {
@@ -41,8 +41,8 @@ fn test_vertex_merge_equal_count() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_c_id,
@@ -113,8 +113,8 @@ fn test_vertex_merge_different_count() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_c_id,
@@ -175,8 +175,8 @@ fn test_vertex_merge_common_one_ring() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -238,8 +238,8 @@ fn test_vertex_merge_common_except_one() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -301,8 +301,8 @@ fn test_vertex_merge_common_except_two() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -364,8 +364,8 @@ fn test_vertex_merge_common_single_he_flip() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -433,8 +433,8 @@ fn test_vertex_merge_common_single_he_noflip() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -499,8 +499,8 @@ fn test_vertex_merge_common_two_one_separate() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -563,8 +563,8 @@ fn test_vertex_merge_common_one_vert() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -626,8 +626,8 @@ fn test_vertex_merge_common_double_flap() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -694,8 +694,8 @@ fn test_vertex_merge_common_two_5_8() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -756,8 +756,8 @@ fn test_vertex_merge_common_one_4_9() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -826,8 +826,8 @@ fn test_vertex_merge_connected_hes() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -896,8 +896,8 @@ fn test_vertex_merge_common_two_vs_3_4() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -966,8 +966,8 @@ fn test_vertex_merge_common_two_consec_vs_one_he_9_10() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -1034,8 +1034,8 @@ fn test_vertex_merge_common_two_hes_hole() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -1102,8 +1102,8 @@ fn test_vertex_merge_common_vert_he_tube() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -1169,8 +1169,8 @@ fn test_merge_4_4() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -1237,8 +1237,8 @@ fn test_vertex_merge_6_6_tip() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -1300,8 +1300,8 @@ fn test_vertex_merge_6_6_tube() {
 
     let boundary_before = boundary_edges(&meshgraph);
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let result = meshgraph.merge_vertices_one_rings(
         v_top_id,
@@ -1478,8 +1478,8 @@ fn test_merge_one_ring_weld_hole_reproduction() {
     #[cfg(feature = "rerun")]
     mesh_graph.log_rerun();
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
     let _result = mesh_graph.merge_vertices_one_rings(
         vertex_ids[MERGE_V1],
         vertex_ids[MERGE_V2],
@@ -1628,8 +1628,8 @@ fn test_merge_one_ring_punch_cleanup_hole_reproduction() {
     #[cfg(feature = "rerun")]
     mesh_graph.log_rerun();
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
     let _result = mesh_graph.merge_vertices_one_rings(
         vertex_ids[MERGE_V1],
         vertex_ids[MERGE_V2],
@@ -1988,8 +1988,8 @@ fn test_merge_one_ring_close_hole_reproduction() {
     #[cfg(feature = "rerun")]
     mesh_graph.log_rerun();
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
     let _result = mesh_graph.merge_vertices_one_rings(
         vertex_ids[MERGE_V1],
         vertex_ids[MERGE_V2],
@@ -2178,8 +2178,8 @@ fn build_lens_region(reconstruct_seam: bool) -> (MeshGraph, Vec<VertexId>) {
 fn merge_lens_region(reconstruct_seam: bool) -> (MeshGraph, Vec<VertexId>) {
     let (mut mesh_graph, vertex_ids) = build_lens_region(reconstruct_seam);
 
-    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::new();
-    let mut marked_vertices: HashSet<VertexId> = HashSet::new();
+    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
+    let mut marked_vertices: HashSet<VertexId> = HashSet::default();
     // The captured run had vertex 1217 (index 9) in the topology manager's
     // protected set; keep that part of the input.
     marked_vertices.insert(vertex_ids[9]);
@@ -2250,10 +2250,10 @@ fn test_merge_one_ring_lens_stays_watertight() {
 ///
 /// Several steps of the merge and of the vertex-neighborhood cleanup used to
 /// pick "an element" out of a hash table (the fan-walk start, the flap candidate
-/// pair, the order faces and halfedges are freed in). hashbrown seeds every
-/// table it creates from a random source, so those picks varied from run to run
-/// for one and the same mesh - and so did the repair. Every such choice is
-/// driven by mesh state now, so repeating the merge must give bit-identical
+/// pair, the order faces and halfedges are freed in). Those picks followed the
+/// table's iteration order rather than the mesh, and so did the repair. Every
+/// such choice is driven by mesh state now, so repeating the merge must give
+/// bit-identical
 /// topology down to the reused slotmap ids. Before the fix the degenerate
 /// variant produced 14 different outcomes in 200 runs.
 #[test]
@@ -2394,8 +2394,8 @@ fn test_merge_one_ring_parallel_edge_leftover_stays_watertight() {
         "region should have an outer cut"
     );
 
-    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::new();
-    let mut marked_vertices: HashSet<VertexId> = HashSet::new();
+    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
+    let mut marked_vertices: HashSet<VertexId> = HashSet::default();
     marked_vertices.insert(vertex_ids[7]);
 
     mesh_graph.merge_vertices_one_rings(
@@ -2532,8 +2532,8 @@ fn test_merge_one_ring_asymmetric_lens_stays_watertight() {
         "region should have an outer cut"
     );
 
-    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::new();
-    let mut marked_vertices: HashSet<VertexId> = HashSet::new();
+    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
+    let mut marked_vertices: HashSet<VertexId> = HashSet::default();
     for idx in [17usize, 19, 21] {
         marked_vertices.insert(vertex_ids[idx]);
     }
@@ -2650,8 +2650,8 @@ impl WeldCase {
 
         let boundary_before = boundary_edges(&mesh_graph);
 
-        let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::new();
-        let mut marked_vertices: HashSet<VertexId> = HashSet::new();
+        let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
+        let mut marked_vertices: HashSet<VertexId> = HashSet::default();
         for idx in self.protected {
             marked_vertices.insert(vertex_ids[*idx]);
         }
@@ -3423,8 +3423,8 @@ fn diag_open_case() {
         println!("DIAG cut edge ({}, {})", capture_id(*a), capture_id(*b));
     }
 
-    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::new();
-    let mut marked_vertices: HashSet<VertexId> = HashSet::new();
+    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
+    let mut marked_vertices: HashSet<VertexId> = HashSet::default();
     for i in case.protected {
         marked_vertices.insert(vertex_ids[*i]);
     }

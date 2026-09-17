@@ -1,4 +1,4 @@
-use hashbrown::HashSet;
+use crate::hash::HashSet;
 use tracing::instrument;
 
 use crate::{
@@ -152,7 +152,7 @@ impl MeshGraph {
                 }
             }
 
-            let mut new_hes_to_check = HashSet::new();
+            let mut new_hes_to_check = HashSet::default();
 
             for he_id in affected_faces.resolve_to_halfedges(self) {
                 let he = unwrap_or_return!(
@@ -414,10 +414,10 @@ pub struct SubdivideEdge {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::hash::HashSet;
     use crate::ops::EdgeLengthCleanup;
     use crate::utils::{build_grid, mesh_invariant_violations};
     use glam::Vec3;
-    use hashbrown::HashSet;
 
     /// `build_grid` uses unit cells, so canonical edge lengths squared are
     /// exactly 1.0 (axis-aligned) or 2.0 (diagonal).
@@ -438,8 +438,8 @@ mod test {
     fn subdivide(mg: &mut MeshGraph, max_length_squared: f32) {
         mg.subdivide_until_edges_below_max_length(
             max_length_squared,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut HashSet::default(),
+            &mut HashSet::default(),
         );
     }
 
@@ -464,8 +464,8 @@ mod test {
         let target: f32 = 0.2;
         let outcome = mg.subdivide_until_edges_below_max_length(
             target * target,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut HashSet::default(),
+            &mut HashSet::default(),
         );
 
         assert_eq!(
@@ -484,8 +484,8 @@ mod test {
 
         let outcome = mg.subdivide_until_edges_below_max_length(
             0.9,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut HashSet::default(),
+            &mut HashSet::default(),
         );
 
         assert_eq!(outcome, EdgeLengthCleanup::Converged);
@@ -501,8 +501,8 @@ mod test {
         // Every edge is already below this.
         let outcome = mg.subdivide_until_edges_below_max_length(
             100.0,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut HashSet::default(),
+            &mut HashSet::default(),
         );
 
         assert_eq!(outcome, EdgeLengthCleanup::Converged);
@@ -631,7 +631,7 @@ mod test {
         // Kill some ids first, so the marked sets carry stale entries into the call.
         let mut marked_vertices: HashSet<crate::VertexId> = mg.vertices.keys().collect();
         let mut marked_halfedges: HashSet<HalfedgeId> = mg.halfedges.keys().collect();
-        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
+        mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::default());
         assert!(
             marked_vertices
                 .iter()

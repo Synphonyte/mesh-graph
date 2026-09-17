@@ -46,10 +46,10 @@ impl MeshGraph {
         // Ordered, not a `HashSet`: this list decides the order in which the
         // halfedges are freed from the slotmap (and therefore which ids the
         // next allocations reuse), which vertices are visited below, and what
-        // the caller gets back. hashbrown seeds every table it creates from a
-        // random source, so draining a set here would make all of that vary
-        // between runs of the very same operation. The scan above is in slotmap
-        // order, so keeping that order makes them a pure function of the mesh.
+        // the caller gets back. Draining a set here would make all of that
+        // depend on the set's iteration order rather than on the mesh. The scan
+        // above is in slotmap order, so keeping that order makes them a pure
+        // function of the mesh.
         let mut removed_halfedges: Vec<HalfedgeId> = Vec::with_capacity(4);
         for (he_id, he) in halfedges {
             // A twinless member (left over by a re-pair sever or a dangling-twin clear)

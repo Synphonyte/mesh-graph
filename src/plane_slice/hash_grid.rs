@@ -1,5 +1,5 @@
+use crate::hash::{HashMap, HashSet};
 use glam::{IVec2, Vec2};
-use hashbrown::{HashMap, HashSet};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use tracing::{error, instrument};
 
@@ -29,7 +29,7 @@ impl HashGrid {
         let cell_fac = Vec2::new(grid_size_x / width, grid_size_y / height);
 
         HashGrid {
-            map: HashMap::new(),
+            map: HashMap::default(),
             min_bounds,
             cell_fac,
             polygons: SlotMap::default(),
