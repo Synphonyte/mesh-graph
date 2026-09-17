@@ -12,7 +12,7 @@ use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{
-    FaceId, HalfedgeId, MeshGraph, Vertex, VertexId, error_none,
+    FaceId, HalfedgeId, MeshGraph, VertexId, error_none,
     ops::{add::AddFace, collapse::CollapseEdge, edit::MergeVertices},
     utils::unwrap_or_return,
 };
@@ -219,14 +219,14 @@ impl MeshGraph {
             return self.finish_merge(result);
         }
 
-        self.remove_vertex_faces(&vertex1, &mut result);
+        self.remove_vertex_faces(vertex_id1, &mut result);
 
         #[cfg(test)]
         {
             test_rim_probe.h1 = rim::opened_rim(self, &test_rim_probe.before);
         }
 
-        self.remove_vertex_faces(&vertex2, &mut result);
+        self.remove_vertex_faces(vertex_id2, &mut result);
 
         #[cfg(test)]
         {
@@ -1145,16 +1145,50 @@ impl MeshGraph {
         }
     }
 
-    /// Remove every face incident to `vertex`. Used once per merge vertex, in
-    /// order, so the rim each star opens can be attributed to its side.
-    fn remove_vertex_faces(&mut self, vertex: &Vertex, result: &mut MergeVerticesOneRing) {
-        for face_id in vertex.faces(self).collect_vec() {
+    /// Remove every face incident to `vertex_id`, walking the vertex's raw
+    /// outgoing-halfedge list rather than [`Vertex::faces`].
+    ///
+    /// `faces()` follows one fan from the seed, so a pinched vertex (its star
+    /// split into more than one fan) leaves the other fans' faces behind - and
+    /// `H`, the boundary delta these removals produce, would then describe only
+    /// part of the hole while the vertex stays attached. Used once per merge
+    /// vertex, in order, so the rim each star opens can be attributed to its
+    /// side.
+    fn remove_vertex_faces(&mut self, vertex_id: VertexId, result: &mut MergeVerticesOneRing) {
+        let mut face_ids: Vec<FaceId> = Vec::new();
+        for he_id in self
+            .outgoing_halfedges
+            .get(vertex_id)
+            .cloned()
+            .unwrap_or_default()
+        {
+            if let Some(face_id) = self.halfedges.get(he_id).and_then(|he| he.face)
+                && !face_ids.contains(&face_id)
+            {
+                face_ids.push(face_id);
+            }
+        }
+
+        for face_id in face_ids {
             let (del_v, del_he) = self.remove_face(face_id);
 
             result.removed_faces.push(face_id);
             result.removed_vertices.extend(del_v);
             result.removed_halfedges.extend(del_he);
         }
+
+        // The star must be gone in full: no live outgoing halfedge of the
+        // vertex may still claim a face. A survivor means the enumeration
+        // missed a fan and `H` is a partial hole.
+        debug_assert!(
+            self.outgoing_halfedges
+                .get(vertex_id)
+                .is_none_or(|out_hes| out_hes.iter().all(|he_id| self
+                    .halfedges
+                    .get(*he_id)
+                    .is_none_or(|he| he.face.is_none()))),
+            "star removal left faces on {vertex_id:?}"
+        );
     }
 
     /// Dismantles the face (if any) that still claims `he_id` as a chain member.

@@ -3368,7 +3368,10 @@ fn test_rim_taxonomy_baseline() {
     let _ = merge_lens_region(false);
     // Degenerate synthetic variant: its repair leaves rim halves unconsumed, but
     // no wire and no parallel edges. It is only used for order-independence.
-    assert_case("lens(reconstruct=false)", [5, 5, 0, 7, 0, 4, 6, 3, 0, 0, 0]);
+    // The star removal now enumerates all fans of a pinched vertex, so this
+    // (degenerate) variant removes one more face and its rim is one half
+    // smaller than before; the values below are the post-fix baseline.
+    assert_case("lens(reconstruct=false)", [3, 4, 0, 7, 0, 2, 5, 3, 0, 0, 0]);
 
     let _ = merge_lens_region(true);
     assert_case("lens(reconstruct=true)", [0; 11]);
@@ -3400,7 +3403,7 @@ fn test_rim_taxonomy_baseline() {
         // `WELD_CASES` and these pins move with it.
         let expected = match case.what {
             "reversed weld order, radius 2, +4 boundary halfedges" => {
-                [2, 2, 0, 0, 0, 4, 2, 2, 0, 0, 0]
+                [2, 1, 0, 0, 0, 0, 2, 1, 0, 0, 0]
             }
             "reversed weld order, radius 1, +5 boundary halfedges" => {
                 [9, 0, 0, 0, 0, 0, 4, 3, 0, 0, 0]
@@ -3409,7 +3412,7 @@ fn test_rim_taxonomy_baseline() {
                 [6, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0]
             }
             "reversed weld order, radius 2, +4 boundary halfedges (mirror)" => {
-                [3, 1, 0, 0, 0, 0, 3, 1, 0, 0, 0]
+                [2, 1, 0, 0, 0, 0, 2, 1, 0, 0, 0]
             }
             other => panic!("no pinned rim taxonomy for open weld case {other:?}"),
         };
