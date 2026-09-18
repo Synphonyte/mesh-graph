@@ -46,18 +46,21 @@
 //!   key, then reverted), 200 iterations: 200 watertight.
 //! - debug build, 200 iterations: 200 watertight with the assertions live.
 //!
-//! The old planner's `wrapped`/span heuristics cannot be deleted yet, and the
-//! reason is unusual enough to record. Deleting them keeps the whole in-repo
-//! suite green with no pin changes, and instrumentation shows `is_complete`
-//! holds for *every* merge in the soak, so the old faces (and therefore the span
-//! code) are never used by the plan. Yet the span-deleted build OOM-kills the
-//! freestyle soak in nine runs out of nine, while this commit passes eleven of
-//! twelve. The only remaining lever is timing: the span code's catch-up loops
-//! cost CPU per merge, and freestyle's collision order is nondeterministic, so
-//! removing them reorders the chaotic soak into a regime that explodes. The soak
-//! is therefore not a clean gate for this particular deletion - it rejects the
-//! change for reasons unrelated to the change's correctness. The span fix stays
-//! until the soak can be made order-stable.
+//! The old planner's `wrapped`/span heuristics are gone. Two traps are worth
+//! recording, because both looked like "the deletion broke the weld" and were
+//! not:
+//!
+//! - The `wrapped` flag lived next to the walk's termination `break` (`if
+//!   start_idx1 == orig_start_idx1 { wrapped = true; break; }`). Deleting the
+//!   flag's assignment together with the `break` turned the retained walk into
+//!   an infinite loop, which the soak reported as an OOM kill after minutes of
+//!   no progress. Only the flag goes; the `break` stays.
+//! - Before the crate used a fixed-seed hasher, the weld's merge order was
+//!   nondeterministic, so the same source change could pass one run and be
+//!   OOM-killed the next. With `hash` (fixed seed) the order is reproducible and
+//!   both planner variants produce the same mesh, so a deletion can be A/B'd:
+//!   shipping 200 iterations `faces 1406..=1406` and reversed 200 `faces
+//!   1416..=1416`, identical with and without the span code.
 //!
 //! The two remaining ex-open cases (`radius 2, +4` and its mirror) cannot be
 //! planned from their fixture at all, and not for want of machinery: their rim

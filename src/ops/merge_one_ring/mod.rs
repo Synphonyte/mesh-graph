@@ -319,12 +319,10 @@ impl MeshGraph {
         let strip_faces = already_connected_face_ids;
 
         // Strips-first, unconditionally. The strip faces lie inside the rim the
-        // band has to consume, and the decision must not depend on whether the
-        // old planner happened to plan something: that coupling tied the strip
-        // teardown to the old `wrapped`/span logic (deleting the span fix made
-        // far more merges skip the teardown and leave holes). `is_complete` is
-        // the only gate on the rim plan; when it does not hold the old faces
-        // stand, which is the plan the old flow produced after the same teardown.
+        // band has to consume, and the decision does not need the old planner's
+        // output: `is_complete` is the only gate on the rim plan, and when it
+        // does not hold the old faces stand - the same plan the old flow
+        // produced after the same teardown.
         self.remove_faces(&strip_faces, &mut result);
         let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
         let plan = rim_planner::plan(self, &rim, &h1, &h2);
@@ -1664,11 +1662,6 @@ impl MeshGraph {
         let mut v_id1;
         let mut v_id2;
 
-        // Set when the walk comes back around to where it started: the ranges
-        // then already cover the whole ring and the leftover push below would
-        // duplicate the first one.
-        let mut wrapped = false;
-
         while end_idx1 != orig_start_idx1 {
             v_id1 = one_ring_v_ids1[end_idx1];
             v_id2 = one_ring_v_ids2[end_idx2];
@@ -1801,7 +1794,6 @@ impl MeshGraph {
                 }
 
                 if start_idx1 == orig_start_idx1 {
-                    wrapped = true;
                     break;
                 }
             } else {
@@ -1816,42 +1808,10 @@ impl MeshGraph {
             }
         }
 
-        // The walk advances both rings in lockstep and only lets one catch up
-        // when the loop body sees a shared vertex - but it stops as soon as ring
-        // 1 is back where it started, so the final cap may never get that
-        // treatment. Close the gap here the same way the loop body would, or the
-        // leftover range below covers one step of the other ring's arc instead
-        // of all of it, and the faces over the rest are never planned (a lens
-        // whose two shared vertices are adjacent on one ring and far apart on
-        // the other: the merge left an open quad).
-        let end_v_id1 = one_ring_v_ids1[end_idx1];
-        if shared_v_ids.contains(&end_v_id1) {
-            let from = end_idx2;
-            while one_ring_v_ids2[end_idx2] != end_v_id1 {
-                end_idx2 = (end_idx2 + 1) % len2;
-                if end_idx2 == from {
-                    break;
-                }
-            }
-        }
-        let end_v_id2 = one_ring_v_ids2[end_idx2];
-        if shared_v_ids.contains(&end_v_id2) {
-            let from = end_idx1;
-            while one_ring_v_ids1[end_idx1] != end_v_id2 {
-                end_idx1 = (end_idx1 + 1) % len1;
-                if end_idx1 == from {
-                    break;
-                }
-            }
-        }
-
-        // How far each range actually reaches, walking forward with wraparound -
-        // the direction `ConnectPair` reads its ranges in. A symmetric distance
-        // would call the arc `4..=3` of a 6-ring one step long when it spans
-        // five.
-        let span1 = (end_idx1 + len1 - start_idx1) % len1;
-        let span2 = (end_idx2 + len2 - start_idx2) % len2;
-
+        // The walk found no cap at all: cover both rings once, closed on a
+        // shared vertex and open otherwise. The old code also carried a trailing
+        // "span" push here that covered whatever the walk had left over; the
+        // rim-first planner catches that structurally now, so it is gone.
         if range_pairs_to_connect.is_empty() {
             let (end1, end2, cap) = if shared_v_ids.is_empty() {
                 (
@@ -1862,30 +1822,12 @@ impl MeshGraph {
             } else {
                 (orig_start_idx1, orig_start_idx2, ConnectPairCap::Closed)
             };
-
             range_pairs_to_connect.push(ConnectPair::new(
                 orig_start_idx1..=end1,
                 len1,
                 orig_start_idx2..=end2,
                 len2,
                 cap,
-            ));
-        } else if !wrapped && (span1 > 0 || span2 > 0) {
-            // Whatever is left between the last emitted pair and the start of the
-            // walk still has to be spanned. This used to require a span of two or
-            // more on one side, which silently dropped the final segment of a
-            // *lens* merge - two one-rings sharing two vertices, where the walk
-            // emits the long segment and the short one is left as a single step
-            // on both rings. Its faces had already been torn out with the merged
-            // vertices' stars, so nothing re-filled them and the merge ended with
-            // a hole (the intermittent weld defect: the close left boundary
-            // halfedges behind).
-            range_pairs_to_connect.push(ConnectPair::new(
-                start_idx1..=end_idx1,
-                len1,
-                start_idx2..=end_idx2,
-                len2,
-                start_cap,
             ));
         }
 
