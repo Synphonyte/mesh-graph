@@ -332,55 +332,55 @@ impl MeshGraph {
         Some((twin_id, start_vertex_id, end_vertex_id, center))
     }
 
-    /// The link condition, for an edge with two adjacent faces.
+    /// The link condition, for interior and boundary edges alike.
     ///
     /// Collapsing `(u, v)` may only merge the two stars when they share no
-    /// neighbour other than the two vertices opposite the edge in its own faces.
-    /// When they share more, the collapse glues together two parts of the surface
-    /// that already touch along those neighbours, and `(u, w)` picks up a second
-    /// copy: parallel edges whose free halves the neighborhood cleanup then
-    /// removes, leaving an open slit. The geometric inversion guard does not see
-    /// this - the faces it checks stay convex - so the condition has to be
-    /// topological.
+    /// neighbour other than the vertices opposite the edge in its own faces - two
+    /// for an interior edge, one for a boundary edge. When they share more, the
+    /// collapse glues together two parts of the surface that already touch along
+    /// those neighbours, and `(u, w)` picks up a second copy: parallel edges whose
+    /// free halves the neighborhood cleanup then removes, leaving an open slit.
+    /// The geometric inversion guard does not see this - the faces it checks stay
+    /// convex - so the condition has to be topological.
     ///
-    /// Boundary edges are left to `collapse_edge_inner`'s own boundary paths; the
-    /// condition below assumes two adjacent faces.
+    /// A boundary edge gets the same shared-neighbour test, plus the standard
+    /// boundary-preservation clause: two boundary vertices may only be merged
+    /// along a boundary edge. Merging them across the interior identifies two
+    /// distinct border points and pinches the border, which turns one boundary
+    /// loop into two that touch at a vertex.
     fn check_link_condition(&self, halfedge_id: HalfedgeId, twin_id: HalfedgeId) -> Option<()> {
         let he = self.halfedges.get(halfedge_id)?;
         let twin = self.halfedges.get(twin_id)?;
 
-        if he.is_boundary() || twin.is_boundary() {
-            return Some(());
-        }
+        let start_v = twin.end_vertex;
+        let end_v = he.end_vertex;
 
-        // The only neighbours the two stars may share: the opposite vertex of each
-        // adjacent face.
+        // `link(uv)`: the vertices opposite the edge in its incident faces. A
+        // boundary half has no `next`, so `opposite_vertex` cannot answer for it.
         let mut allowed: Vec<VertexId> = Vec::with_capacity(2);
         for h in [he, twin] {
+            if h.is_boundary() {
+                continue;
+            }
             let opposite = h.opposite_vertex(self)?;
             if !allowed.contains(&opposite) {
                 allowed.push(opposite);
             }
         }
 
-        let start = twin.end_vertex;
-        let end = he.end_vertex;
+        // Boundary preservation: only a boundary edge may merge two boundary
+        // vertices.
+        if !he.is_boundary()
+            && !twin.is_boundary()
+            && self.has_boundary_halfedge(start_v)
+            && self.has_boundary_halfedge(end_v)
+        {
+            return None;
+        }
 
-        let ring = |v: VertexId| -> Vec<VertexId> {
-            self.outgoing_halfedges
-                .get(v)
-                .map(|out| {
-                    out.iter()
-                        .filter_map(|h| self.halfedges.get(*h))
-                        .map(|h| h.end_vertex)
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-
-        let start_ring = ring(start);
-        for v in ring(end) {
-            if v == start || allowed.contains(&v) {
+        let start_ring = self.ring_end_vertices(start_v);
+        for v in self.ring_end_vertices(end_v) {
+            if v == start_v || allowed.contains(&v) {
                 continue;
             }
             if start_ring.contains(&v) {
@@ -389,6 +389,32 @@ impl MeshGraph {
         }
 
         Some(())
+    }
+
+    /// Whether any halfedge leaving `v` is face-less.
+    ///
+    /// Scans the raw outgoing list rather than [`Vertex::is_boundary`], whose
+    /// single seed halfedge can sit on an interior fan of a pinched vertex.
+    fn has_boundary_halfedge(&self, v: VertexId) -> bool {
+        self.outgoing_halfedges.get(v).is_some_and(|out| {
+            out.iter()
+                .any(|h| self.halfedges.get(*h).is_some_and(|h| h.is_boundary()))
+        })
+    }
+
+    /// The end vertices of every halfedge leaving `v`, in list order (duplicates
+    /// included - a pinched star reaches the same neighbour from more than one
+    /// fan).
+    fn ring_end_vertices(&self, v: VertexId) -> Vec<VertexId> {
+        self.outgoing_halfedges
+            .get(v)
+            .map(|out| {
+                out.iter()
+                    .filter_map(|h| self.halfedges.get(*h))
+                    .map(|h| h.end_vertex)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn check_inverted_faces(&self, vertex_id: VertexId, center: Vec3) -> Option<()> {
@@ -1348,6 +1374,75 @@ mod link_condition_tests {
         assert!(
             !mesh.can_collapse_edge(halfedge_id),
             "an edge whose endpoints share five neighbours must not be collapsible"
+        );
+    }
+
+    /// A quad, so the interior diagonal joins two boundary vertices: merging them
+    /// would pinch the border. The link condition alone passes here - the two
+    /// stars share exactly the two vertices opposite the diagonal - so this pins
+    /// the boundary-preservation clause.
+    #[test]
+    fn test_interior_edge_between_boundary_vertices_is_not_collapsible() {
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.2),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.2),
+        ];
+        // (0, 1, 2) and (0, 2, 3): the diagonal 0-2 is interior.
+        let indices = [0, 1, 2, 0, 2, 3];
+        let (mut mesh, ids) = MeshGraph::indexed_triangles_and_vertex_ids(&positions, &indices);
+
+        let diagonal = mesh
+            .halfedges_from_to(ids[0], ids[2])
+            .into_iter()
+            .next()
+            .expect("diagonal must exist");
+        let twin = mesh.halfedges[diagonal].twin.expect("twin");
+        assert!(mesh.halfedges[diagonal].face.is_some());
+        assert!(mesh.halfedges[twin].face.is_some());
+
+        assert!(
+            !mesh.can_collapse_edge(diagonal),
+            "merging two boundary vertices across the interior would pinch the border"
+        );
+    }
+
+    /// The same quad's border edge must stay collapsible: it is a boundary edge,
+    /// so merging its two boundary endpoints runs along the border.
+    #[test]
+    fn test_boundary_edge_stays_collapsible() {
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.2),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.2),
+        ];
+        let indices = [0, 1, 2, 0, 2, 3];
+        let (mut mesh, ids) = MeshGraph::indexed_triangles_and_vertex_ids(&positions, &indices);
+
+        let border = mesh
+            .halfedges
+            .iter()
+            .find_map(|(he_id, he)| {
+                (he.is_boundary()
+                    && he.end_vertex == ids[1]
+                    && he.start_vertex(&mesh) == Some(ids[0]))
+                .then_some(he_id)
+            })
+            .or_else(|| {
+                mesh.halfedges.iter().find_map(|(he_id, he)| {
+                    (he.is_boundary()
+                        && he.end_vertex == ids[0]
+                        && he.start_vertex(&mesh) == Some(ids[1]))
+                    .then_some(he_id)
+                })
+            })
+            .expect("border edge 0-1 must exist");
+
+        assert!(
+            mesh.can_collapse_edge(border),
+            "a border edge whose endpoints share only the opposite vertex is collapsible"
         );
     }
 }
