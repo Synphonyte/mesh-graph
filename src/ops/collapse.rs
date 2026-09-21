@@ -325,10 +325,70 @@ impl MeshGraph {
 
         let center = (start_pos + end_pos) * 0.5;
 
+        self.check_link_condition(halfedge_id, twin_id)?;
         self.check_inverted_faces(start_vertex_id, center)?;
         self.check_inverted_faces(end_vertex_id, center)?;
 
         Some((twin_id, start_vertex_id, end_vertex_id, center))
+    }
+
+    /// The link condition, for an edge with two adjacent faces.
+    ///
+    /// Collapsing `(u, v)` may only merge the two stars when they share no
+    /// neighbour other than the two vertices opposite the edge in its own faces.
+    /// When they share more, the collapse glues together two parts of the surface
+    /// that already touch along those neighbours, and `(u, w)` picks up a second
+    /// copy: parallel edges whose free halves the neighborhood cleanup then
+    /// removes, leaving an open slit. The geometric inversion guard does not see
+    /// this - the faces it checks stay convex - so the condition has to be
+    /// topological.
+    ///
+    /// Boundary edges are left to `collapse_edge_inner`'s own boundary paths; the
+    /// condition below assumes two adjacent faces.
+    fn check_link_condition(&self, halfedge_id: HalfedgeId, twin_id: HalfedgeId) -> Option<()> {
+        let he = self.halfedges.get(halfedge_id)?;
+        let twin = self.halfedges.get(twin_id)?;
+
+        if he.is_boundary() || twin.is_boundary() {
+            return Some(());
+        }
+
+        // The only neighbours the two stars may share: the opposite vertex of each
+        // adjacent face.
+        let mut allowed: Vec<VertexId> = Vec::with_capacity(2);
+        for h in [he, twin] {
+            let opposite = h.opposite_vertex(self)?;
+            if !allowed.contains(&opposite) {
+                allowed.push(opposite);
+            }
+        }
+
+        let start = twin.end_vertex;
+        let end = he.end_vertex;
+
+        let ring = |v: VertexId| -> Vec<VertexId> {
+            self.outgoing_halfedges
+                .get(v)
+                .map(|out| {
+                    out.iter()
+                        .filter_map(|h| self.halfedges.get(*h))
+                        .map(|h| h.end_vertex)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let start_ring = ring(start);
+        for v in ring(end) {
+            if v == start || allowed.contains(&v) {
+                continue;
+            }
+            if start_ring.contains(&v) {
+                return None;
+            }
+        }
+
+        Some(())
     }
 
     fn check_inverted_faces(&self, vertex_id: VertexId, center: Vec3) -> Option<()> {
@@ -1233,5 +1293,61 @@ mod test {
                 "marked vertex {v_id:?} is dead"
             );
         }
+    }
+}
+
+/// The link condition: an edge whose endpoints share a neighbour that is not one
+/// of the vertices opposite it must not be collapsible.
+///
+/// The fixture is the one-ring of such an edge, extracted from a freestyle weld
+/// that opened a two-halfedge slit. The weld's cleanup collapsed this edge,
+/// because the guard only checked for inverted faces: the collapse left a second
+/// copy of `(u, w)` behind, and removing the resulting coincident faces left the
+/// surface open. The gate must reject it on topology alone.
+#[cfg(test)]
+mod link_condition_tests {
+    use crate::{MeshGraph, Vec3};
+
+    #[test]
+    fn test_edge_breaking_the_link_condition_is_not_collapsible() {
+        let positions = [
+            Vec3::new(1.5474508, 0.8314448, 0.48144284),
+            Vec3::new(1.476615, 0.7591524, 0.5624269),
+            Vec3::new(1.5139911, 0.9200293, 0.5236689),
+            Vec3::new(1.48824, 0.9244807, 0.68454176),
+            Vec3::new(1.4824275, 0.84181654, 0.6234844),
+            Vec3::new(1.5372095, 1.0181688, 0.64666533),
+            Vec3::new(1.4763294, 0.9111748, 0.5377056),
+            Vec3::new(1.5632365, 0.898358, 0.37499934),
+            Vec3::new(1.4542371, 1.0170964, 0.42268354),
+            Vec3::new(1.5412235, 1.0512308, 0.41721624),
+            Vec3::new(1.4374998, 0.75037587, 0.37499997),
+            Vec3::new(1.4456218, 0.9199032, 0.3959853),
+            Vec3::new(1.4714506, 1.0471027, 0.6503712),
+        ];
+        let indices = [
+            0, 1, 2, 3, 2, 4, 5, 6, 2, 4, 2, 1, 2, 7, 0, 3, 5, 2, 2, 8, 9, 7, 2, 9, 8, 2, 6, 6, 10,
+            11, 6, 1, 10, 4, 6, 3, 3, 6, 12, 1, 6, 4, 6, 5, 12, 11, 8, 6,
+        ];
+
+        let (mut mesh, vertex_ids) =
+            MeshGraph::indexed_triangles_and_vertex_ids(&positions, &indices);
+        let start = vertex_ids[2];
+        let end = vertex_ids[6];
+        let halfedge_id = mesh
+            .halfedges_from_to(start, end)
+            .into_iter()
+            .next()
+            .expect("edge 2 -> 6 must exist");
+
+        // The condition only applies to an edge with two adjacent faces.
+        let twin_id = mesh.halfedges[halfedge_id].twin.expect("twin");
+        assert!(mesh.halfedges[halfedge_id].face.is_some());
+        assert!(mesh.halfedges[twin_id].face.is_some());
+
+        assert!(
+            !mesh.can_collapse_edge(halfedge_id),
+            "an edge whose endpoints share five neighbours must not be collapsible"
+        );
     }
 }
