@@ -6,8 +6,9 @@
 //!    element the operation created. Asserted against a brute-force diff of the mesh's
 //!    own keys, so the mechanism the operation uses to report additions is never the
 //!    thing being trusted.
-//! 2. **Containment** - the operation changes geometry inside the selection and leaves
-//!    the rest of the mesh alone.
+//! 2. **Containment** - the operation only collapses or splits edges in scope and moves
+//!    no vertex outside it. (Topology just past the rim can still change: see the
+//!    scoped collapse's docs.)
 //! 3. **Equivalence** - selecting everything reproduces the whole-mesh operation.
 
 use crate::hash::HashSet;
@@ -22,7 +23,7 @@ use crate::{
     },
 };
 
-type Keys = (HashSet<VertexId>, HashSet<HalfedgeId>, HashSet<FaceId>);
+pub(crate) type Keys = (HashSet<VertexId>, HashSet<HalfedgeId>, HashSet<FaceId>);
 
 /// Asserts the full bookkeeping contract against a brute-force key diff.
 ///
@@ -32,7 +33,7 @@ type Keys = (HashSet<VertexId>, HashSet<HalfedgeId>, HashSet<FaceId>);
 /// ```
 /// plus: the reported delta is sufficient to get from one to the other, nothing is in
 /// both halves of the delta, and no dead id survives anywhere.
-fn assert_bookkeeping(
+pub(crate) fn assert_bookkeeping(
     mg: &MeshGraph,
     before: &Keys,
     sel_before: &Selection,

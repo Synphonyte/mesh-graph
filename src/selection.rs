@@ -131,6 +131,11 @@ impl Selection {
             live
         });
 
+        // Collected out of hash sets; sorted so the reported order does not follow the hasher.
+        removed.vertices.sort_unstable();
+        removed.halfedges.sort_unstable();
+        removed.faces.sort_unstable();
+
         removed
     }
 

@@ -145,13 +145,19 @@ impl MeshGraph {
     }
 
     /// Collapses the edges covered by `selection` until they are all above the minimum
-    /// length, leaving the rest of the mesh alone.
+    /// length. Only edges in scope are ever collapsed.
     ///
     /// The scope is [`Selection::resolve_to_halfedges`]: explicitly selected halfedges,
     /// every halfedge of a selected face, and every outgoing halfedge of a selected
     /// vertex. Collapsing an edge on the rim of the selection moves a vertex that
     /// unselected faces also use, so those faces change shape even though none of their
-    /// own edges were collapsed.
+    /// own edges were collapsed. The topology just outside the rim can change too: the
+    /// collapse's cleanup splits a vertex whose fan became non-manifold, which re-links
+    /// faces on both sides of the rim, and a hole the collapse opens next to the rim is
+    /// closed with new faces (or loses a lone triangle). The alternative would be a
+    /// broken mesh. Elements it creates out there are added to `selection` like any
+    /// other; unselected elements it destroys there are not reported, as the selection
+    /// never held them.
     ///
     /// `selection` is updated in place: elements the operation destroyed are dropped and
     /// elements it created are added, so the selection keeps describing the same region
@@ -2537,6 +2543,17 @@ mod weld_collapse_cases {
         /// boundary in the replay but not in the weld, so it is ignored) plus
         /// the wire halves left behind.
         fn replay(&self) -> (usize, usize, Vec<String>) {
+            self.replay_with(|mesh_graph, marked| {
+                mesh_graph.collapse_until_edges_above_min_length(self.min_len_sqr, marked);
+            })
+        }
+
+        /// [`Self::replay`] with the collapse call supplied by the caller, e.g. a scoped
+        /// one. `run` gets the rebuilt mesh and the protected vertices.
+        fn replay_with(
+            &self,
+            run: impl FnOnce(&mut MeshGraph, &mut HashSet<VertexId>),
+        ) -> (usize, usize, Vec<String>) {
             let (mut mesh_graph, vertex_ids) = self.build();
 
             let boundary = |mesh: &MeshGraph| -> std::collections::BTreeSet<(VertexId, VertexId)> {
@@ -2564,7 +2581,7 @@ mod weld_collapse_cases {
             for idx in self.protected {
                 marked.insert(vertex_ids[*idx]);
             }
-            mesh_graph.collapse_until_edges_above_min_length(self.min_len_sqr, &mut marked);
+            run(&mut mesh_graph, &mut marked);
 
             let after = boundary(&mesh_graph);
             let opened: Vec<String> = after
@@ -2681,6 +2698,81 @@ mod weld_collapse_cases {
                 fingerprints.len(),
             );
         }
+    }
+
+    /// The scoped collapse runs the same hole closer, and the holes it opens sit at the
+    /// rim of the selection: only the faces next to a short edge are selected, so the
+    /// faces the collapse removes and the closer replaces straddle the scope's border.
+    /// Every captured case must still end watertight, with a selection whose reported
+    /// delta replays exactly.
+    #[test]
+    fn test_scoped_collapse_closes_holes_at_the_rim_of_the_selection() {
+        use crate::ops::selection_scoped_tests::{Keys, assert_bookkeeping};
+        use crate::utils::element_keys;
+        use crate::{FaceId, Selection};
+
+        let mut closed_across_the_rim = 0;
+
+        for case in CASES {
+            let (opened, wire, edges) = case.replay_with(|mesh_graph, marked| {
+                let mut faces: Vec<FaceId> = Vec::new();
+                for (_, he) in &mesh_graph.halfedges {
+                    if let Some(face) = he.face
+                        && he.length_squared(mesh_graph) < case.min_len_sqr
+                        && !faces.contains(&face)
+                    {
+                        faces.push(face);
+                    }
+                }
+                assert!(!faces.is_empty(), "{}: nothing to collapse", case.what);
+
+                let mut selection = Selection {
+                    faces: faces.into_iter().collect(),
+                    ..Default::default()
+                };
+                let sel_before = selection.clone();
+                let before: Keys = element_keys(mesh_graph);
+
+                let result = mesh_graph.collapse_selected_until_edges_above_min_length(
+                    &mut selection,
+                    case.min_len_sqr,
+                    marked,
+                );
+
+                assert_bookkeeping(mesh_graph, &before, &sel_before, &selection, &result);
+
+                // Count the closer's faces that share an edge with a face that was there
+                // before and never selected: a hole closed across the rim.
+                for &f_id in &result.added.faces {
+                    for he_id in mesh_graph.faces[f_id].halfedges(mesh_graph) {
+                        let neighbour = mesh_graph.halfedges[he_id]
+                            .twin
+                            .and_then(|twin_id| mesh_graph.halfedges[twin_id].face);
+                        if let Some(neighbour) = neighbour
+                            && before.2.contains(&neighbour)
+                            && !sel_before.faces.contains(&neighbour)
+                        {
+                            closed_across_the_rim += 1;
+                        }
+                    }
+                }
+            });
+
+            assert!(
+                opened == 0 && wire == 0,
+                "{:?}: scoped collapse gained {opened} boundary edges ({}) and {wire} wire halves",
+                case.what,
+                edges.join(", ")
+            );
+        }
+
+        // Collapsing never builds faces; only the closer does. Without this the test
+        // could pass on cases whose holes the scope kept from opening, or kept away
+        // from the rim.
+        assert!(
+            closed_across_the_rim > 0,
+            "no scoped collapse closed a hole next to an unselected face"
+        );
     }
 
     /// Read-only: the replay's raw numbers, for the diag run.
