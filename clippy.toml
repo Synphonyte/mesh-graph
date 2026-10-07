@@ -1,0 +1,14 @@
+# Every hash map and set in the crate goes through the fixed-seed aliases in `src/hash.rs`.
+# Turning off hashbrown's `default-hasher` feature in Cargo.toml is not enough on its own:
+# Cargo unifies features across the build, and parry3d turns it back on. So the guard is
+# here, and CI runs clippy with `-D warnings`.
+disallowed-types = [
+    { path = "hashbrown::HashMap", reason = "use `crate::hash::HashMap` (fixed-seed builder)" },
+    { path = "hashbrown::HashSet", reason = "use `crate::hash::HashSet` (fixed-seed builder)" },
+    { path = "hashbrown::DefaultHashBuilder", reason = "randomly seeded; use the `crate::hash` aliases" },
+    { path = "std::collections::HashMap", reason = "use `crate::hash::HashMap` (fixed-seed builder)" },
+    { path = "std::collections::HashSet", reason = "use `crate::hash::HashSet` (fixed-seed builder)" },
+    { path = "std::hash::RandomState", reason = "randomly seeded; use the `crate::hash` aliases" },
+    { path = "foldhash::fast::RandomState", reason = "randomly seeded; use the `crate::hash` aliases" },
+    { path = "foldhash::quality::RandomState", reason = "randomly seeded; use the `crate::hash` aliases" },
+]

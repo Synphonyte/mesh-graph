@@ -9,6 +9,123 @@ use crate::{
     utils::unwrap_or_return,
 };
 
+/// The two vertices of an edge in a fixed order, so the pair can key a set.
+pub(crate) fn edge_key(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
+    if a < b { (a, b) } else { (b, a) }
+}
+
+/// The vertex renames an op makes, so a vertex-pair snapshot taken at its start can still be
+/// compared against the mesh at its end.
+///
+/// The "opened" tests of the hole closers compare edges by vertex pair against such a
+/// snapshot. An op that merges two vertices, or splits one, gives the old edges at those
+/// vertices pairs the snapshot has never seen: they look newly opened and can be sealed. The
+/// renames are recorded as they happen - cheaply, touching only the vertices involved - and
+/// applied to the snapshot once, when a closer needs it ([`Self::resolve`]).
+#[derive(Default)]
+pub(crate) struct VertexRenames {
+    /// Live vertex -> the snapshot vertices it now stands for. Only vertices a rename touched
+    /// have an entry; every other vertex stands for itself.
+    origins: HashMap<VertexId, Vec<VertexId>>,
+}
+
+impl VertexRenames {
+    /// The snapshot vertices `v_id` stands for.
+    fn origins_of(&self, v_id: VertexId) -> Vec<VertexId> {
+        self.origins
+            .get(&v_id)
+            .cloned()
+            .unwrap_or_else(|| vec![v_id])
+    }
+
+    /// `absorbed` was merged into `survivor`: its edges now run from the survivor.
+    pub(crate) fn absorb(&mut self, absorbed: VertexId, survivor: VertexId) {
+        if absorbed == survivor {
+            return;
+        }
+
+        let carried = self.origins_of(absorbed);
+        self.origins.remove(&absorbed);
+
+        let entry = self
+            .origins
+            .entry(survivor)
+            .or_insert_with(|| vec![survivor]);
+        for v_id in carried {
+            if !entry.contains(&v_id) {
+                entry.push(v_id);
+            }
+        }
+    }
+
+    /// `new` was split off `original`: some of the original's edges now run from `new`, and
+    /// which ones is not recorded, so `new` stands for everything `original` stands for.
+    pub(crate) fn split(&mut self, original: VertexId, new: VertexId) {
+        let carried = self.origins_of(original);
+        self.origins
+            .entry(original)
+            .or_insert_with(|| carried.clone());
+
+        let entry = self.origins.entry(new).or_default();
+        for v_id in carried {
+            if !entry.contains(&v_id) {
+                entry.push(v_id);
+            }
+        }
+    }
+
+    /// `snapshot` with every pair carried through the recorded renames: each end replaced by
+    /// all the live vertices that stand for it. A pair whose two ends became one vertex is
+    /// the merged edge itself and drops.
+    ///
+    /// A split makes this over-inclusive (both halves of a split vertex inherit all its old
+    /// edges), which can only make a closer leave a hole open, never seal an old border.
+    pub(crate) fn resolve(
+        &self,
+        snapshot: &HashSet<(VertexId, VertexId)>,
+    ) -> HashSet<(VertexId, VertexId)> {
+        if self.origins.is_empty() {
+            return snapshot.clone();
+        }
+
+        // Snapshot vertex -> the live vertices that stand for it.
+        let mut current: HashMap<VertexId, Vec<VertexId>> = HashMap::default();
+        for (live, origins) in &self.origins {
+            for origin in origins {
+                current.entry(*origin).or_default().push(*live);
+            }
+        }
+        let live_of = |v_id: VertexId| -> Vec<VertexId> {
+            current.get(&v_id).cloned().unwrap_or_else(|| vec![v_id])
+        };
+
+        let mut resolved = HashSet::default();
+        for &(a, b) in snapshot {
+            let live_b = live_of(b);
+            for live_a in live_of(a) {
+                for &live_b in &live_b {
+                    if live_a != live_b {
+                        resolved.insert(edge_key(live_a, live_b));
+                    }
+                }
+            }
+        }
+
+        resolved
+    }
+}
+
+/// What one run of [`MeshGraph::close_collapse_boundary_loops`] did.
+#[derive(Default)]
+struct CollapseCloserPass {
+    /// A face was added or a lone triangle removed.
+    progressed: bool,
+    /// An added face has an edge below the collapse threshold.
+    left_short_edge: bool,
+    /// Halfedges freed by lone-triangle removals.
+    removed_halfedges: Vec<HalfedgeId>,
+}
+
 impl MeshGraph {
     /// Collapses edges until all edges have a length above the minimum length.
     ///
@@ -32,6 +149,23 @@ impl MeshGraph {
             self.halfedges_map(|len_sqr| len_sqr < min_length_squared),
             PendingOrder::ShortestFirst,
         );
+
+        // The boundary as the op found it, keyed by *edge* rather than by halfedge id:
+        // the collapse and its cleanup rebuild halfedges, so an id recorded here can
+        // name an edge that still exists under a new id. Only loops this op opened may
+        // be closed - an edge that was already boundary belongs to a border that is
+        // meant to be open (or, in a captured replay, to the cut's rim) - so this is
+        // what keeps the closer from sealing one. Filled on the first collapse: with
+        // nothing to collapse the mesh cannot change, and the scan would be waste.
+        let mut boundary_before: Option<HashSet<(VertexId, VertexId)>> = None;
+        // The wire edges as the op found them. A wire can also *form* on an edge that was
+        // already boundary on one side (the collapse takes the face off the other), and
+        // such an edge is not one the op "opened", so the boundary set above does not
+        // describe it: the wire has to be compared against its own snapshot.
+        let mut wire_before: HashSet<(VertexId, VertexId)> = HashSet::default();
+        // The vertex merges and splits the collapses make, applied to both snapshots once
+        // the loop is done (see `VertexRenames`).
+        let mut renames = VertexRenames::default();
 
         // Edges popped as shortest-pending but rejected by `can_collapse_edge_inner`.
         // They stay pending, because a later collapse can make them collapsible, but
@@ -141,6 +275,11 @@ impl MeshGraph {
                 EdgeLengthCleanup::Stalled
             );
 
+            if boundary_before.is_none() {
+                boundary_before = Some(self.boundary_edge_pairs());
+                wire_before = self.wire_edge_pairs();
+            }
+
             let collapse_edge_result = self.collapse_edge_inner(
                 min_he_id,
                 min_twin_id,
@@ -148,6 +287,23 @@ impl MeshGraph {
                 min_end_v_id,
                 min_center,
             );
+
+            // Carry the snapshots through the renames this collapse made, or the old border
+            // edges at the renamed vertices look newly opened. The end vertex is absorbed
+            // into the start vertex; the neighborhood cleanup then runs on the start vertex
+            // only, so every vertex it splits off descends from it.
+            if collapse_edge_result
+                .removed_vertices
+                .contains(&min_end_v_id)
+                && !collapse_edge_result
+                    .removed_vertices
+                    .contains(&min_start_v_id)
+            {
+                renames.absorb(min_end_v_id, min_start_v_id);
+            }
+            for &added_v_id in &collapse_edge_result.added_vertices {
+                renames.split(min_start_v_id, added_v_id);
+            }
 
             let vertex_neighborhoods_to_check = if collapse_edge_result.added_vertices.is_empty() {
                 if collapse_edge_result.removed_halfedges.is_empty() {
@@ -234,6 +390,81 @@ impl MeshGraph {
 
         self.rebuild_outgoing_halfedges();
 
+        // The collapse can leave a closed region one or two faces short of
+        // watertight: a twin-side face removal + the neighborhood cleanup consume
+        // the star of the collapsed edge, and when the two sheets meet (coincident
+        // contact vertices) the rim they leave is a small boundary loop. The merge phase
+        // closes the holes it opens with `close_merge_opened_holes`; the collapse phase
+        // needs the same net, or what it removes it does not put back ("the op closes exactly what it opened").
+        //
+        // The search runs over the boundary *this op opened* - the current boundary
+        // minus the boundary it found - and every loop it closes consists of such edges
+        // only. That is the exact guard, and it is why the closer needs no notion of a
+        // neighborhood: a cleanup can open a hole around a vertex no recorded one-ring
+        // reaches, and scoping the search to what the op moved would leave that hole open
+        // (`MESH_GRAPH_COLLAPSE_DEBUG` showed exactly that shape: chains of opened
+        // boundary whose endpoints were never touched).
+        let mut closed_over_a_short_edge = false;
+
+        if let Some(boundary_before) = &boundary_before {
+            let boundary_before = &renames.resolve(boundary_before);
+            let wire_before = &renames.resolve(&wire_before);
+
+            // A collapse can also leave a *wire* edge: both of its halves face-less, where
+            // a twin-side face removal and a neighbouring one met on the same edge. It
+            // carries no surface, and while it is there the boundary walk cannot pass the
+            // vertices it touches - a vertex of a wire has an extra outgoing boundary
+            // halfedge, which ends the walk. Dropping it is part of closing, not a separate
+            // cleanup, so the two alternate.
+            loop {
+                let candidates = self.opened_boundary_vertices(boundary_before);
+
+                // Wires this op made - including the ones on edges that were already
+                // boundary on one side, which `candidates` does not reach.
+                let mut wire_candidates = candidates.clone();
+                let mut in_wire_candidates: HashSet<VertexId> =
+                    wire_candidates.iter().copied().collect();
+                let mut new_wires: Vec<(VertexId, VertexId)> = self
+                    .wire_edge_pairs()
+                    .into_iter()
+                    .filter(|pair| !wire_before.contains(pair))
+                    .collect();
+                // Out of a hash set; the removal order decides which slots are freed first.
+                new_wires.sort_unstable();
+                for (a, b) in new_wires {
+                    for v_id in [a, b] {
+                        if in_wire_candidates.insert(v_id) {
+                            wire_candidates.push(v_id);
+                        }
+                    }
+                }
+
+                let removed_wires = self.remove_wire_edges(&wire_candidates);
+
+                for he_id in &removed_wires {
+                    halfedges_to_collapse.remove(he_id);
+                }
+
+                let pass = self.close_collapse_boundary_loops(
+                    &candidates,
+                    boundary_before,
+                    min_length_squared,
+                );
+                closed_over_a_short_edge |= pass.left_short_edge;
+
+                for he_id in &pass.removed_halfedges {
+                    halfedges_to_collapse.remove(he_id);
+                }
+
+                // Every step shrinks the boundary (a dropped wire, a closing face, a removed
+                // lone triangle), so this terminates: it stops as soon as a pass changed
+                // nothing.
+                if removed_wires.is_empty() && !pass.progressed {
+                    break;
+                }
+            }
+        }
+
         // Collapsing absorbs one endpoint into the other, so ids the caller marked can
         // name vertices that no longer exist. The set is extended with the vertices
         // cleanup creates, so it has to be pruned of the ones it destroys as well, or
@@ -250,11 +481,327 @@ impl MeshGraph {
 
         // The loop only exits early once the pending set drains, so anything left in it
         // is an edge below the threshold that could not be collapsed.
-        if halfedges_to_collapse.is_empty() {
+        // An edge the closer added can sit below the threshold - the diagonal across a
+        // contact hole is short by construction, its endpoints being the vertices the
+        // collapse just brought together - and the op may not call the mesh clean then.
+        if halfedges_to_collapse.is_empty() && !closed_over_a_short_edge {
             EdgeLengthCleanup::Converged
         } else {
             EdgeLengthCleanup::Stalled
         }
+    }
+
+    /// Closes the boundary loops the collapse just opened.
+    ///
+    /// When the sheets meet at coincident vertices, the collapse's twin-side
+    /// face removal plus the neighborhood cleanup can consume the whole star of
+    /// the collapsed edge and leave a boundary loop - three or four halfedges
+    /// typically, six or seven for the weld's small-gap openings - so the region
+    /// is some faces short of watertight. The merge phase closes its own holes the
+    /// same way (`close_merge_opened_holes`, same walker).
+    ///
+    /// Any loop length is closed, but only loops made entirely of edges this op
+    /// opened: the walk follows edges absent from `boundary_before` (keyed by vertex
+    /// pair, so an edge re-created under a new halfedge id still counts as old), a
+    /// vertex with no opened outgoing boundary ends it, and one with several is a
+    /// pinch where the lowest id is taken. A border that is meant to be open is
+    /// therefore never sealed by accident. Each face comes from
+    /// [`Self::close_loop_with_fan`], which skips cuts that would fold a non-convex loop.
+    ///
+    /// `candidates` is [`Self::opened_boundary_vertices`] of `boundary_before`: the walk
+    /// starts from those, and a hole the op opened always touches one of them.
+    ///
+    /// This is part of the op rather than a repair net, so `MESH_GRAPH_MERGE_NETS=0`
+    /// (the merge's nets-off oracle) does not disable it: what it closes is boundary this
+    /// op itself opened, not a leftover of another algorithm's removals.
+    ///
+    /// A three-halfedge loop around a lone triangle is not closed but emptied: the triangle
+    /// is removed (see [`Self::lone_face_behind`]).
+    ///
+    /// The result says whether anything changed, whether a face it added left an edge below
+    /// the length threshold (a diagonal across a contact hole is short by construction, and
+    /// the caller reports that as a survivor rather than as a clean mesh), and which
+    /// halfedges a lone-triangle removal freed.
+    fn close_collapse_boundary_loops(
+        &mut self,
+        candidates: &[VertexId],
+        boundary_before: &HashSet<(VertexId, VertexId)>,
+        min_length_squared: f32,
+    ) -> CollapseCloserPass {
+        let mut pass = CollapseCloserPass::default();
+        let mut closed = 0usize;
+
+        // Closing a loop can shorten a longer one: fanning a quad adds the face on
+        // one side of a diagonal and leaves the triangle on the other side, which
+        // the next sweep picks up. Every sweep that closes something strictly
+        // shrinks the boundary, so this terminates.
+        loop {
+            let mut progressed = false;
+
+            for &start_v in candidates {
+                if !self.vertices.contains_key(start_v) {
+                    continue;
+                }
+
+                // Every halfedge of the loop it returns is one this op opened (see
+                // `boundary_loop_from`), so a border that was already there can only be
+                // touched by the loop, never closed over.
+                let Some(loop_hes) = self.boundary_loop_from(start_v, boundary_before) else {
+                    continue;
+                };
+
+                if let Some(face_id) = self.lone_face_behind(&loop_hes) {
+                    let (_, removed_halfedges) = self.remove_face(face_id);
+                    pass.removed_halfedges.extend(removed_halfedges);
+                    pass.progressed = true;
+                    progressed = true;
+                    continue;
+                }
+
+                // Close the loop as a fan: one face over two consecutive halfedges, which
+                // cuts the diagonal the rest of the loop folds around. Three halfedges close
+                // outright; more leave the remainder for the next sweep - and the corner
+                // rotates when the canonical cut cannot be made.
+                let Some(added) = self.close_loop_with_fan(&loop_hes) else {
+                    continue;
+                };
+
+                closed += 1;
+                pass.progressed = true;
+                progressed = true;
+                pass.left_short_edge |= added.halfedge_ids.iter().any(|he_id| {
+                    self.halfedges
+                        .get(*he_id)
+                        .is_some_and(|he| he.length_squared(self) < min_length_squared)
+                });
+
+                #[cfg(feature = "instrumentation")]
+                crate::record_op_trace!(
+                    "collapse hole closer: closed {loop_hes:?} with face {:?}",
+                    added.face_id
+                );
+            }
+
+            if !progressed {
+                break;
+            }
+        }
+
+        if closed > 0 {
+            tracing::debug!("collapse closer closed {closed} boundary loops");
+        }
+
+        pass
+    }
+
+    /// Removes the wire edges a vertex of `candidates` belongs to: edges with no face on
+    /// either side.
+    ///
+    /// Such an edge carries no surface - two face removals met on it and left both halves
+    /// face-less - and it blocks every boundary walk, because a vertex of a wire has an
+    /// extra outgoing boundary halfedge, which ends the walk. A hole that touches one
+    /// cannot be closed until the wire is gone, which is why the caller alternates this
+    /// with the closer.
+    ///
+    /// Returns the halfedges it removed (both halves per wire).
+    fn remove_wire_edges(&mut self, candidates: &[VertexId]) -> Vec<HalfedgeId> {
+        let mut wires: Vec<HalfedgeId> = Vec::new();
+
+        for &v_id in candidates {
+            let Some(out_hes) = self.outgoing_halfedges.get(v_id) else {
+                continue;
+            };
+
+            for he_id in out_hes {
+                let is_wire = self.halfedges.get(*he_id).is_some_and(|he| {
+                    he.is_boundary()
+                        && he
+                            .twin
+                            .and_then(|twin_id| self.halfedges.get(twin_id))
+                            .is_some_and(|twin| twin.is_boundary())
+                });
+
+                // The twin reports the same edge; the liveness filter below drops the
+                // duplicate once the first half has taken the pair with it.
+                if is_wire {
+                    wires.push(*he_id);
+                }
+            }
+        }
+
+        let wires: Vec<HalfedgeId> = wires
+            .into_iter()
+            .filter(|he_id| self.halfedges.contains_key(*he_id))
+            .collect();
+
+        let mut endpoints: Vec<VertexId> = Vec::new();
+        for he_id in &wires {
+            if let Some(he) = self.halfedges.get(*he_id) {
+                endpoints.extend(he.start_vertex(self));
+                endpoints.push(he.end_vertex);
+            }
+        }
+
+        for he_id in &wires {
+            self.remove_only_halfedge_and_twin(*he_id);
+        }
+
+        // `rebuild_outgoing_halfedges` ran before this, so the seeds still name the wires.
+        // A vertex the wire was all that held on to has nothing left: drop it too, rather than
+        // leave an edgeless vertex in the mesh (callers prune their marked sets against the
+        // mesh afterwards).
+        for v_id in endpoints {
+            self.reseed_outgoing_if_dead(v_id);
+
+            let isolated = self.vertices.contains_key(v_id)
+                && self.outgoing_halfedges.get(v_id).is_none_or(|out_hes| {
+                    out_hes
+                        .iter()
+                        .all(|he_id| !self.halfedges.contains_key(*he_id))
+                });
+            if isolated {
+                self.remove_only_vertex(v_id);
+            }
+        }
+
+        wires
+    }
+
+    /// The loop of *newly opened* boundary through `start_v`, when it is one this op can
+    /// close.
+    ///
+    /// Every step follows the single outgoing boundary halfedge whose edge was not
+    /// boundary before this op; a vertex with none, or with several, ends the walk. Old
+    /// boundary is ignored rather than disqualifying: a hole the collapse opens can run
+    /// through a vertex that also sits on a border which was already there, and that
+    /// border is what the loop is allowed to touch - its edges are not part of the loop.
+    ///
+    /// Returns the loop's halfedges only when it closes without revisiting a vertex.
+    /// Every halfedge it returns is one this op opened, which is what keeps the closer
+    /// from ever sealing a border that is meant to be open - and why the loop may be of
+    /// any length: a hole this op opened is this op's to close, however wide (the weld's
+    /// small-gap openings are six and seven halfedges across). The walk itself bounds the
+    /// length: it stops at a repeat or at a vertex with no further opened boundary.
+    pub(crate) fn boundary_loop_from(
+        &self,
+        start_v: VertexId,
+        boundary_before: &HashSet<(VertexId, VertexId)>,
+    ) -> Option<Vec<HalfedgeId>> {
+        let mut he_id = self.sole_new_boundary_out(start_v, boundary_before)?;
+        let mut loop_hes = vec![he_id];
+        let mut loop_verts = vec![start_v];
+
+        loop {
+            let end_v = self.halfedges.get(he_id)?.end_vertex;
+
+            if end_v == start_v {
+                // A face needs at least three halfedges to enclose anything.
+                return (loop_hes.len() >= 3).then_some(loop_hes);
+            }
+
+            if loop_verts.contains(&end_v) {
+                return None;
+            }
+
+            loop_verts.push(end_v);
+            he_id = self.sole_new_boundary_out(end_v, boundary_before)?;
+            loop_hes.push(he_id);
+        }
+    }
+
+    /// The vertices of every boundary edge that is not in `boundary_before`: the
+    /// endpoints of the boundary this op opened.
+    ///
+    /// A hole the op opened consists of such edges, so its vertices are all in here -
+    /// which makes this the complete, and only, place a closer has to look.
+    pub(crate) fn opened_boundary_vertices(
+        &self,
+        boundary_before: &HashSet<(VertexId, VertexId)>,
+    ) -> Vec<VertexId> {
+        let mut opened: Vec<(VertexId, VertexId)> = self
+            .boundary_edge_pairs()
+            .into_iter()
+            .filter(|pair| !boundary_before.contains(pair))
+            .collect();
+        // The pairs come out of a hash set; the walks start from these vertices in this
+        // order, so give it one that depends on the mesh only.
+        opened.sort_unstable();
+
+        let mut seen = HashSet::default();
+        let mut vertices = Vec::new();
+        for (a, b) in opened {
+            for v_id in [a, b] {
+                if seen.insert(v_id) {
+                    vertices.push(v_id);
+                }
+            }
+        }
+
+        vertices
+    }
+
+    /// The outgoing boundary halfedge of a vertex whose edge is *not* in `boundary_before` —
+    /// i.e. boundary this op opened — and the lowest id when the vertex has several.
+    ///
+    /// Several means the hole *pinches* there: two lobes of one hole, or two holes, meeting at a
+    /// vertex. Taking one deterministically rather than giving up lets the closer close that lobe
+    /// and leave the rest walkable. Refusing there is what left the weld's small-gap rims open —
+    /// measured: nine opened halfedges with no walkable loop, because one vertex carried two.
+    fn sole_new_boundary_out(
+        &self,
+        vertex_id: VertexId,
+        boundary_before: &HashSet<(VertexId, VertexId)>,
+    ) -> Option<HalfedgeId> {
+        let mut found = None;
+
+        for he_id in self.outgoing_halfedges.get(vertex_id)? {
+            let Some(he) = self.halfedges.get(*he_id) else {
+                continue;
+            };
+            let Some(start) = he.start_vertex(self) else {
+                continue;
+            };
+
+            if he.face.is_some() || boundary_before.contains(&edge_key(start, he.end_vertex)) {
+                continue;
+            }
+
+            if found.is_none() || he_id < found.as_ref().unwrap() {
+                found = Some(*he_id);
+            }
+        }
+
+        found
+    }
+
+    /// The wire edges of the mesh — both halves face-less — as unordered vertex pairs.
+    fn wire_edge_pairs(&self) -> HashSet<(VertexId, VertexId)> {
+        self.halfedges
+            .iter()
+            .filter(|(_, he)| {
+                he.is_boundary()
+                    && he
+                        .twin
+                        .and_then(|twin_id| self.halfedges.get(twin_id))
+                        .is_some_and(|twin| twin.is_boundary())
+            })
+            .filter_map(|(_, he)| {
+                he.start_vertex(self)
+                    .map(|start| edge_key(start, he.end_vertex))
+            })
+            .collect()
+    }
+
+    /// The boundary of the mesh as unordered vertex pairs.
+    pub(crate) fn boundary_edge_pairs(&self) -> HashSet<(VertexId, VertexId)> {
+        self.halfedges
+            .iter()
+            .filter(|(_, he)| he.is_boundary())
+            .filter_map(|(_, he)| {
+                he.start_vertex(self)
+                    .map(|start| edge_key(start, he.end_vertex))
+            })
+            .collect()
     }
 
     #[inline]
@@ -1444,5 +1991,1041 @@ mod link_condition_tests {
             mesh.can_collapse_edge(border),
             "a border edge whose endpoints share only the opposite vertex is collapsible"
         );
+    }
+}
+
+/// Captured collapse-phase weld failures (the `WELD_CAPTURE=1` extractor's
+/// collapse driver, minimised from the two second-fixture soak failures):
+/// regions of the weld mesh that `collapse_until_edges_above_min_length` opens
+/// on replay, exactly as it did in the full weld.
+///
+/// These were **open cases**: the collapse left the region with boundary edges it
+/// did not have. The test asserts the *fixed* behavior (watertight), so it failed
+/// while the defect was real and flipped green once the collapse's own hole
+/// closer landed. See [`test_weld_collapse_cases_stay_watertight`].
+///
+/// - `hole_gap125_seed19`: (n=8, gap=1.25, amount=0.625) under `WELD_ORDER_SEED=19`;
+///   the replay gained 3 boundary edges on a previously-closed region.
+/// - `wire_gap15`: (n=10, gap=1.5, amount=0.75) shipping order; the full weld left
+///   a wire edge (both halves faceless), the replay gained 3 boundary edges
+///   between interior vertices.
+/// - `hole_gap01`: (n=9, gap=0.1, amount=0.05) shipping order; the replay gained 4
+///   boundary edges forming a quad, which the triangle-only closer could not reach.
+///
+/// All three reproduce standalone at radius 1 with `min_len_sqr = 0.0096` (the
+/// weld's sculpt-param threshold), which is what the replays use.
+#[cfg(test)]
+mod weld_collapse_cases {
+    use super::edge_key;
+    use crate::hash::HashSet;
+    use crate::{MeshGraph, VertexId};
+    use glam::Vec3;
+
+    /// One captured collapse region: vertex positions, face triples, the
+    /// outgoing-halfedge order per vertex whose star is inside the cut (see the
+    /// merge cases — rebuilds derive a different order, and the ops read it),
+    /// the protected vertices, and the collapse threshold.
+    struct CollapseCase {
+        what: &'static str,
+        verts: &'static [(f32, f32, f32)],
+        faces: &'static [(usize, usize, usize)],
+        outgoing: &'static [(usize, &'static [usize], usize)],
+        protected: &'static [usize],
+        min_len_sqr: f32,
+    }
+
+    const HOLE_GAP125_SEED19: CollapseCase = CollapseCase {
+        what: "hole (n=8, gap=1.25, amount=0.625) under WELD_ORDER_SEED=19",
+        verts: &[
+            (1.6497675, 0.6422053, 0.6137251),
+            (1.6497675, 0.6422053, 0.6137251),
+            (1.6500558, 0.6134274, 0.5847738),
+            (1.652962, 0.6302906, 0.5859062),
+            (1.6337953, 0.701779, 0.7528194),
+            (1.6645867, 0.6977433, 0.590436),
+        ],
+        faces: &[
+            (3, 0, 5),
+            (0, 2, 1),
+            (1, 4, 0),
+            (5, 1, 3),
+            (4, 5, 0),
+            (3, 1, 2),
+            (0, 3, 2),
+            (4, 1, 5),
+        ],
+        outgoing: &[
+            (0, &[1, 4, 3, 5, 2], 1),
+            (1, &[3, 0, 5, 4, 2], 2),
+            (2, &[0, 3, 1], 0),
+            (3, &[0, 1, 2, 5], 0),
+            (4, &[1, 0, 5], 1),
+            (5, &[3, 4, 0, 1], 1),
+        ],
+        protected: &[2],
+        min_len_sqr: 0.0096,
+    };
+
+    const WIRE_GAP15: CollapseCase = CollapseCase {
+        what: "wire (n=10, gap=1.5, amount=0.75) shipping order",
+        verts: &[
+            (1.7879505, 0.71922123, 0.2361454),
+            (1.7879505, 0.71922123, 0.2361454),
+            (1.789509, 0.7494155, 0.24826732),
+            (1.7879508, 0.71922123, 0.2361454),
+            (1.7817173, 0.598444, 0.18765773),
+        ],
+        faces: &[
+            (4, 0, 3),
+            (1, 0, 4),
+            (4, 3, 1),
+            (1, 2, 0),
+            (3, 2, 1),
+            (3, 0, 2),
+        ],
+        outgoing: &[
+            (0, &[3, 4, 1, 2], 2),
+            (1, &[2, 0, 4, 3], 2),
+            (2, &[3, 1, 0], 0),
+            (3, &[0, 4, 1, 2], 0),
+            (4, &[0, 3, 1], 0),
+        ],
+        protected: &[0, 3],
+        min_len_sqr: 0.0096,
+    };
+    const HOLE_GAP01: CollapseCase = CollapseCase {
+        what: "hole (n=9, gap=0.1, amount=0.05) shipping order",
+        verts: &[
+            (1.0483727, 0.24691357, -0.009315977),
+            (1.05, 0.22222222, 0.11111111),
+            (1.0613945, 0.32488927, 0.076331384),
+            (1.05, 0.22222222, 0.22222222),
+            (1.051393, 0.3640269, 0.21421906),
+            (1.05, 0.33333334, 0.33333334),
+            (1.051393, 0.3640269, 0.21421906),
+            (1.0724406, 0.39210516, 0.089007884),
+            (1.0921084, 0.22222224, 0.015908416),
+            (1.0500001, 0.22222222, 0.11111111),
+            (1.0500001, 0.22222222, 0.22222222),
+            (1.0651144, 0.339556, 0.09228663),
+            (1.0500001, 0.33333334, 0.33333334),
+            (1.0427585, 0.48097044, 0.106952205),
+            (1.055572, 0.4561075, 0.30132067),
+        ],
+        faces: &[
+            (2, 11, 7),
+            (11, 2, 8),
+            (0, 8, 2),
+            (2, 1, 0),
+            (2, 4, 1),
+            (4, 3, 1),
+            (4, 13, 14),
+            (4, 5, 3),
+            (14, 5, 4),
+            (9, 11, 8),
+            (10, 6, 9),
+            (6, 11, 9),
+            (12, 6, 10),
+            (7, 11, 13),
+            (6, 13, 11),
+            (12, 14, 6),
+            (14, 13, 6),
+            (13, 2, 7),
+            (2, 13, 4),
+        ],
+        outgoing: &[
+            (2, &[0, 1, 13, 7, 4, 8, 11], 11),
+            (4, &[2, 1, 3, 14, 5, 13], 1),
+            (6, &[10, 9, 12, 11, 14, 13], 13),
+            (7, &[11, 2, 13], 11),
+            (11, &[7, 9, 8, 6, 13, 2], 2),
+            (13, &[2, 11, 14, 6, 7, 4], 14),
+        ],
+        protected: &[7],
+        min_len_sqr: 0.0096,
+    };
+
+    const WIRE_GAP005: CollapseCase = CollapseCase {
+        what: "wire (n=8, gap=0.05) shipping order",
+        verts: &[
+            (0.915625, 0.94054645, 0.025993811),
+            (0.875, 0.875, -0.025),
+            (0.9966701, 0.9038354, 0.017202832),
+            (1.0176777, 0.75, -0.01767767),
+            (1.0176777, 0.625, -0.01767767),
+            (1.0311714, 0.9405465, 0.08529029),
+            (1.0176777, 1.0176777, 0.25),
+            (1.0176777, 1.0176777, 0.375),
+            (1.025, 0.625, 0.125),
+            (1.025, 0.75, 0.125),
+            (1.025, 0.875, 0.125),
+            (1.025, 0.75, 0.25),
+            (1.025, 0.875, 0.25),
+            (1.025, 0.875, 0.375),
+            (1.1401674, 0.80129445, 0.004497938),
+            (1.035748, 0.80129445, 0.02507852),
+            (1.0323223, 0.625, -0.01767767),
+            (1.0323223, 1.0176777, 0.125),
+            (1.0323223, 1.0176777, 0.25),
+            (1.175, 1.025, 0.25),
+            (1.0323223, 1.0176777, 0.375),
+            (1.175, 1.025, 0.375),
+            (1.025, 0.625, 0.125),
+            (1.025, 0.75, 0.125),
+            (1.025, 0.75, 0.25),
+            (1.0028476, 0.9106346, 0.09729202),
+            (1.025, 0.875, 0.25),
+            (1.025, 0.875, 0.375),
+            (0.9618898, 0.9225592, 0.01677136),
+            (0.98688984, 0.9296722, 0.040550973),
+            (1.0491166, 0.9342806, 0.04071947),
+            (1.015888, 0.94617033, 0.04193986),
+        ],
+        faces: &[
+            (3, 9, 4),
+            (9, 8, 4),
+            (2, 10, 3),
+            (10, 9, 3),
+            (30, 10, 2),
+            (9, 11, 8),
+            (10, 12, 9),
+            (12, 11, 9),
+            (5, 6, 10),
+            (6, 12, 10),
+            (12, 13, 11),
+            (6, 7, 12),
+            (7, 13, 12),
+            (0, 25, 28),
+            (25, 0, 15),
+            (31, 28, 25),
+            (18, 19, 17),
+            (20, 21, 18),
+            (21, 19, 18),
+            (22, 23, 16),
+            (23, 15, 16),
+            (24, 23, 22),
+            (23, 25, 15),
+            (28, 31, 2),
+            (24, 26, 23),
+            (26, 25, 23),
+            (27, 26, 24),
+            (31, 25, 17),
+            (26, 18, 25),
+            (18, 17, 25),
+            (27, 20, 26),
+            (20, 18, 26),
+            (5, 14, 29),
+            (2, 1, 28),
+        ],
+        outgoing: &[
+            (9, &[3, 4, 8, 10, 11, 12], 11),
+            (10, &[2, 3, 9, 5, 12, 6, 30], 12),
+            (12, &[10, 9, 11, 6, 13, 7], 13),
+            (18, &[17, 19, 20, 21, 26, 25], 26),
+            (23, &[22, 16, 15, 24, 25, 26], 25),
+            (25, &[23, 15, 26, 17, 18, 31, 28, 0], 0),
+            (26, &[24, 23, 25, 27, 18, 20], 18),
+            (28, &[0, 2, 1, 31, 25], 25),
+        ],
+        protected: &[],
+        min_len_sqr: 0.0096,
+    };
+
+    const HOLE_GAP005: CollapseCase = CollapseCase {
+        what: "hole (n=8, gap=0.05) shipping order",
+        verts: &[
+            (0.915625, 0.94054645, 0.025993811),
+            (0.875, 0.875, -0.025),
+            (0.9966701, 0.9038354, 0.017202832),
+            (1.0176777, 0.75, -0.01767767),
+            (1.0176777, 0.625, -0.01767767),
+            (1.0311714, 0.9405465, 0.08529029),
+            (1.0176777, 1.0176777, 0.25),
+            (1.0176777, 1.0176777, 0.375),
+            (1.025, 0.625, 0.125),
+            (1.025, 0.75, 0.125),
+            (1.025, 0.875, 0.125),
+            (1.025, 0.75, 0.25),
+            (1.025, 0.875, 0.25),
+            (1.025, 0.875, 0.375),
+            (1.0833333, 0.9649625, 0.03503754),
+            (1.1401674, 0.80129445, 0.004497938),
+            (1.035748, 0.80129445, 0.02507852),
+            (1.0323223, 0.625, -0.01767767),
+            (1.0323223, 1.0176777, 0.125),
+            (1.0323223, 1.0176777, 0.25),
+            (1.175, 1.025, 0.25),
+            (1.0323223, 1.0176777, 0.375),
+            (1.175, 1.025, 0.375),
+            (1.025, 0.625, 0.125),
+            (1.025, 0.75, 0.125),
+            (1.025, 0.75, 0.25),
+            (1.0028476, 0.9106346, 0.09729202),
+            (1.025, 0.875, 0.25),
+            (1.025, 0.875, 0.375),
+            (0.9618898, 0.9225592, 0.01677136),
+            (0.98688984, 0.9296722, 0.040550973),
+            (1.0491166, 0.9342806, 0.04071947),
+            (1.015888, 0.94617033, 0.04193986),
+        ],
+        faces: &[
+            (2, 3, 1),
+            (3, 9, 4),
+            (9, 8, 4),
+            (2, 10, 3),
+            (10, 9, 3),
+            (9, 11, 8),
+            (10, 12, 9),
+            (12, 11, 9),
+            (6, 12, 10),
+            (12, 13, 11),
+            (6, 7, 12),
+            (7, 13, 12),
+            (0, 26, 29),
+            (26, 0, 16),
+            (32, 29, 26),
+            (19, 20, 18),
+            (21, 22, 19),
+            (22, 20, 19),
+            (23, 24, 17),
+            (24, 16, 17),
+            (25, 24, 23),
+            (24, 26, 16),
+            (25, 27, 24),
+            (27, 26, 24),
+            (28, 27, 25),
+            (32, 26, 18),
+            (31, 2, 14),
+            (27, 19, 26),
+            (19, 18, 26),
+            (28, 21, 27),
+            (21, 19, 27),
+            (5, 15, 30),
+            (5, 10, 31),
+            (14, 2, 32),
+            (18, 14, 32),
+        ],
+        outgoing: &[
+            (2, &[29, 1, 3, 10, 31, 14, 32], 32),
+            (9, &[3, 4, 8, 10, 11, 12], 11),
+            (10, &[2, 3, 9, 5, 12, 6, 31], 12),
+            (12, &[10, 9, 11, 6, 13, 7], 13),
+            (19, &[18, 20, 21, 22, 27, 26], 27),
+            (24, &[23, 17, 16, 25, 26, 27], 26),
+            (26, &[24, 16, 27, 18, 19, 32, 29, 0], 0),
+            (27, &[25, 24, 26, 28, 19, 21], 19),
+            (29, &[0, 2, 1, 32, 26], 26),
+            (32, &[26, 18, 14, 2, 29], 29),
+        ],
+        protected: &[],
+        min_len_sqr: 0.0096,
+    };
+
+    /// Every captured case: all of them must finish watertight, on a mesh whose boundary
+    /// is the cut's rim before and after, with no edge below the threshold lost.
+    const CASES: &[CollapseCase] = &[HOLE_GAP125_SEED19, WIRE_GAP15, HOLE_GAP01, WIRE_GAP005];
+
+    /// Boundary halfedges whose twin is face-less too: a wire edge contributes two.
+    fn wire_halves(mesh: &MeshGraph) -> usize {
+        mesh.halfedges
+            .iter()
+            .filter(|(_, he)| {
+                he.face.is_none()
+                    && he
+                        .twin
+                        .and_then(|t| mesh.halfedges.get(t))
+                        .is_some_and(|t| t.face.is_none())
+            })
+            .count()
+    }
+
+    impl CollapseCase {
+        fn build(&self) -> (MeshGraph, Vec<VertexId>) {
+            self.build_into(MeshGraph::new())
+        }
+
+        /// [`Self::build`] into a given empty mesh (e.g. one from
+        /// `utils::mesh_with_key_generation`).
+        fn build_into(&self, mut mesh_graph: MeshGraph) -> (MeshGraph, Vec<VertexId>) {
+            let mut vertex_ids = Vec::with_capacity(self.verts.len());
+            for &(x, y, z) in self.verts {
+                vertex_ids.push(mesh_graph.add_vertex(Vec3::new(x, y, z)));
+            }
+            for &(a, b, c) in self.faces {
+                mesh_graph
+                    .add_face_from_vertices(vertex_ids[a], vertex_ids[b], vertex_ids[c])
+                    .expect("failed to rebuild a captured collapse region face");
+            }
+
+            for (idx, ends, seed) in self.outgoing {
+                let v_id = vertex_ids[*idx];
+                let Some(out_hes) = mesh_graph.outgoing_halfedges.get(v_id).cloned() else {
+                    continue;
+                };
+                let mut reordered = Vec::with_capacity(out_hes.len());
+                let mut left = out_hes;
+                for end_idx in *ends {
+                    let want = vertex_ids[*end_idx];
+                    if let Some(pos) = left.iter().position(|he_id| {
+                        mesh_graph
+                            .halfedges
+                            .get(*he_id)
+                            .is_some_and(|he| he.end_vertex == want)
+                    }) {
+                        reordered.push(left.remove(pos));
+                    }
+                }
+                reordered.extend(left);
+
+                let seed_v = vertex_ids[*seed];
+                let seed_he = reordered.iter().copied().find(|he_id| {
+                    mesh_graph
+                        .halfedges
+                        .get(*he_id)
+                        .is_some_and(|he| he.end_vertex == seed_v)
+                });
+                mesh_graph.outgoing_halfedges.insert(v_id, reordered);
+                if let Some(seed_he) = seed_he
+                    && let Some(vert) = mesh_graph.vertices.get_mut(v_id)
+                {
+                    vert.outgoing_halfedge = Some(seed_he);
+                }
+            }
+
+            (mesh_graph, vertex_ids)
+        }
+
+        /// Read-only: every boundary halfedge the mesh has after the replay, with the
+        /// captured index of both endpoints, whether the twin carries a face, and how
+        /// many outgoing boundary halfedges its start vertex has (the number
+        /// `sole_new_boundary_out` needs to be exactly one).
+        fn diag_boundary(&self) {
+            let (mut mesh_graph, vertex_ids) = self.build();
+            let idx = |v: VertexId| {
+                vertex_ids
+                    .iter()
+                    .position(|candidate| *candidate == v)
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| format!("{v:?}"))
+            };
+
+            let mut marked = HashSet::default();
+            for i in self.protected {
+                marked.insert(vertex_ids[*i]);
+            }
+
+            let before = mesh_graph.boundary_edge_pairs();
+            println!(
+                "DIAG wires before {} boundary {} ",
+                wire_halves(&mesh_graph),
+                before.len()
+            );
+            mesh_graph.collapse_until_edges_above_min_length(self.min_len_sqr, &mut marked);
+            println!(
+                "DIAG wires after {} boundary {}",
+                wire_halves(&mesh_graph),
+                mesh_graph.boundary_edge_pairs().len()
+            );
+
+            for (he_id, he) in mesh_graph.halfedges.iter() {
+                if he.face.is_some() {
+                    continue;
+                }
+
+                let start = he.start_vertex(&mesh_graph);
+                let twin_faced = he
+                    .twin
+                    .and_then(|t| mesh_graph.halfedges.get(t))
+                    .is_some_and(|t| t.face.is_some());
+                let out_boundary = start
+                    .and_then(|v| mesh_graph.outgoing_halfedges.get(v))
+                    .map(|hes| {
+                        hes.iter()
+                            .filter(|h| {
+                                mesh_graph
+                                    .halfedges
+                                    .get(**h)
+                                    .is_some_and(|x| x.face.is_none())
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+
+                let new_edge = start.is_some_and(|v| !before.contains(&edge_key(v, he.end_vertex)));
+                let out_new = start
+                    .and_then(|v| mesh_graph.outgoing_halfedges.get(v))
+                    .map(|hes| {
+                        hes.iter()
+                            .filter(|h| {
+                                mesh_graph.halfedges.get(**h).is_some_and(|x| {
+                                    x.face.is_none()
+                                        && x.start_vertex(&mesh_graph).is_some_and(|sv| {
+                                            !before.contains(&edge_key(sv, x.end_vertex))
+                                        })
+                                })
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+
+                println!(
+                    "DIAG he {he_id:?} {} -> {} twin_faced {twin_faced} new_edge {new_edge} \
+                     out_new {out_new} out_boundary_at_start {out_boundary}",
+                    start.map(idx).unwrap_or_default(),
+                    idx(he.end_vertex)
+                );
+            }
+        }
+
+        /// Runs the collapse replay and reports the boundary edges gained
+        /// between vertices that were interior to the cut (a cut's own rim is
+        /// boundary in the replay but not in the weld, so it is ignored) plus
+        /// the wire halves left behind.
+        fn replay(&self) -> (usize, usize, Vec<String>) {
+            let (mut mesh_graph, vertex_ids) = self.build();
+
+            let boundary = |mesh: &MeshGraph| -> std::collections::BTreeSet<(VertexId, VertexId)> {
+                mesh.halfedges
+                    .iter()
+                    .filter(|(_, he)| he.face.is_none())
+                    .filter_map(|(_, he)| {
+                        let start = he.start_vertex(mesh)?;
+                        let end = he.end_vertex;
+                        Some(if start < end {
+                            (start, end)
+                        } else {
+                            (end, start)
+                        })
+                    })
+                    .collect()
+            };
+
+            let before = boundary(&mesh_graph);
+            let rim: std::collections::BTreeSet<VertexId> =
+                before.iter().flat_map(|(a, b)| [*a, *b]).collect();
+            let wires_before = wire_halves(&mesh_graph);
+
+            let mut marked = HashSet::default();
+            for idx in self.protected {
+                marked.insert(vertex_ids[*idx]);
+            }
+            mesh_graph.collapse_until_edges_above_min_length(self.min_len_sqr, &mut marked);
+
+            let after = boundary(&mesh_graph);
+            let opened: Vec<String> = after
+                .difference(&before)
+                .filter(|(a, b)| !rim.contains(a) && !rim.contains(b))
+                .map(|(a, b)| format!("{a:?}-{b:?}"))
+                .collect();
+
+            // Gained, not absolute: a cut can carry a wire on its own rim, which is the
+            // capture's business and not the op's.
+            let wire = wire_halves(&mesh_graph).saturating_sub(wires_before);
+
+            (opened.len(), wire, opened)
+        }
+    }
+
+    /// These captured regions reproduce the collapse-phase weld defect: the
+    /// cleanup (`make_vertex_neighborhood_manifold` → `remove_neighboring_flaps`)
+    /// drops the coincident face pair on a closed region and re-pairs the twins
+    /// wrongly, leaving boundary edges (and, in the full weld, a wire). The
+    /// test asserts the *fixed* behavior — the collapse must leave the region as
+    /// watertight as it found it. `close_collapse_boundary_loops` closes the
+    /// three- and four-halfedge loops the collapse opens, so this stays green
+    /// only while that fix holds.
+    #[test]
+    fn test_weld_collapse_cases_stay_watertight() {
+        let mut failures = Vec::new();
+        for case in CASES {
+            let (opened, wire, edges) = case.replay();
+            if opened != 0 || wire != 0 {
+                failures.push(format!(
+                    "  {:?}: collapse gained {opened} boundary edges ({}: {}) and {wire} wire \
+                     halves — the flap-removal defect is still open",
+                    case.what,
+                    edges.len(),
+                    edges.join(", ")
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} collapse cases leave the region open:\n{}",
+            failures.len(),
+            CASES.len(),
+            failures.join("\n"),
+        );
+    }
+
+    /// KNOWN FAILURE - re-captured with `WELD_CAPTURE=1` after the wire and quad closers
+    /// landed: the smallest cut of the gap=0.05 weld failure the collapse still opens. One
+    /// boundary edge is gained, and it is the closer's own fan diagonal (27-32) left with a
+    /// face-less half: the hole it closed continues into the cut's rim, which is boundary
+    /// that predates the op, so the walk stops there and the rest of the hole stays.
+    ///
+    /// Whether that is the weld's problem or the cut's is open - the weld itself leaves 29
+    /// (n=8) and 54 (n=9) boundary halfedges at this gap, none of them wires, and its n=9
+    /// vertex-star split is gone.
+    ///
+    /// `#[ignore]`d while it fails - un-ignore it and add it to [`CASES`] with the fix.
+    #[test]
+    #[ignore = "currently fails: the gap=0.05 case is still open"]
+    fn test_hole_gap_005_stays_watertight() {
+        let (opened, wire, edges) = HOLE_GAP005.replay();
+        assert!(
+            opened == 0 && wire == 0,
+            "{:?}: collapse gained {opened} boundary edges ({}: {}) and {wire} wire halves",
+            HOLE_GAP005.what,
+            edges.len(),
+            edges.join(", ")
+        );
+    }
+
+    /// Read-only: the shape of what the gap=0.05 case leaves open.
+    #[test]
+    #[ignore]
+    fn diag_hole_gap_005() {
+        HOLE_GAP005.diag_boundary();
+    }
+
+    /// The collapse, its hole closer and its wire removal must not depend on hash iteration
+    /// order: every captured case, rebuilt under keys of different versions (same topology,
+    /// different hashes), must end in the same mesh down to the slot indices.
+    #[test]
+    fn test_weld_collapse_cases_are_order_independent() {
+        const GENERATIONS: u32 = 32;
+
+        for case in CASES {
+            let mut fingerprints = std::collections::BTreeSet::<String>::new();
+
+            for generation in 0..GENERATIONS {
+                let (mut mesh_graph, vertex_ids) =
+                    case.build_into(crate::utils::mesh_with_key_generation(generation));
+                let mut marked = HashSet::default();
+                for idx in case.protected {
+                    marked.insert(vertex_ids[*idx]);
+                }
+                let outcome =
+                    mesh_graph.collapse_until_edges_above_min_length(case.min_len_sqr, &mut marked);
+
+                let mut marked: Vec<VertexId> = marked.into_iter().collect();
+                marked.sort_unstable();
+                fingerprints.insert(crate::utils::strip_key_versions(&format!(
+                    "{} | {outcome:?} | marked {marked:?}",
+                    crate::utils::topology_fingerprint(&mesh_graph)
+                )));
+            }
+
+            assert_eq!(
+                fingerprints.len(),
+                1,
+                "{}: the same input under {GENERATIONS} key generations produced {} \
+                 different results",
+                case.what,
+                fingerprints.len(),
+            );
+        }
+    }
+
+    /// Read-only: the replay's raw numbers, for the diag run.
+    #[test]
+    #[ignore]
+    fn diag_collapse_cases() {
+        for case in CASES {
+            let (opened, wire, _) = case.replay();
+            println!(
+                "DIAG collapse case {:?}: +{opened} boundary edges, {wire} wire halves \
+                 (replay threshold {})",
+                case.what, case.min_len_sqr
+            );
+        }
+    }
+}
+
+/// The closer's own shapes, on a mesh built for them: a pyramid whose base is an open
+/// quad, the smallest mesh with a four-halfedge boundary loop.
+#[cfg(test)]
+mod boundary_loop_closer {
+    use crate::hash::HashSet;
+    use crate::{HalfedgeId, MeshGraph, VertexId};
+    use glam::Vec3;
+
+    /// A pyramid over the rim `v0(0,0,0) v1(3,0,0) v2(0.4,1.2,0) v3(0,0.3,0)`: five
+    /// vertices, four faces, base left open as the quad hole. The rim is deliberately
+    /// not a rectangle, so the two diagonals a fan could cut differ by a lot: `v0—v2`
+    /// is 1.6 squared and `v1—v3` is 9.09.
+    fn pyramid_with_quad_base() -> (MeshGraph, [VertexId; 4]) {
+        let mut mesh = MeshGraph::new();
+        let rim = [
+            mesh.add_vertex(Vec3::new(0.0, 0.0, 0.0)),
+            mesh.add_vertex(Vec3::new(3.0, 0.0, 0.0)),
+            mesh.add_vertex(Vec3::new(0.4, 1.2, 0.0)),
+            mesh.add_vertex(Vec3::new(0.0, 0.3, 0.0)),
+        ];
+        let apex = mesh.add_vertex(Vec3::new(1.5, 0.6, 1.0));
+
+        // Wound so the rim halfedges stay face-less: each side face carries the
+        // halfedge pointing away from the base.
+        for i in 0..4 {
+            mesh.add_face_from_vertices(rim[(i + 1) % 4], rim[i], apex)
+                .expect("pyramid side face");
+        }
+
+        (mesh, rim)
+    }
+
+    /// The rim's halfedges in loop order: walk the single outgoing boundary halfedge
+    /// of each vertex until the walk returns to `start`.
+    fn rim_loop(mesh: &MeshGraph, start: VertexId) -> Vec<HalfedgeId> {
+        let mut loop_hes = Vec::new();
+        let mut he_id = mesh.sole_boundary_out(start).expect("the rim starts here");
+
+        loop {
+            loop_hes.push(he_id);
+
+            let end_v = mesh.halfedges[he_id].end_vertex;
+            if end_v == start {
+                return loop_hes;
+            }
+
+            he_id = mesh.sole_boundary_out(end_v).expect("the rim continues");
+        }
+    }
+
+    /// The vertices of the mesh's boundary, passed as the closer's candidates. The
+    /// closer is handed them as if the op had opened that boundary - whether it then
+    /// closes anything is what the guards decide.
+    fn boundary_vertices(mesh: &MeshGraph) -> Vec<VertexId> {
+        let mut vertices: Vec<VertexId> = Vec::new();
+
+        for (a, b) in mesh.boundary_edge_pairs() {
+            for v_id in [a, b] {
+                if !vertices.contains(&v_id) {
+                    vertices.push(v_id);
+                }
+            }
+        }
+
+        vertices
+    }
+
+    /// The cut diagonal must not follow the vertex the walk happened to start at: the
+    /// walk starts from one of the closer's candidates, built from a hash set.
+    #[test]
+    fn test_quad_is_cut_along_the_same_diagonal_from_every_start() {
+        let (mesh, rim) = pyramid_with_quad_base();
+        let mut loop_hes = rim_loop(&mesh, rim[0]);
+
+        let mut diagonals = HashSet::default();
+        for _ in 0..loop_hes.len() {
+            let corner = mesh.fan_corner(&loop_hes);
+            let (he_a, he_b) = (loop_hes[corner], loop_hes[(corner + 1) % loop_hes.len()]);
+
+            let start = mesh.halfedges[he_a]
+                .start_vertex(&mesh)
+                .expect("halfedge start");
+            let end = mesh.halfedges[he_b].end_vertex;
+            diagonals.insert((start.min(end), start.max(end)));
+
+            loop_hes.rotate_left(1);
+        }
+
+        assert_eq!(
+            diagonals.len(),
+            1,
+            "the diagonal changed with the start vertex: {diagonals:?}"
+        );
+        assert_eq!(
+            diagonals.iter().next().copied(),
+            Some((rim[0].min(rim[2]), rim[0].max(rim[2]))),
+            "the fan runs from the loop's lowest-id vertex (v0), so it cuts v0—v2"
+        );
+    }
+
+    /// The cut is a property of the loop: the length threshold is not consulted, because
+    /// it decides only whether the cut edge has to be reported. (A cut below it is real —
+    /// the weld's contact holes have one whose diagonal joins two coincident vertices —
+    /// and the honest answer there is `Stalled`, not a different triangulation.)
+    #[test]
+    fn test_closer_reports_a_zero_length_diagonal() {
+        let (mut mesh, rim) = pyramid_with_quad_base();
+        // v2 onto v0: the canonical cut (v0—v2) is now a zero-length edge.
+        mesh.positions[rim[2]] = mesh.positions[rim[0]];
+
+        let candidates = boundary_vertices(&mesh);
+        let none_was_boundary = HashSet::default();
+
+        assert!(
+            mesh.close_collapse_boundary_loops(&candidates, &none_was_boundary, 0.0096)
+                .left_short_edge,
+            "a zero-length edge the closer added must be reported, not hidden behind a \
+             Converged"
+        );
+        assert!(
+            mesh.boundary_edge_pairs().is_empty(),
+            "and the hole must still close"
+        );
+    }
+
+    /// A border that was already there must survive, and the same loop must close when
+    /// it was not.
+    #[test]
+    fn test_closer_never_seals_a_pre_existing_border() {
+        let (mut mesh, _) = pyramid_with_quad_base();
+        let faces_before = mesh.faces.len();
+        let boundary_before = mesh.boundary_edge_pairs();
+        let candidates = boundary_vertices(&mesh);
+
+        assert_eq!(
+            boundary_before.len(),
+            4,
+            "the fixture's only boundary is the quad rim"
+        );
+        assert!(
+            !mesh
+                .close_collapse_boundary_loops(&candidates, &boundary_before, 0.0)
+                .left_short_edge,
+            "a refused loop adds no edge, so nothing can be short"
+        );
+        assert_eq!(
+            mesh.faces.len(),
+            faces_before,
+            "the closer sealed a border that was meant to be open"
+        );
+
+        // The same loop, on a mesh where the boundary is new: it closes, in two faces -
+        // the fan, then the triangle the fan leaves.
+        let (mut mesh, _) = pyramid_with_quad_base();
+        let none_was_boundary = HashSet::default();
+
+        assert!(
+            !mesh
+                .close_collapse_boundary_loops(&candidates, &none_was_boundary, 0.0)
+                .left_short_edge,
+            "no added edge is below a threshold of 0"
+        );
+        assert_eq!(
+            mesh.faces.len(),
+            faces_before + 2,
+            "a newly opened quad hole should close in two faces"
+        );
+        assert!(
+            mesh.boundary_edge_pairs().is_empty(),
+            "and leave no boundary behind"
+        );
+    }
+
+    /// An edge the closer adds below the threshold is reported: the op may not call the
+    /// mesh clean while it exists.
+    #[test]
+    fn test_closer_reports_an_added_edge_below_the_threshold() {
+        let (mut mesh, _) = pyramid_with_quad_base();
+        let candidates = boundary_vertices(&mesh);
+        let none_was_boundary = HashSet::default();
+
+        assert!(
+            !mesh
+                .close_collapse_boundary_loops(&candidates, &none_was_boundary, 0.0)
+                .left_short_edge,
+            "every edge in the fixture is longer than 0"
+        );
+
+        let (mut mesh, _) = pyramid_with_quad_base();
+
+        assert!(
+            mesh.close_collapse_boundary_loops(&candidates, &none_was_boundary, f32::MAX)
+                .left_short_edge,
+            "every added edge is below f32::MAX, so the closer must report one"
+        );
+    }
+
+    /// A faced halfedge across the hole is the one case where the helper that adds the
+    /// face would add a *second* edge between those two vertices, so the loop has to be
+    /// left open.
+    #[test]
+    fn test_closer_refuses_a_diagonal_that_already_exists_faced() {
+        let (mut mesh, rim) = pyramid_with_quad_base();
+        let loop_hes = rim_loop(&mesh, rim[0]);
+        let faces_before = mesh.faces.len();
+
+        // `v2 -> v0` is exactly the diagonal the face over the loop's first two
+        // halfedges would cut, and the extra face makes it an interior edge.
+        let extra_apex = mesh.add_vertex(Vec3::new(1.5, 0.3, -0.5));
+        mesh.add_face_from_vertices(rim[2], rim[0], extra_apex)
+            .expect("the extra face");
+
+        assert!(
+            !mesh.can_close_loop_with(loop_hes[0], loop_hes[1]),
+            "a faced diagonal must not be cut again - that would add a parallel edge"
+        );
+        assert!(
+            mesh.can_close_loop_with(loop_hes[1], loop_hes[2]),
+            "the other diagonal is free"
+        );
+        assert_eq!(
+            mesh.faces.len(),
+            faces_before + 1,
+            "only the extra face was added"
+        );
+    }
+
+    /// A collapse renames the vertex it absorbs, and with it every old border edge there.
+    /// Driven through the real op: a hexagonal pyramid with an open base whose three short
+    /// base edges collapse, which renames *every* remaining base edge. Without carrying the
+    /// boundary snapshot through those renames, the closer takes the leftover triangle for
+    /// a hole the op opened and seals a border that was open all along.
+    #[test]
+    fn test_collapse_keeps_an_old_border_whose_vertices_it_renamed() {
+        let mut mesh = MeshGraph::new();
+        let rim: Vec<VertexId> = [0.0_f32, 10.0, 120.0, 130.0, 240.0, 250.0]
+            .iter()
+            .map(|deg| {
+                let rad = deg.to_radians();
+                mesh.add_vertex(Vec3::new(rad.cos(), rad.sin(), 0.0))
+            })
+            .collect();
+        let apex = mesh.add_vertex(Vec3::new(0.0, 0.0, 1.0));
+        for i in 0..6 {
+            mesh.add_face_from_vertices(rim[(i + 1) % 6], rim[i], apex)
+                .expect("pyramid side face");
+        }
+        assert_eq!(mesh.boundary_edge_pairs().len(), 6);
+
+        // The 10° base edges are ~0.03 squared; every other edge is above 1.
+        mesh.collapse_until_edges_above_min_length(0.05, &mut HashSet::default());
+
+        assert_eq!(
+            mesh.faces.len(),
+            3,
+            "three collapses remove three faces and the closer must add none"
+        );
+        assert_eq!(
+            mesh.boundary_edge_pairs().len(),
+            3,
+            "the base stays open, now a triangle"
+        );
+    }
+
+    /// Which hole the closer closes first must follow the mesh, not the hash order of the
+    /// candidate set: closing a quad allocates its diagonal, so the order decides which
+    /// halfedge slots each diagonal gets. Two disjoint quad holes, rebuilt under keys of
+    /// different versions, must come out identical down to the slot indices.
+    #[test]
+    fn test_closer_order_does_not_follow_hash_order() {
+        const GENERATIONS: u32 = 32;
+
+        let mut fingerprints = std::collections::BTreeSet::<String>::new();
+
+        for generation in 0..GENERATIONS {
+            let mut mesh = crate::utils::mesh_with_key_generation(generation);
+            for offset in [0.0, 10.0] {
+                let rim = [
+                    mesh.add_vertex(Vec3::new(offset, 0.0, 0.0)),
+                    mesh.add_vertex(Vec3::new(offset + 3.0, 0.0, 0.0)),
+                    mesh.add_vertex(Vec3::new(offset + 0.4, 1.2, 0.0)),
+                    mesh.add_vertex(Vec3::new(offset, 0.3, 0.0)),
+                ];
+                let apex = mesh.add_vertex(Vec3::new(offset + 1.5, 0.6, 1.0));
+                for i in 0..4 {
+                    mesh.add_face_from_vertices(rim[(i + 1) % 4], rim[i], apex)
+                        .expect("pyramid side face");
+                }
+            }
+
+            // As if the op had opened both bases.
+            let none_was_boundary = HashSet::default();
+            let candidates = mesh.opened_boundary_vertices(&none_was_boundary);
+            mesh.close_collapse_boundary_loops(&candidates, &none_was_boundary, 0.0);
+
+            assert!(mesh.boundary_edge_pairs().is_empty(), "both holes close");
+            fingerprints.insert(crate::utils::topology_fingerprint(&mesh));
+        }
+
+        assert_eq!(
+            fingerprints.len(),
+            1,
+            "the closer's result changed with the key generation"
+        );
+    }
+
+    /// A three-halfedge hole around a lone triangle is emptied, not closed: closing it would
+    /// build a zero-volume two-face pillow.
+    #[test]
+    fn test_closer_removes_a_lone_triangle_instead_of_building_a_pillow() {
+        let mut mesh = MeshGraph::new();
+        let a = mesh.add_vertex(Vec3::new(0.0, 0.0, 0.0));
+        let b = mesh.add_vertex(Vec3::new(1.0, 0.0, 0.0));
+        let c = mesh.add_vertex(Vec3::new(0.0, 1.0, 0.0));
+        mesh.add_face_from_vertices(a, b, c).expect("the lone face");
+
+        // As if the op had opened the whole boundary.
+        let none_was_boundary = HashSet::default();
+        let candidates = boundary_vertices(&mesh);
+        let pass = mesh.close_collapse_boundary_loops(&candidates, &none_was_boundary, 0.0);
+
+        assert!(pass.progressed);
+        assert_eq!(mesh.faces.len(), 0, "the lone triangle is gone, no pillow");
+        assert_eq!(
+            pass.removed_halfedges.len(),
+            6,
+            "both halves of all three edges"
+        );
+        assert!(mesh.halfedges.is_empty());
+        assert!(mesh.vertices.is_empty(), "its vertices had nothing else");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::vec3;
+
+    use crate::*;
+
+    /// Removing a wire edge must leave live `outgoing_halfedge` seeds behind: the collapse
+    /// runs `rebuild_outgoing_halfedges` before the wires go, so a seed that still names a
+    /// wire halfedge would make the next `one_ring()` / `faces()` start from a dead id.
+    #[test]
+    fn test_remove_wire_edges_reseeds_endpoints() {
+        let mut mesh = MeshGraph::new();
+        let a = mesh.add_vertex(vec3(0.0, 0.0, 0.0));
+        let b = mesh.add_vertex(vec3(1.0, 0.0, 0.0));
+        let c = mesh.add_vertex(vec3(0.0, 1.0, 0.0));
+        let tip = mesh.add_vertex(vec3(0.0, 2.0, 0.0));
+        mesh.add_face_from_vertices(a, b, c).unwrap();
+
+        // `add_edge` points both endpoints' seeds at the new (face-less) halves.
+        let wire = mesh.add_edge(c, tip).unwrap();
+        assert_eq!(
+            mesh.vertices[c].outgoing_halfedge,
+            Some(wire.start_to_end_he_id),
+            "precondition: the seed of `c` names the wire"
+        );
+
+        let removed = mesh.remove_wire_edges(&[c, tip]);
+        assert_eq!(removed.len(), 2, "one wire, both halves reported");
+        assert!(!mesh.halfedges.contains_key(wire.start_to_end_he_id));
+        assert!(!mesh.halfedges.contains_key(wire.twin_he_id));
+
+        for v_id in [a, b, c] {
+            if let Some(seed) = mesh.vertices[v_id].outgoing_halfedge {
+                assert!(
+                    mesh.halfedges.contains_key(seed),
+                    "seed of {v_id:?} is dead after the wire removal"
+                );
+            }
+        }
+        assert!(
+            !mesh.vertices.contains_key(tip),
+            "`tip` was held only by the wire and must go with it"
+        );
+        assert!(
+            mesh.vertices[c].outgoing_halfedge.is_some(),
+            "`c` still has the triangle's halfedges and needs a seed"
+        );
+
+        let ring: Vec<_> = mesh.vertices[c].one_ring(&mesh).collect();
+        assert!(!ring.is_empty());
+        assert!(ring.iter().all(|he_id| mesh.halfedges.contains_key(*he_id)));
     }
 }

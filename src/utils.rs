@@ -62,8 +62,12 @@ use crate::{HalfedgeId, MeshGraph, VertexId};
 /// triangles (CCW when viewed from `+z`), from scratch with the public add APIs.
 #[cfg(test)]
 pub(crate) fn build_grid(n: usize) -> MeshGraph {
-    let mut g = MeshGraph::new();
+    build_grid_into(MeshGraph::new(), n)
+}
 
+/// [`build_grid`] into a given empty mesh (e.g. one from [`mesh_with_key_generation`]).
+#[cfg(test)]
+pub(crate) fn build_grid_into(mut g: MeshGraph, n: usize) -> MeshGraph {
     let cell = 1.0;
     let mut v = vec![vec![]; n + 1];
     for (j, row) in v.iter_mut().enumerate() {
@@ -312,13 +316,95 @@ pub(crate) fn extend_with(
     new_vertex_ids
 }
 
+/// An empty mesh whose slotmaps hand out the same slot indices as a fresh one, but with key
+/// versions `generation` reuse cycles further along.
+///
+/// The crate's hash tables have a fixed seed, so repeating an op on the same input iterates
+/// every set in the same order and cannot reveal an algorithm that depends on that order.
+/// The keys' versions are part of their hashes, though: building the same mesh into an
+/// emptied slotmap of another generation yields the same topology under keys that hash
+/// differently, and any dependence on hash iteration order shows up as a different result
+/// (compare with [`topology_fingerprint`], which ignores versions).
+///
+/// Slots beyond the first `SLOTS` are fresh in every generation, so keep test meshes below
+/// that.
+#[cfg(test)]
+pub(crate) fn mesh_with_key_generation(generation: u32) -> MeshGraph {
+    use crate::{Face, Halfedge, Vertex};
+
+    const SLOTS: usize = 4096;
+
+    let mut mesh = MeshGraph::new();
+
+    for _ in 0..generation {
+        let vertex_ids: Vec<_> = (0..SLOTS)
+            .map(|_| mesh.vertices.insert(Vertex::default()))
+            .collect();
+        let halfedge_ids: Vec<_> = (0..SLOTS)
+            .map(|_| {
+                mesh.halfedges.insert(Halfedge {
+                    end_vertex: VertexId::default(),
+                    face: None,
+                    twin: None,
+                    next: None,
+                })
+            })
+            .collect();
+        let face_ids: Vec<_> = (0..SLOTS)
+            .map(|_| mesh.faces.insert(Face::default()))
+            .collect();
+
+        // Freed slots are reused last-freed-first, so freeing in reverse hands the indices
+        // back out in ascending order, exactly as a fresh slotmap would.
+        for v_id in vertex_ids.into_iter().rev() {
+            mesh.vertices.remove(v_id);
+        }
+        for he_id in halfedge_ids.into_iter().rev() {
+            mesh.halfedges.remove(he_id);
+        }
+        for face_id in face_ids.into_iter().rev() {
+            mesh.faces.remove(face_id);
+        }
+    }
+
+    mesh
+}
+
+/// Drops the version from every slotmap key in a debug rendering (`VertexId(3v5)` ->
+/// `VertexId(3)`), so renderings of meshes built in different key generations compare.
+#[cfg(test)]
+pub(crate) fn strip_key_versions(rendering: &str) -> String {
+    let chars: Vec<char> = rendering.chars().collect();
+    let mut stripped = String::with_capacity(rendering.len());
+    let mut i = 0;
+
+    while i < chars.len() {
+        let after_digit = i > 0 && chars[i - 1].is_ascii_digit();
+        let before_digit = chars.get(i + 1).is_some_and(|c| c.is_ascii_digit());
+
+        if chars[i] == 'v' && after_digit && before_digit {
+            i += 1;
+            while chars.get(i).is_some_and(|c| c.is_ascii_digit()) {
+                i += 1;
+            }
+            continue;
+        }
+
+        stripped.push(chars[i]);
+        i += 1;
+    }
+
+    stripped
+}
+
 /// A canonical, comparable rendering of everything an operation can change
 /// about a mesh: which faces exist (as vertex triples), which edges are left
-/// open, and how many elements survive.
+/// open, which slot every halfedge sits in, and how many elements survive.
 ///
-/// The raw slotmap ids are part of it on purpose - two runs that free elements
-/// in different orders reuse different slots afterwards, so including the ids
-/// makes this catch ordering differences that the shape alone would hide.
+/// The slot indices of the ids are part of it on purpose - two runs that free elements
+/// in different orders reuse different slots afterwards, so including them makes this
+/// catch ordering differences that the shape alone would hide. Key versions are left
+/// out, so meshes built by [`mesh_with_key_generation`] compare.
 #[cfg(test)]
 pub(crate) fn topology_fingerprint(mesh: &MeshGraph) -> String {
     let mut faces = Vec::new();
@@ -334,7 +420,7 @@ pub(crate) fn topology_fingerprint(mesh: &MeshGraph) -> String {
         {
             v_ids.rotate_left(offset);
         }
-        faces.push(format!("{v_ids:?}"));
+        faces.push(strip_key_versions(&format!("{v_ids:?}")));
     }
     faces.sort();
 
@@ -349,16 +435,31 @@ pub(crate) fn topology_fingerprint(mesh: &MeshGraph) -> String {
         } else {
             (end, start)
         };
-        boundary.push(format!("{a:?}-{b:?}"));
+        boundary.push(strip_key_versions(&format!("{a:?}-{b:?}")));
     }
     boundary.sort();
     boundary.dedup();
 
+    // Which slot each directed edge landed in: the halfedges an op frees are handed out
+    // again to the next ones it allocates, so this is where a removal order shows.
+    let mut halfedge_slots = Vec::new();
+    for (he_id, he) in &mesh.halfedges {
+        let Some(start) = he.start_vertex(mesh) else {
+            continue;
+        };
+        halfedge_slots.push(strip_key_versions(&format!(
+            "{start:?}->{:?}={he_id:?}",
+            he.end_vertex
+        )));
+    }
+    halfedge_slots.sort();
+
     format!(
-        "vertices {} halfedges {} faces {:?} boundary {:?}",
+        "vertices {} halfedges {} faces {:?} boundary {:?} halfedge slots {:?}",
         mesh.vertices.len(),
         mesh.halfedges.len(),
         faces,
         boundary,
+        halfedge_slots,
     )
 }

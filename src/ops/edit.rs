@@ -651,14 +651,21 @@ mod tests {
     /// returns drive the caller's bookkeeping. Collecting those into hash sets
     /// tied that order to the set's iteration order, so two equal meshes built
     /// in different orders left differently-keyed results.
+    ///
+    /// The hash seed is fixed, so the same mesh is rebuilt under keys of different
+    /// versions instead (`mesh_with_key_generation`): same topology, different
+    /// hashes, so any dependence on iteration order changes the result.
     #[test]
     fn test_merge_vertices_is_order_independent() {
-        const RUNS: usize = 200;
+        const GENERATIONS: u32 = 32;
 
         let mut fingerprints = std::collections::BTreeSet::new();
 
-        for _ in 0..RUNS {
-            let mut mg = crate::utils::build_grid(4);
+        for generation in 0..GENERATIONS {
+            let mut mg = crate::utils::build_grid_into(
+                crate::utils::mesh_with_key_generation(generation),
+                4,
+            );
 
             // Three mutually adjacent interior vertices: merging them collapses
             // a whole cluster of faces, so several halfedges are freed at once.
@@ -694,20 +701,20 @@ mod tests {
                 })
                 .collect();
 
-            fingerprints.insert(format!(
+            fingerprints.insert(crate::utils::strip_key_versions(&format!(
                 "{} | removed {:?} {:?} {:?} | reused {reused:?}",
                 crate::utils::topology_fingerprint(&mg),
                 removed.removed_vertices,
                 removed.removed_halfedges,
                 removed.removed_faces,
-            ));
+            )));
         }
 
         assert_eq!(
             fingerprints.len(),
             1,
-            "merge_vertices is not order-independent: {RUNS} runs of the same input \
-             produced {} different results",
+            "merge_vertices is not order-independent: the same input under \
+             {GENERATIONS} key generations produced {} different results",
             fingerprints.len(),
         );
     }

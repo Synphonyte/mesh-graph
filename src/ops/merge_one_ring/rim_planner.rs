@@ -68,7 +68,7 @@
 //! curves, so no set of triangles can consume an open chain using only rim
 //! halves and interior edges. Closing it would mean consuming the pre-existing
 //! border halfedges the chain runs into - which would seal a genuine open border
-//! and is exactly what `close_triangular_holes` is written to avoid. See
+//! and is exactly what `close_merge_opened_holes` is written to avoid. See
 //! `tests::test_open_weld_chain_cases_are_cut_truncated`.
 //!
 //! They are unfaithful fixtures, not defects: the extractor's
