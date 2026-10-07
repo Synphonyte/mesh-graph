@@ -1,15 +1,23 @@
+mod rim;
+mod rim_planner;
+#[cfg(test)]
+mod rim_probe;
 #[cfg(test)]
 mod tests;
 
 use std::ops::RangeInclusive;
 
-use hashbrown::HashSet;
+use crate::hash::{HashMap, HashSet};
 use itertools::Itertools;
 use tracing::{error, instrument};
 
 use crate::{
-    AddEdge, FaceId, HalfedgeId, MeshGraph, Vertex, VertexId, error_none,
-    ops::{add::AddFace, collapse::CollapseEdge, edit::MergeVertices},
+    FaceId, HalfedgeId, MeshGraph, VertexId, error_none,
+    ops::{
+        add::AddFace,
+        collapse::{CollapseEdge, VertexRenames},
+        edit::MergeVertices,
+    },
     utils::unwrap_or_return,
 };
 
@@ -22,6 +30,44 @@ pub struct MergeVerticesOneRing {
     pub added_vertices: Vec<VertexId>,
     pub added_halfedges: Vec<HalfedgeId>,
     pub added_faces: Vec<FaceId>,
+}
+
+/// The three post-hoc repair passes of the merge ("the nets"):
+/// `weld_parallel_edges` (before and after the neighborhood cleanup) and
+/// `close_merge_opened_holes`.
+///
+/// Enabled by default; production behavior is unchanged (the non-test branch
+/// folds to `true`). Test builds can turn them off with
+/// `MESH_GRAPH_MERGE_NETS=0`, which is the rim-first rebuild's oracle: with the
+/// nets off, the corpus measures whether the rebuild itself closes exactly what
+/// the removals opened, instead of whether the nets mop up afterwards.
+///
+/// Phase 0 baseline with the nets off: `parallel_edge_leftover` and
+/// `weld_cases_stay_watertight` fail; the rest of the corpus passes.
+#[cfg(test)]
+fn merge_nets_enabled() -> bool {
+    use std::sync::OnceLock;
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MESH_GRAPH_MERGE_NETS").map_or(true, |value| value != "0" && value != "off")
+    })
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn merge_nets_enabled() -> bool {
+    true
+}
+
+/// Records that `id` was removed: an element this op added is simply no longer added, one
+/// that was there before is removed.
+fn record_removal<T: PartialEq>(added: &mut Vec<T>, removed: &mut Vec<T>, id: T) {
+    if added.contains(&id) {
+        added.retain(|added_id| *added_id != id);
+    } else {
+        removed.push(id);
+    }
 }
 
 impl MeshGraph {
@@ -110,6 +156,94 @@ impl MeshGraph {
             return result;
         }
 
+        // Phase 0 rim taxonomy: measure the boundary the op opens and closes.
+        // Test-only; records one probe per band merge into a thread-local.
+        #[cfg(test)]
+        let mut test_rim_probe = rim_probe::RimProbe::default();
+        #[cfg(test)]
+        {
+            test_rim_probe.before = rim::boundary_halves(self);
+            test_rim_probe.parallel_before = rim_probe::count_parallel_edges(self);
+        }
+
+        // The boundary as the op found it, by vertex pair, for the hole closers. It has to be
+        // taken here, before the coincident fusion below: the fusion removes faces, so a
+        // snapshot taken after it already *contains* that hole and the closers see nothing to
+        // close - `MANIFOLD BROKE at merge VertexId(36v1)+VertexId(415v1) (boundary 0 -> 4)`
+        // is exactly that case. Nothing between the top of this function and this line
+        // touches the mesh.
+        //
+        // The closers compare against this one rather than against `boundary_before` further
+        // down: that one is snapshotted after the fusion, deliberately, so the band's `H`
+        // describes the stars' doing rather than the fusion's. It costs a scan of the whole
+        // halfedge set, like `boundary_before` and the `opened_rim` deltas below.
+        let boundary_pairs_at_entry = self.boundary_edge_pairs();
+        // The vertex merges and splits this op makes, so the snapshot can be carried to the
+        // closers (see `VertexRenames`).
+        let mut renames = VertexRenames::default();
+
+        // Weld position-coincident cross-ring vertices before planning the band.
+        //
+        // When the two sheets touch (morphological close / collision merge), a
+        // ring vertex of `vertex_id1` and a ring vertex of `vertex_id2` can share
+        // a position while remaining distinct ids. Both rings then pass through
+        // the same point, and any band spanning that zero-width seam contains two
+        // faces over the same geometric triangle — a "flap" by the position-based
+        // `faces_share_all_vertices`. `cleanup_bookkeeping` deletes the flap,
+        // leaving a hole that nothing re-fills (the intermittent weld-hole
+        // defect, ~1 in 12 runs, boundary halfedges left open).
+        //
+        // Fusing each coincident pair turns the two rings into the well-tested
+        // shared-vertex case: the band is split at the shared vertex and the seam
+        // is never spanned by a degenerate face. The position comparison is exact,
+        // matching `faces_share_all_vertices`, so this fires exactly where the
+        // flap deletion would have.
+        let mut coincident_pairs = Vec::new();
+        for &v_id1 in &one_ring_v_ids1 {
+            for &v_id2 in &one_ring_v_ids2 {
+                if v_id1 != v_id2
+                    && self
+                        .positions
+                        .get(v_id1)
+                        .is_some_and(|p1| self.positions.get(v_id2).is_some_and(|p2| p1 == p2))
+                {
+                    coincident_pairs.push((v_id1, v_id2));
+                }
+            }
+        }
+        // Which ring-2 vertex was fused into which ring-1 vertex. A ring-2 vertex coincident
+        // with several ring-1 vertices is fused once, into the first; the later pairs find it
+        // gone and must not overwrite that.
+        let mut fused_into: HashMap<VertexId, VertexId> = HashMap::default();
+        for (v1_id, v2_id) in &coincident_pairs {
+            if !self.vertices.contains_key(*v1_id) || !self.vertices.contains_key(*v2_id) {
+                continue;
+            }
+
+            tracing::debug!("fusing coincident ring vertices {v1_id:?} and {v2_id:?}");
+            // Survivor is the ring-1 vertex, so the fused id stays on both rings
+            // and shows up in `shared_v_ids` below.
+            let fused = self.merge_vertices([*v1_id, *v2_id]);
+            result.removed_faces.extend(fused.removed_faces);
+            result.removed_halfedges.extend(fused.removed_halfedges);
+            // `fused.removed_vertices` is `[*v2_id]` plus any vertex the face removal isolated.
+            for v_id in fused.removed_vertices {
+                if !result.removed_vertices.contains(&v_id) {
+                    result.removed_vertices.push(v_id);
+                }
+            }
+
+            if !self.vertices.contains_key(*v2_id) {
+                fused_into.insert(*v2_id, *v1_id);
+                renames.absorb(*v2_id, *v1_id);
+            }
+        }
+        for v_id in &mut one_ring_v_ids2 {
+            if let Some(survivor) = fused_into.get(v_id) {
+                *v_id = *survivor;
+            }
+        }
+
         let one_ring_he_set1 = HashSet::<HalfedgeId>::from_iter(one_ring_he_ids1.iter().copied());
         let one_ring_he_set2 = HashSet::<HalfedgeId>::from_iter(one_ring_he_ids2.iter().copied());
         let shared_he_ids = HashSet::<HalfedgeId>::from_iter(
@@ -125,11 +259,56 @@ impl MeshGraph {
         tracing::debug!("ring2 (v_ids): {one_ring_v_ids2:?}");
         tracing::debug!("shared_v_ids: {shared_v_ids:?}");
 
-        if self.check_and_flip_single_shared_he(&shared_he_ids, flip_threshold_sqr, &mut result) {
+        if self.check_and_flip_single_shared_he(
+            &shared_he_ids,
+            flip_threshold_sqr,
+            &mut renames,
+            &mut result,
+        ) {
+            // That flip-plus-collapse removes faces, so it leaves the same kind of hole the band
+            // does, and this path used to return before any net ran.
+            if merge_nets_enabled() {
+                self.close_merge_opened_holes(
+                    &one_ring_v_ids1,
+                    &one_ring_v_ids2,
+                    &boundary_pairs_at_entry,
+                    &renames,
+                    &mut result,
+                );
+            }
+
             return self.finish_merge(result);
         }
 
-        self.remove_neighbor_faces(&vertex1, &vertex2, &mut result);
+        // The boundary the removals open. `H = boundary(after) \ boundary(before)`:
+        // `remove_face` detaches most rim members in place instead of freeing
+        // them, so the twins of the removed halfedges are *not* the rim the op
+        // has to close (see `rim::opened_rim`). Snapshot after the coincident
+        // fusion so the delta is exactly the stars' doing.
+        let boundary_before = rim::boundary_halves(self);
+
+        self.remove_vertex_faces(vertex_id1, &mut result);
+
+        #[cfg(test)]
+        {
+            test_rim_probe.h1 = rim::opened_rim(self, &test_rim_probe.before);
+        }
+        let star_h1_raw = rim::opened_rim(self, &boundary_before);
+
+        self.remove_vertex_faces(vertex_id2, &mut result);
+
+        #[cfg(test)]
+        {
+            test_rim_probe.rim = rim::opened_rim(self, &test_rim_probe.before);
+            let h1 = test_rim_probe.h1.clone();
+            test_rim_probe.h2 = test_rim_probe.rim.difference(&h1).copied().collect();
+        }
+
+        let star_h1: HashSet<HalfedgeId> = star_h1_raw
+            .iter()
+            .copied()
+            .filter(|he_id| self.halfedges.contains_key(*he_id))
+            .collect();
 
         #[cfg(feature = "rerun")]
         self.log_rerun();
@@ -140,6 +319,20 @@ impl MeshGraph {
             Some(pairings) => pairings,
             None => {
                 tracing::error!("Error in find_already_connected_pairings");
+
+                // The stars are already out by this point, so returning here leaves their rim
+                // open: the op tears the mesh and does not put it back. No band can be
+                // planned, but the surface can stay closed.
+                if merge_nets_enabled() {
+                    self.close_merge_opened_holes(
+                        &one_ring_v_ids1,
+                        &one_ring_v_ids2,
+                        &boundary_pairs_at_entry,
+                        &renames,
+                        &mut result,
+                    );
+                }
+
                 return self.finish_merge(result);
             }
         };
@@ -161,22 +354,77 @@ impl MeshGraph {
             connected_he_ids,
         );
 
+        // No band to build. That is a legitimate outcome - it means every ring
+        // vertex is either shared with the other ring or already joined to it by
+        // a face, so there is nothing left to span - but it must NOT end the op:
+        // `remove_neighbor_faces` has already taken both stars out, and bailing
+        // here leaves that hole with nothing to close it (two of the extracted
+        // weld cases are exactly this). Fall through with nothing planned and let
+        // the cleanup and the remaining-unconnected merge repair the region.
         if range_pairs_to_connect.is_empty() {
-            error!("No range pairs to connect");
-            return self.finish_merge(result);
+            tracing::debug!("No range pairs to connect; repairing the freed region instead");
         }
 
-        tracing::debug!("Range pairs to connect: {range_pairs_to_connect:#?}");
+        tracing::debug!("Range pairs to connect: {range_pairs_to_connect:?}");
 
-        let planned_faces =
+        let old_planned_faces =
             self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
-        tracing::debug!("planned faces: {planned_faces:#?}");
+        let mut planned_faces = old_planned_faces.clone();
 
-        for face_id in already_connected_face_ids {
-            let (v_ids, he_ids) = self.remove_face(face_id);
-            result.removed_faces.push(face_id);
-            result.removed_halfedges.extend(he_ids);
-            result.removed_vertices.extend(v_ids);
+        #[cfg(test)]
+        if std::env::var("MESH_GRAPH_RIM_TAXONOMY").is_ok() {
+            self.dump_plan_debug(
+                &one_ring_v_ids1,
+                &one_ring_v_ids2,
+                &shared_v_ids,
+                &already_connected_face_ids,
+                &range_pairs_to_connect,
+                &old_planned_faces,
+            );
+        }
+
+        // ---- rim-first band planner (Phase 2b) ------------------------------
+        //
+        // The old planner walks the pre-removal one-rings, which cannot describe
+        // the hole the removals actually opened: a pinched star opens more rim
+        // than `one_ring()` sees, and a chain can end on the cut. Plan the band
+        // from the live rim too, and use that plan when it consumes the whole
+        // rim; otherwise keep the old faces, so the fallback is exactly the
+        // previous behavior.
+        let strip_faces = already_connected_face_ids;
+
+        // Strips-first, unconditionally. The strip faces lie inside the rim the
+        // band has to consume, and the decision does not need the old planner's
+        // output: `is_complete` is the only gate on the rim plan, and when it
+        // does not hold the old faces stand - the same plan the old flow
+        // produced after the same teardown.
+        self.remove_faces(&strip_faces, &mut result);
+        let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
+        let plan = rim_planner::plan(self, &rim, &h1, &h2);
+        for note in &plan.unhandled {
+            tracing::debug!("rim-first planner unhandled: {note}");
+        }
+        if plan.is_complete(self, &rim) {
+            planned_faces = plan.faces;
+        }
+
+        for pf in &planned_faces {
+            tracing::debug!(
+                "planned {:?} v1={:?} a={:?} b={:?}",
+                pf.order,
+                pf.v1,
+                pf.new_he_v1,
+                pf.new_he_v2
+            );
+        }
+
+        #[cfg(test)]
+        {
+            test_rim_probe
+                .rim
+                .extend(rim::opened_rim(self, &test_rim_probe.before));
+            test_rim_probe.classify(self);
+            test_rim_probe.measure_rim_plan(self);
         }
 
         self.add_planned_faces(
@@ -187,6 +435,23 @@ impl MeshGraph {
             &mut result,
         );
 
+        #[cfg(test)]
+        {
+            test_rim_probe.finish(self);
+        }
+
+        if merge_nets_enabled() {
+            self.weld_parallel_edges(
+                one_ring_v_ids1
+                    .iter()
+                    .chain(&one_ring_v_ids2)
+                    .chain(&result.added_vertices)
+                    .copied()
+                    .collect_vec(),
+                &mut result,
+            );
+        }
+
         #[cfg(feature = "rerun")]
         self.log_rerun();
 
@@ -195,14 +460,39 @@ impl MeshGraph {
             &one_ring_v_ids2,
             marked_vertices,
             marked_halfedges,
+            &mut renames,
             &mut result,
         );
 
         self.merge_remaining_unconnected(
             one_ring_v_ids1.clone(),
             one_ring_v_ids2.clone(),
+            &mut renames,
             &mut result,
         );
+
+        // Again after the cleanup: a pair can still be parallel here that was not
+        // weldable above, because the two faces hung off the *same* side of the
+        // edge until the cleanup rebuilt one of them.
+        if merge_nets_enabled() {
+            self.weld_parallel_edges(
+                one_ring_v_ids1
+                    .iter()
+                    .chain(&one_ring_v_ids2)
+                    .chain(&result.added_vertices)
+                    .copied()
+                    .collect_vec(),
+                &mut result,
+            );
+
+            self.close_merge_opened_holes(
+                &one_ring_v_ids1,
+                &one_ring_v_ids2,
+                &boundary_pairs_at_entry,
+                &renames,
+                &mut result,
+            );
+        }
 
         self.smooth_vertices(
             one_ring_v_ids1
@@ -211,6 +501,12 @@ impl MeshGraph {
                 .chain(&result.added_vertices)
                 .copied(),
         );
+
+        #[cfg(test)]
+        {
+            test_rim_probe.finish_end(self);
+            rim_probe::push(test_rim_probe);
+        }
 
         self.finish_merge(result)
     }
@@ -237,6 +533,7 @@ impl MeshGraph {
         &mut self,
         mut one_ring_v_ids1: Vec<VertexId>,
         mut one_ring_v_ids2: Vec<VertexId>,
+        renames: &mut VertexRenames,
         result: &mut MergeVerticesOneRing,
     ) {
         while let Some(v_id) = one_ring_v_ids1.pop() {
@@ -259,11 +556,29 @@ impl MeshGraph {
                 one_ring_v_ids1.retain(|v_id| !vertices.contains(v_id));
                 one_ring_v_ids2.retain(|v_id| !vertices.contains(v_id));
 
+                // `merge_vertices` keeps the first live vertex and absorbs the other live ones.
+                // Only those are renames: `removed_vertices` also lists vertices the face
+                // removal left isolated, whose edges are gone rather than moved.
+                let members = vertices
+                    .iter()
+                    .copied()
+                    .unique()
+                    .filter(|v_id| self.vertices.contains_key(*v_id))
+                    .collect_vec();
+
                 let MergeVertices {
                     removed_vertices,
                     removed_halfedges,
                     removed_faces,
                 } = self.merge_vertices(vertices);
+
+                if let Some((&survivor, absorbed)) = members.split_first() {
+                    for &absorbed in absorbed {
+                        if !self.vertices.contains_key(absorbed) {
+                            renames.absorb(absorbed, survivor);
+                        }
+                    }
+                }
 
                 result.removed_vertices.extend(removed_vertices);
                 result.removed_halfedges.extend(removed_halfedges);
@@ -278,8 +593,8 @@ impl MeshGraph {
         one_ring_v_ids2: &[VertexId],
         shared_v_ids: &HashSet<VertexId>,
     ) -> Option<(Vec<FaceId>, HashSet<VertexId>, HashSet<HalfedgeId>)> {
-        let mut connected_v_ids = HashSet::new();
-        let mut connected_he_ids = HashSet::new();
+        let mut connected_v_ids = HashSet::default();
+        let mut connected_he_ids = HashSet::default();
         let mut already_connected_face_ids = vec![];
 
         // Only the first strip of already existing faces is taken. A second one
@@ -688,6 +1003,7 @@ impl MeshGraph {
         one_ring_v_ids2: &[VertexId],
         marked_vertices: &mut HashSet<VertexId>,
         marked_halfedges: &mut HashSet<HalfedgeId>,
+        renames: &mut VertexRenames,
         result: &mut MergeVerticesOneRing,
     ) {
         for vertex_id in one_ring_v_ids1.iter().chain(one_ring_v_ids2).copied() {
@@ -696,6 +1012,12 @@ impl MeshGraph {
             }
 
             let cleanup = self.make_vertex_neighborhood_manifold(vertex_id);
+
+            // The cleanup only ever splits `vertex_id` and the vertices it split off, so every
+            // added vertex descends from it.
+            for &added_v_id in &cleanup.added_vertices {
+                renames.split(vertex_id, added_v_id);
+            }
 
             if !cleanup.added_vertices.is_empty() {
                 marked_vertices.insert(vertex_id);
@@ -738,6 +1060,42 @@ impl MeshGraph {
         }
     }
 
+    /// Remove the given faces, recording the removal on `result`.
+    fn remove_faces(&mut self, face_ids: &[FaceId], result: &mut MergeVerticesOneRing) {
+        for &face_id in face_ids {
+            let (v_ids, he_ids) = self.remove_face(face_id);
+            result.removed_faces.push(face_id);
+            result.removed_halfedges.extend(he_ids);
+            result.removed_vertices.extend(v_ids);
+        }
+    }
+
+    /// The live rim after the already-connected strip is torn out, split into
+    /// the two merged stars' halves (the strip's own halves become the third
+    /// category the planner classifies).
+    fn strip_first_rim(
+        &self,
+        boundary_before: &HashSet<HalfedgeId>,
+        star_h1: &HashSet<HalfedgeId>,
+    ) -> (
+        HashSet<HalfedgeId>,
+        HashSet<HalfedgeId>,
+        HashSet<HalfedgeId>,
+    ) {
+        let rim = rim::opened_rim(self, boundary_before);
+        let h1: HashSet<HalfedgeId> = star_h1
+            .iter()
+            .copied()
+            .filter(|he_id| self.halfedges.contains_key(*he_id))
+            .collect();
+        let h2: HashSet<HalfedgeId> = rim
+            .iter()
+            .copied()
+            .filter(|he_id| !h1.contains(he_id))
+            .collect();
+        (rim, h1, h2)
+    }
+
     fn add_planned_faces(
         &mut self,
         planned_faces: Vec<PlannedFace>,
@@ -756,7 +1114,14 @@ impl MeshGraph {
             };
 
             let Some(inserted) = inserted else {
-                // depending on the topology inserting a face can fail sometimes. this is fine.
+                // Depending on the topology inserting a face can fail sometimes.
+                // This is fine: the insertion transaction rolled back whatever it
+                // had created, so the mesh is exactly as it was before this face.
+                // Record the skip - a systematically skipped face must not hide
+                // as a successful merge.
+                tracing::debug!("skipped planned face {planned_face:?}");
+                #[cfg(test)]
+                rim_probe::note_skipped_face();
                 prev_he = None;
                 continue;
             };
@@ -783,22 +1148,236 @@ impl MeshGraph {
         }
     }
 
-    fn remove_neighbor_faces(
+    /// Fuse *parallel* edges left behind by the new faces.
+    ///
+    /// `add_or_get_boundary_edge` only ever reuses a free half in the direction
+    /// it was asked for. When a planned face needs `a -> b` and that direction
+    /// already carries a face, it adds a second, parallel edge between the same
+    /// two vertices instead. That is fine while the region is still being
+    /// rebuilt - a later face or the neighborhood cleanup usually claims the
+    /// free halves - but when nothing does, the two halves stay face-less
+    /// forever. The mesh then reports them as boundary (a "hole" with no face
+    /// missing from it) and the two triangles that should share the edge each
+    /// sit on their own copy of it.
+    ///
+    /// This is the sweep for that leftover: where two vertices are joined by
+    /// more than one edge but exactly one face hangs off each direction, the two
+    /// faced halves become each other's twin and the orphans are dropped. Any
+    /// other shape is left alone - more than one face per direction is a
+    /// genuinely non-manifold edge, which is the neighborhood cleanup's job.
+    fn weld_parallel_edges(
         &mut self,
-        vertex1: &Vertex,
-        vertex2: &Vertex,
+        region_v_ids: impl IntoIterator<Item = VertexId>,
         result: &mut MergeVerticesOneRing,
     ) {
-        let face_ids1 = vertex1.faces(self).collect_vec();
-        let face_ids2 = vertex2.faces(self).collect_vec();
+        let mut seen = HashSet::<VertexId>::default();
 
-        for face_id in face_ids1.into_iter().chain(face_ids2) {
+        for v_id in region_v_ids {
+            if !seen.insert(v_id) || !self.vertices.contains_key(v_id) {
+                continue;
+            }
+
+            let Some(out_he_ids) = self.outgoing_halfedges.get(v_id).cloned() else {
+                continue;
+            };
+
+            // End vertices this one reaches more than once, in a stable order.
+            let mut ends = Vec::new();
+            for he_id in &out_he_ids {
+                if let Some(he) = self.halfedges.get(*he_id)
+                    && !ends.contains(&he.end_vertex)
+                {
+                    ends.push(he.end_vertex);
+                }
+            }
+
+            for other_v_id in ends {
+                let forward = self.halfedges_from_to(v_id, other_v_id);
+                let backward = self.halfedges_from_to(other_v_id, v_id);
+
+                if forward.len() + backward.len() <= 2 {
+                    continue;
+                }
+
+                let faced = |mesh: &Self, ids: &[HalfedgeId]| -> Vec<HalfedgeId> {
+                    ids.iter()
+                        .copied()
+                        .filter(|he_id| {
+                            mesh.halfedges
+                                .get(*he_id)
+                                .is_some_and(|he| he.face.is_some())
+                        })
+                        .collect()
+                };
+
+                let faced_forward = faced(self, &forward);
+                let faced_backward = faced(self, &backward);
+
+                if faced_forward.len() != 1 || faced_backward.len() != 1 {
+                    continue;
+                }
+
+                let keep_forward = faced_forward[0];
+                let keep_backward = faced_backward[0];
+
+                self.halfedges[keep_forward].twin = Some(keep_backward);
+                self.halfedges[keep_backward].twin = Some(keep_forward);
+
+                for he_id in forward.into_iter().chain(backward) {
+                    if he_id == keep_forward || he_id == keep_backward {
+                        continue;
+                    }
+                    // Only the orphans go; anything with a face was counted above.
+                    if self
+                        .halfedges
+                        .get(he_id)
+                        .is_some_and(|he| he.face.is_none())
+                    {
+                        self.remove_only_halfedge(he_id);
+                        result.removed_halfedges.push(he_id);
+                    }
+                }
+
+                self.reseed_outgoing_if_dead(v_id);
+                self.reseed_outgoing_if_dead(other_v_id);
+            }
+        }
+    }
+
+    /// Closes the holes this merge's removals opened, wherever they are.
+    ///
+    /// The search region is the merge's own rings plus the endpoints of every boundary edge
+    /// the op opened since entry: a hole can sit outside the rings (the coincident fusion,
+    /// the star removal and the strip walk all reach further).
+    ///
+    /// "Opened" is keyed by vertex pair, not halfedge id: the merge deletes border edges and
+    /// re-creates them under new ids, and an id-keyed set would take such an edge for one the
+    /// merge opened and seal a border that is meant to stay open. The walker is the collapse
+    /// closer's ([`MeshGraph::boundary_loop_from`]), so both ops share one definition of
+    /// "a loop this op opened"; it follows opened edges only, of any length, and
+    /// [`MeshGraph::close_loop_with_fan`] refuses cuts that would fold the loop. The snapshot
+    /// is carried through the vertex merges and splits the op made so far (`renames`), or the
+    /// old border edges at those vertices would look opened.
+    ///
+    /// A three-halfedge loop around a lone triangle is emptied rather than closed: the
+    /// triangle is removed (see [`MeshGraph::lone_face_behind`]).
+    fn close_merge_opened_holes(
+        &mut self,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        boundary_pairs_at_entry: &HashSet<(VertexId, VertexId)>,
+        renames: &VertexRenames,
+        result: &mut MergeVerticesOneRing,
+    ) {
+        let boundary_pairs_at_entry = &renames.resolve(boundary_pairs_at_entry);
+
+        let mut closer_region = one_ring_v_ids1
+            .iter()
+            .chain(one_ring_v_ids2)
+            .chain(&result.added_vertices)
+            .copied()
+            .collect_vec();
+        let mut in_region: HashSet<VertexId> = closer_region.iter().copied().collect();
+
+        for v_id in self.opened_boundary_vertices(boundary_pairs_at_entry) {
+            if in_region.insert(v_id) {
+                closer_region.push(v_id);
+            }
+        }
+
+        // The faces added below take two halves out of the boundary and add the fan's
+        // diagonal, so each sweep re-walks until nothing closes.
+        loop {
+            let mut progressed = false;
+
+            for &start_v in &closer_region {
+                if !self.vertices.contains_key(start_v) {
+                    continue;
+                }
+
+                let Some(loop_hes) = self.boundary_loop_from(start_v, boundary_pairs_at_entry)
+                else {
+                    continue;
+                };
+
+                if let Some(face_id) = self.lone_face_behind(&loop_hes) {
+                    let (removed_vertices, removed_halfedges) = self.remove_face(face_id);
+                    record_removal(&mut result.added_faces, &mut result.removed_faces, face_id);
+                    for he_id in removed_halfedges {
+                        record_removal(
+                            &mut result.added_halfedges,
+                            &mut result.removed_halfedges,
+                            he_id,
+                        );
+                    }
+                    for v_id in removed_vertices {
+                        record_removal(
+                            &mut result.added_vertices,
+                            &mut result.removed_vertices,
+                            v_id,
+                        );
+                    }
+                    progressed = true;
+                    continue;
+                }
+
+                if let Some(added) = self.close_loop_with_fan(&loop_hes) {
+                    result.added_faces.push(added.face_id);
+                    result.added_halfedges.extend(added.halfedge_ids);
+                    progressed = true;
+                }
+            }
+
+            if !progressed {
+                break;
+            }
+        }
+    }
+
+    /// Remove every face incident to `vertex_id`, walking the vertex's raw
+    /// outgoing-halfedge list rather than [`Vertex::faces`].
+    ///
+    /// `faces()` follows one fan from the seed, so a pinched vertex (its star
+    /// split into more than one fan) leaves the other fans' faces behind - and
+    /// `H`, the boundary delta these removals produce, would then describe only
+    /// part of the hole while the vertex stays attached. Used once per merge
+    /// vertex, in order, so the rim each star opens can be attributed to its
+    /// side.
+    fn remove_vertex_faces(&mut self, vertex_id: VertexId, result: &mut MergeVerticesOneRing) {
+        let mut face_ids: Vec<FaceId> = Vec::new();
+        for he_id in self
+            .outgoing_halfedges
+            .get(vertex_id)
+            .cloned()
+            .unwrap_or_default()
+        {
+            if let Some(face_id) = self.halfedges.get(he_id).and_then(|he| he.face)
+                && !face_ids.contains(&face_id)
+            {
+                face_ids.push(face_id);
+            }
+        }
+
+        for face_id in face_ids {
             let (del_v, del_he) = self.remove_face(face_id);
 
             result.removed_faces.push(face_id);
             result.removed_vertices.extend(del_v);
             result.removed_halfedges.extend(del_he);
         }
+
+        // The star must be gone in full: no live outgoing halfedge of the
+        // vertex may still claim a face. A survivor means the enumeration
+        // missed a fan and `H` is a partial hole.
+        debug_assert!(
+            self.outgoing_halfedges
+                .get(vertex_id)
+                .is_none_or(|out_hes| out_hes.iter().all(|he_id| self
+                    .halfedges
+                    .get(*he_id)
+                    .is_none_or(|he| he.face.is_none()))),
+            "star removal left faces on {vertex_id:?}"
+        );
     }
 
     /// Dismantles the face (if any) that still claims `he_id` as a chain member.
@@ -820,15 +1399,94 @@ impl MeshGraph {
         }
     }
 
+    /// The `(start, end)` vertex pair of a live halfedge.
+    fn halfedge_endpoints(&self, he_id: HalfedgeId) -> Option<(VertexId, VertexId)> {
+        let he = self.halfedges.get(he_id)?;
+        Some((he.start_vertex(self)?, he.end_vertex))
+    }
+
+    /// The live boundary half from `start` to `end`, if any.
+    fn boundary_half_from_to(&self, start: VertexId, end: VertexId) -> Option<HalfedgeId> {
+        self.halfedges_from_to(start, end)
+            .into_iter()
+            .find(|he_id| self.halfedges[*he_id].is_boundary())
+    }
+
+    /// Remove the edge pairs a failed planned-face insertion created. They are
+    /// self-twinned and face-less by construction (nothing claims them before
+    /// the face insertion runs), so removing both halves is safe.
+    fn rollback_created_edges(&mut self, created: &mut Vec<HalfedgeId>) {
+        for he_id in created.drain(..) {
+            if self.halfedges.contains_key(he_id) {
+                self.remove_only_halfedge_and_twin(he_id);
+            }
+        }
+    }
+
+    /// A pre-commit assertion: after a planned face was inserted, none of the
+    /// edges created for it may be left face-less on both sides (wire). That
+    /// can only happen if the insertion claimed a different half - a
+    /// transaction bug.
+    #[cfg(test)]
+    fn debug_assert_created_edges_claimed(&self, created: &[HalfedgeId]) {
+        for &he_id in created {
+            let Some(he) = self.halfedges.get(he_id) else {
+                continue;
+            };
+            let twin_faced = he
+                .twin
+                .and_then(|twin_id| self.halfedges.get(twin_id))
+                .is_some_and(|twin| twin.face.is_some());
+            debug_assert!(
+                he.face.is_some() || twin_faced,
+                "planned-face insertion left created edge {he_id:?} face-less on both sides"
+            );
+        }
+    }
+
+    /// A pre-commit assertion for the two inputs of `add_face_from_halfedges`:
+    /// each must resolve to a boundary half with a twin and a resolvable start
+    /// vertex. Otherwise the function's internal third-edge acquisition can
+    /// create an edge and then fail on a missing twin, leaking an edge the
+    /// caller's `created` bookkeeping never saw.
+    #[cfg(test)]
+    fn debug_assert_face_inputs_ready(&self, he_id1: HalfedgeId, he_id2: HalfedgeId) {
+        for he_id in [he_id1, he_id2] {
+            let resolved = self.boundary_he(he_id);
+            debug_assert!(
+                resolved.is_some(),
+                "planned-face input {he_id:?} resolves to no boundary half"
+            );
+            if let Some(resolved) = resolved
+                && let Some(he) = self.halfedges.get(resolved)
+            {
+                debug_assert!(
+                    he.twin.is_some() && he.start_vertex(self).is_some(),
+                    "planned-face input {resolved:?} is not insertion-ready (missing twin or start vertex)"
+                );
+            }
+        }
+    }
+
     #[instrument(skip_all)]
     fn flip_and_collapse_single_shared_edge_if_below_threshold(
         &mut self,
         single_shared_he_id: HalfedgeId,
         flip_threshold_sqr: f32,
+        renames: &mut VertexRenames,
         result: &mut MergeVerticesOneRing,
     ) -> bool {
-        // checked already in the call chain
-        let he = self.halfedges[single_shared_he_id];
+        // A lookup, not an index: the caller picks this edge out of a set built from the
+        // ring lists collected *before* the coincident fusion above, which can have
+        // consumed it (a fused pair removes the edge between it and its twin). Indexing a
+        // dead id here aborted the whole merge; a dead id means the shared edge the set
+        // counted is gone, so there is nothing to flip and the caller plans the band the
+        // normal way.
+        let he = *unwrap_or_return!(
+            self.halfedges.get(single_shared_he_id),
+            "Shared halfedge not found",
+            false
+        );
 
         let twin_id = unwrap_or_return!(he.twin, "Twin not found", false);
         let twin = unwrap_or_return!(self.halfedges.get(twin_id), "Twin not found", false);
@@ -849,12 +1507,25 @@ impl MeshGraph {
 
             self.flip_edge(single_shared_he_id);
 
+            // `collapse_edge` absorbs the edge's end vertex into its start vertex and cleans
+            // up the start vertex's neighborhood, so every vertex it adds descends from it.
+            let flipped_ends = self.halfedge_endpoints(single_shared_he_id);
+
             let CollapseEdge {
                 removed_vertices,
                 removed_halfedges,
                 removed_faces,
                 added_vertices,
             } = self.collapse_edge(single_shared_he_id);
+
+            if let Some((start_v_id, end_v_id)) = flipped_ends {
+                if removed_vertices.contains(&end_v_id) && !removed_vertices.contains(&start_v_id) {
+                    renames.absorb(end_v_id, start_v_id);
+                }
+                for &added_v_id in &added_vertices {
+                    renames.split(start_v_id, added_v_id);
+                }
+            }
 
             result.added_vertices.extend(added_vertices);
             result.removed_vertices.extend(removed_vertices);
@@ -876,14 +1547,34 @@ impl MeshGraph {
         let mut planned_faces = Vec::with_capacity(one_ring_v_ids1.len());
 
         for range_pair_to_connect in range_pairs_to_connect {
-            let start_pairing_index = planned_faces.len();
+            planned_faces.extend(
+                self.plan_connect_pair(range_pair_to_connect, [one_ring_v_ids1, one_ring_v_ids2]),
+            );
+        }
 
+        planned_faces
+    }
+
+    /// Plan the faces of a single range pair over two vertex rings.
+    ///
+    /// Extracted from [`Self::plan_new_faces`] so the rim-first planner can
+    /// reuse the identical Bresenham pairing and face-order machinery on
+    /// rim-derived arcs instead of the pre-removal one-rings.
+    fn plan_connect_pair(
+        &self,
+        range_pair_to_connect: &ConnectPair,
+        rings: [&[VertexId]; 2],
+    ) -> Vec<PlannedFace> {
+        let [one_ring_v_ids1, one_ring_v_ids2] = rings;
+        let mut planned_faces = Vec::new();
+
+        {
             let pairings = range_pair_to_connect.compute_pairings();
 
             tracing::debug!("Pairings: {:#?}", pairings);
 
             if pairings.is_empty() {
-                continue;
+                return planned_faces;
             }
 
             let mut prev_single_v_id = None;
@@ -962,20 +1653,20 @@ impl MeshGraph {
                 prev_other_v_id = Some(other_v_id);
             }
 
-            if planned_faces.len() == start_pairing_index {
+            if planned_faces.is_empty() {
                 // This range pair produced no faces (e.g. a single shared vertex).
-                continue;
+                return planned_faces;
             }
 
             if !matches!(
                 range_pair_to_connect.start_cap,
                 ConnectPairCap::AlreadyConnected
             ) {
-                planned_faces[start_pairing_index].order = PlannedFaceOrder::Start;
+                planned_faces[0].order = PlannedFaceOrder::Start;
             }
 
             let len = planned_faces.len();
-            planned_faces[len - 1].order = if len - 1 == start_pairing_index {
+            planned_faces[len - 1].order = if len == 1 {
                 PlannedFaceOrder::Single
             } else {
                 PlannedFaceOrder::End
@@ -985,11 +1676,52 @@ impl MeshGraph {
         planned_faces
     }
 
+    /// Env-gated diagnostic: dump the old planner's inputs and output so the
+    /// rim walk can be read side-by-side with it. Test-only.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    fn dump_plan_debug(
+        &self,
+        one_ring_v_ids1: &[VertexId],
+        one_ring_v_ids2: &[VertexId],
+        shared_v_ids: &HashSet<VertexId>,
+        already_connected_face_ids: &[FaceId],
+        range_pairs_to_connect: &[ConnectPair],
+        planned_faces: &[PlannedFace],
+    ) {
+        println!("PLAN ring1 {one_ring_v_ids1:?}");
+        println!("PLAN ring2 {one_ring_v_ids2:?}");
+        println!("PLAN shared_v {shared_v_ids:?}");
+        for face_id in already_connected_face_ids {
+            if let Some(face) = self.faces.get(*face_id) {
+                let mut vs: Vec<VertexId> = Vec::new();
+                for he_id in face.halfedges(self) {
+                    if let Some(he) = self.halfedges.get(he_id) {
+                        vs.push(he.end_vertex);
+                    }
+                }
+                println!("PLAN strip_face {face_id:?} vs {vs:?}");
+            } else {
+                println!("PLAN strip_face {face_id:?} (dead)");
+            }
+        }
+        for cp in range_pairs_to_connect {
+            println!("PLAN range_pair {:?} cap {:?}", cp.ranges, cp.start_cap);
+        }
+        for pf in planned_faces {
+            println!(
+                "PLAN face {:?} v1={:?} a={:?} b={:?}",
+                pf.order, pf.v1, pf.new_he_v1, pf.new_he_v2
+            );
+        }
+    }
+
     #[instrument(skip_all)]
     fn check_and_flip_single_shared_he(
         &mut self,
         shared_he_ids: &HashSet<HalfedgeId>,
         flip_threshold_sqr: f32,
+        renames: &mut VertexRenames,
         result: &mut MergeVerticesOneRing,
     ) -> bool {
         if shared_he_ids.len() == 1 {
@@ -1001,6 +1733,7 @@ impl MeshGraph {
             return self.flip_and_collapse_single_shared_edge_if_below_threshold(
                 shared_he_id,
                 flip_threshold_sqr,
+                renames,
                 result,
             );
         }
@@ -1213,12 +1946,10 @@ impl MeshGraph {
             }
         }
 
-        let diff1 = (start_idx1 as i32 - end_idx1 as i32).unsigned_abs() as usize;
-        let diff1 = diff1.min(len1 - diff1);
-
-        let diff2 = (start_idx2 as i32 - end_idx2 as i32).unsigned_abs() as usize;
-        let diff2 = diff2.min(len2 - diff2);
-
+        // The walk found no cap at all: cover both rings once, closed on a
+        // shared vertex and open otherwise. The old code also carried a trailing
+        // "span" push here that covered whatever the walk had left over; the
+        // rim-first planner catches that structurally now, so it is gone.
         if range_pairs_to_connect.is_empty() {
             let (end1, end2, cap) = if shared_v_ids.is_empty() {
                 (
@@ -1229,21 +1960,12 @@ impl MeshGraph {
             } else {
                 (orig_start_idx1, orig_start_idx2, ConnectPairCap::Closed)
             };
-
             range_pairs_to_connect.push(ConnectPair::new(
                 orig_start_idx1..=end1,
                 len1,
                 orig_start_idx2..=end2,
                 len2,
                 cap,
-            ));
-        } else if diff1 > 1 || diff2 > 1 {
-            range_pairs_to_connect.push(ConnectPair::new(
-                start_idx1..=end_idx1,
-                len1,
-                start_idx2..=end_idx2,
-                len2,
-                start_cap,
             ));
         }
 
@@ -1356,10 +2078,13 @@ impl MeshGraph {
         debug_assert_eq!(other_len, other_one_ring_he_ids.len());
 
         for (he_idx, &he_id1) in one_ring_he_ids.iter().enumerate() {
-            if self.halfedges.contains_key(he_id1)
-                && !shared_he_ids.contains(&he_id1)
-                && !connected_he_ids.contains(&he_id1)
-            {
+            // A *dead* ring halfedge is not a reason to skip the position: it
+            // means `remove_neighbor_faces` consumed that edge with the merged
+            // vertices' stars, which is precisely a position that still needs
+            // connecting. Requiring it to be alive made the scan give up on
+            // exactly the ring stretches the band has to span, and the op then
+            // returned "nothing to connect" having already torn both stars out.
+            if !shared_he_ids.contains(&he_id1) && !connected_he_ids.contains(&he_id1) {
                 // walk backwards until we find a connection between the two one-rings
 
                 let mut start_idx = he_idx;
@@ -1784,7 +2509,7 @@ impl Pairing {
 ///             ()
 ///         new_he_v1
 ///
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PlannedFace {
     order: PlannedFaceOrder,
     v1: VertexId,
@@ -1815,6 +2540,24 @@ impl PlannedFace {
         }
     }
 
+    /// Pre-insertion validation, before any mutation: the three vertices must
+    /// be distinct and alive. A failing face is skipped; a transaction never
+    /// starts.
+    fn validate_planned_face(&self, mesh_graph: &MeshGraph) -> Option<()> {
+        let v_ids = [self.v1, self.new_he_v1, self.new_he_v2];
+        if v_ids[0] == v_ids[1] || v_ids[1] == v_ids[2] || v_ids[0] == v_ids[2] {
+            error!("Skipping degenerate planned face with repeated vertices: {v_ids:?}");
+            return None;
+        }
+        for v_id in v_ids {
+            if !mesh_graph.vertices.contains_key(v_id) {
+                error!("Skipping planned face with dead vertex {v_id:?}: {v_ids:?}");
+                return None;
+            }
+        }
+        Some(())
+    }
+
     #[instrument(skip(mesh_graph, result))]
     fn add_to_mesh_graph(
         &self,
@@ -1824,20 +2567,37 @@ impl PlannedFace {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph", mesh_graph);
 
-        if self.v1 == self.new_he_v1
-            || self.v1 == self.new_he_v2
-            || self.new_he_v1 == self.new_he_v2
-        {
-            error!(
-                "Skipping degenerate planned face with repeated vertices: {:?}",
-                (self.v1, self.new_he_v1, self.new_he_v2)
-            );
-            return None;
-        }
+        // Transaction: validate before any mutation. Edges this face creates are
+        // tracked so a failed insertion removes them again; `add_face` is the
+        // commit point after which nothing can fail.
+        self.validate_planned_face(mesh_graph)?;
 
-        let add_or_get_edge1 = mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1)?;
+        let mut created: Vec<HalfedgeId> = Vec::new();
+
+        let add_or_get_edge1 = match mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1) {
+            Some(edge) => edge,
+            None => {
+                // Unreachable after `validate_planned_face`.
+                debug_assert!(false, "edge 1 acquisition failed after validation");
+                return None;
+            }
+        };
+        if add_or_get_edge1.new_start_to_end {
+            created.push(add_or_get_edge1.start_to_end_he_id);
+        }
         let add_or_get_edge2 =
-            mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)?;
+            match mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2) {
+                Some(edge) => edge,
+                None => {
+                    // Unreachable after `validate_planned_face`.
+                    debug_assert!(false, "edge 2 acquisition failed after validation");
+                    mesh_graph.rollback_created_edges(&mut created);
+                    return None;
+                }
+            };
+        if add_or_get_edge2.new_start_to_end {
+            created.push(add_or_get_edge2.start_to_end_he_id);
+        }
 
         // The re-filed halfedges may still belong to a live face (an overlapping
         // earlier merge's bridge or fan). Re-filing a live chain member would leave
@@ -1851,10 +2611,28 @@ impl PlannedFace {
             mesh_graph.dismantle_faced_member(he_id, result);
         }
 
-        let mut add_face = mesh_graph.add_face_from_halfedges(
+        #[cfg(test)]
+        mesh_graph.debug_assert_face_inputs_ready(
             add_or_get_edge1.start_to_end_he_id,
             add_or_get_edge2.start_to_end_he_id,
-        )?;
+        );
+
+        let mut add_face = match mesh_graph.add_face_from_halfedges(
+            add_or_get_edge1.start_to_end_he_id,
+            add_or_get_edge2.start_to_end_he_id,
+        ) {
+            Some(face) => face,
+            None => {
+                // Unreachable after the validation and readiness checks above;
+                // fail loudly in tests instead of silently losing the face.
+                debug_assert!(
+                    false,
+                    "planned face {self:?} failed after a clean transaction"
+                );
+                mesh_graph.rollback_created_edges(&mut created);
+                return None;
+            }
+        };
 
         if add_or_get_edge1.new_start_to_end {
             add_face
@@ -1872,6 +2650,9 @@ impl PlannedFace {
         if add_or_get_edge2.new_twin {
             add_face.halfedge_ids.push(add_or_get_edge2.twin_he_id);
         }
+
+        #[cfg(test)]
+        mesh_graph.debug_assert_created_edges_claimed(&created);
 
         Some((
             if matches!(
@@ -1897,64 +2678,123 @@ impl PlannedFace {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph_and_he", mesh_graph);
 
-        if self.v1 == self.new_he_v1
-            || self.v1 == self.new_he_v2
-            || self.new_he_v1 == self.new_he_v2
-        {
-            error!(
-                "Skipping degenerate planned face with repeated vertices: {:?}",
-                (self.v1, self.new_he_v1, self.new_he_v2)
-            );
+        // Transaction: validate before any mutation. `add_face` is the commit
+        // point; everything before it is rolled back on failure (created edges)
+        // or cannot be undone (dismantled faces) and must therefore be
+        // infallible once entered.
+        self.validate_planned_face(mesh_graph)?;
+
+        if !matches!(self.order, PlannedFaceOrder::Middle | PlannedFaceOrder::End) {
+            error!("Invalid face order {:?}", self.order);
+            debug_assert!(false, "planned face with invalid order reached insertion");
             return None;
         }
 
-        match self.order {
-            PlannedFaceOrder::Middle => {
-                let AddEdge {
-                    start_to_end_he_id,
-                    twin_he_id,
-                } = mesh_graph.add_edge(self.new_he_v1, self.new_he_v2)?;
+        // The shared edge with the previous planned face. Capture its vertex
+        // pair before the dismantle: `remove_face` can free both halves (member
+        // and twin) when the other side was boundary, so an id resolved here can
+        // be dead afterwards. The edge is re-resolved - or re-created - by its
+        // vertex pair after the dismantle.
+        let existing_edge = mesh_graph.halfedge_endpoints(existing_he_id)?;
 
-                // The edge may already exist (created by the previous planned face
-                // of this merge or an overlapping earlier merge): its halfedge still
-                // belongs to that face's chain. Dismantle the claiming face before
-                // re-filing, and the existing edge (the other side of the shared
-                // border) likewise, so no live chain keeps referencing a re-filed
-                // halfedge.
-                mesh_graph.dismantle_faced_member(existing_he_id, result);
-                mesh_graph.dismantle_faced_member(start_to_end_he_id, result);
+        let mut created: Vec<HalfedgeId> = Vec::new();
 
-                let mut add_face =
-                    mesh_graph.add_face_from_halfedges(existing_he_id, start_to_end_he_id)?;
-                add_face.halfedge_ids.push(start_to_end_he_id);
-                add_face.halfedge_ids.push(twin_he_id);
-
-                Some((Some(twin_he_id), add_face))
-            }
-            PlannedFaceOrder::End => {
-                let add_or_get_edge =
-                    mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)?;
-
-                mesh_graph.dismantle_faced_member(existing_he_id, result);
-                mesh_graph.dismantle_faced_member(add_or_get_edge.start_to_end_he_id, result);
-
-                let mut add_face = mesh_graph
-                    .add_face_from_halfedges(existing_he_id, add_or_get_edge.start_to_end_he_id)?;
-                if add_or_get_edge.new_start_to_end {
-                    add_face
-                        .halfedge_ids
-                        .push(add_or_get_edge.start_to_end_he_id);
+        // The edge may already exist (created by the previous planned face
+        // of this merge or an overlapping earlier merge). Take that one
+        // instead of adding a second edge between the same two vertices:
+        // `add_edge` here used to leave a *parallel* halfedge pair, whose
+        // two free halves stay face-less forever - the mesh reports them
+        // as boundary and the weld looks like it left a hole, while the
+        // two triangles that should have shared the edge each sit on their
+        // own copy of it. (`End` below has always done it this way.)
+        let add_or_get_edge =
+            match mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2) {
+                Some(edge) => edge,
+                None => {
+                    debug_assert!(
+                        false,
+                        "edge acquisition failed after `validate_planned_face`"
+                    );
+                    mesh_graph.rollback_created_edges(&mut created);
+                    return None;
                 }
-                if add_or_get_edge.new_twin {
-                    add_face.halfedge_ids.push(add_or_get_edge.twin_he_id);
-                }
+            };
+        if add_or_get_edge.new_start_to_end {
+            created.push(add_or_get_edge.start_to_end_he_id);
+        }
 
-                Some((None, add_face))
+        // A re-filed halfedge may still belong to a live face's chain.
+        // Dismantle the claiming face before re-filing, and the existing
+        // edge (the other side of the shared border) likewise, so no live
+        // chain keeps referencing a re-filed halfedge.
+        mesh_graph.dismantle_faced_member(existing_he_id, result);
+        mesh_graph.dismantle_faced_member(add_or_get_edge.start_to_end_he_id, result);
+
+        // Re-resolve the shared edge after the dismantle.
+        let existing_he_id = match mesh_graph
+            .boundary_half_from_to(existing_edge.0, existing_edge.1)
+            .or_else(|| mesh_graph.boundary_half_from_to(existing_edge.1, existing_edge.0))
+        {
+            Some(he_id) => he_id,
+            None => {
+                // Both halves went with the dismantled face: re-create the edge.
+                match mesh_graph.add_or_get_boundary_edge(existing_edge.0, existing_edge.1) {
+                    Some(edge) => {
+                        if edge.new_start_to_end {
+                            created.push(edge.start_to_end_he_id);
+                        }
+                        edge.start_to_end_he_id
+                    }
+                    None => {
+                        // Unreachable after `validate_planned_face`.
+                        debug_assert!(
+                            false,
+                            "re-creating the shared edge failed after a clean transaction"
+                        );
+                        mesh_graph.rollback_created_edges(&mut created);
+                        return None;
+                    }
+                }
             }
-            _ => {
-                error!("Invalid face order {:?}", self.order);
-                None
+        };
+
+        #[cfg(test)]
+        mesh_graph
+            .debug_assert_face_inputs_ready(existing_he_id, add_or_get_edge.start_to_end_he_id);
+
+        let mut add_face = match mesh_graph
+            .add_face_from_halfedges(existing_he_id, add_or_get_edge.start_to_end_he_id)
+        {
+            Some(face) => face,
+            None => {
+                // Unreachable after the dismantle + re-resolution + readiness
+                // checks above; the dismantled faces cannot be restored, so
+                // fail loudly in tests rather than silently losing the face.
+                debug_assert!(
+                    false,
+                    "planned face {self:?} failed after irreversible dismantles"
+                );
+                mesh_graph.rollback_created_edges(&mut created);
+                return None;
             }
+        };
+
+        if add_or_get_edge.new_start_to_end {
+            add_face
+                .halfedge_ids
+                .push(add_or_get_edge.start_to_end_he_id);
+        }
+        if add_or_get_edge.new_twin {
+            add_face.halfedge_ids.push(add_or_get_edge.twin_he_id);
+        }
+
+        #[cfg(test)]
+        mesh_graph.debug_assert_created_edges_claimed(&created);
+
+        if matches!(self.order, PlannedFaceOrder::Middle) {
+            Some((Some(add_or_get_edge.twin_he_id), add_face))
+        } else {
+            Some((None, add_face))
         }
     }
 

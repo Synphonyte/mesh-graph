@@ -18,9 +18,17 @@ bevy = { version = "0.19", default-features = false, features = [
 ], optional = true }
 cfg-if = { version = "1", optional = true }
 derive_more = { version = "2", features = ["deref", "deref_mut"] }
+foldhash = "0.2"
 glam = "0.33"
 gltf = { version = "1.4", optional = true, features = ["extras"] }
-hashbrown = "0.17"
+# No `default-hasher`: the crate uses the fixed-seed aliases in `src/hash.rs`. Other
+# dependencies (parry3d) enable it anyway, so `clippy.toml` is what enforces the aliases.
+hashbrown = { version = "0.17", default-features = false, features = [
+    "allocator-api2",
+    "equivalent",
+    "inline-more",
+    "raw-entry",
+] }
 itertools = "0.15"
 lazy_static = { version = "1.5.0", optional = true }
 manifold-csg = { version = "0.4", default-features = false, optional = true }

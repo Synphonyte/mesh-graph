@@ -94,7 +94,7 @@ impl From<IcoSphere> for MeshGraph {
             let mut new_faces = Vec::new();
 
             // Temporary map to store midpoints of edges
-            let mut midpoints = std::collections::HashMap::new();
+            let mut midpoints = crate::hash::HashMap::default();
 
             for face in &faces {
                 // Get the three vertices of the face

@@ -1,5 +1,5 @@
+use crate::hash::HashMap;
 use glam::Vec3;
-use hashbrown::HashMap;
 use itertools::Itertools;
 use tracing::error;
 
@@ -344,7 +344,7 @@ impl MeshGraph {
         let mut face_to_center = HashMap::<FaceId, Vec3>::default();
 
         for face in self.faces.values() {
-            let mut pos = HashMap::new();
+            let mut pos = HashMap::default();
 
             let mut center = Vec3::ZERO;
 

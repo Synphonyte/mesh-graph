@@ -29,6 +29,32 @@ impl MeshGraph {
         None
     }
 
+    /// The single outgoing boundary halfedge of a vertex, if it has exactly one.
+    ///
+    /// A vertex with no boundary halfedge is interior, one with several sits on a border
+    /// that turns or pinches, and only the single-halfedge case continues a boundary loop.
+    /// The hole closers walk their own *opened* boundary in this shape, so this is used by
+    /// their tests, which walk a fixture's plain rim.
+    #[cfg(test)]
+    pub(crate) fn sole_boundary_out(&self, vertex_id: VertexId) -> Option<HalfedgeId> {
+        let mut found = None;
+
+        for he_id in self.outgoing_halfedges.get(vertex_id)? {
+            if self
+                .halfedges
+                .get(*he_id)
+                .is_some_and(|he| he.face.is_none())
+            {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(*he_id);
+            }
+        }
+
+        found
+    }
+
     /// Returns the vertex order of the boundary halfedge between two vertices.
     /// Useful when adding faces on boundaries.
     ///

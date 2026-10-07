@@ -1,5 +1,5 @@
-use hashbrown::HashSet;
 use mesh_graph::VertexId;
+use mesh_graph::hash::HashSet;
 
 pub fn main() {
     use mesh_graph::integrations::gltf;
@@ -36,8 +36,8 @@ pub fn main() {
         panic!("No bottom vertex found");
     }
 
-    let mut marked_halfedges = HashSet::new();
-    let mut marked_vertices = HashSet::new();
+    let mut marked_halfedges = HashSet::default();
+    let mut marked_vertices = HashSet::default();
 
     let _ = meshgraph.merge_vertices_one_rings(
         v_top_id,

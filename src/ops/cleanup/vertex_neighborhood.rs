@@ -1,4 +1,4 @@
-use hashbrown::HashSet;
+use crate::hash::HashSet;
 use itertools::Itertools;
 use tracing::{error, instrument};
 
@@ -172,15 +172,26 @@ impl MeshGraph {
     fn split_disconnected_neighborhoods(&mut self, vertex_id: VertexId) -> Option<Vec<VertexId>> {
         let mut new_vertices = Vec::new();
 
-        let mut outgoing_halfedges = HashSet::<HalfedgeId>::from_iter(
-            self.outgoing_halfedges
-                .get(vertex_id)
-                .or_else(error_none!("Outgoing halfedges not found"))?
-                .iter()
-                .copied(),
-        );
+        // The outgoing star is stored as a list, and that list order is what
+        // every other traversal of this vertex sees. Drive the fan walks from
+        // it directly instead of from a hash set built out of it: picking the
+        // walk start with `iter().next()` would make both the component that
+        // gets split off and the write-back order below depend on the set's
+        // iteration order rather than on the mesh. The set is kept only as the
+        // "not yet walked" membership test.
+        let outgoing = self
+            .outgoing_halfedges
+            .get(vertex_id)
+            .or_else(error_none!("Outgoing halfedges not found"))?
+            .clone();
 
-        while let Some(&start_he_id) = outgoing_halfedges.iter().next() {
+        let mut outgoing_halfedges = HashSet::<HalfedgeId>::from_iter(outgoing.iter().copied());
+
+        for &start_he_id in &outgoing {
+            if !outgoing_halfedges.contains(&start_he_id) {
+                continue;
+            }
+
             let mut current_he_id = start_he_id;
 
             let len = outgoing_halfedges.len();
@@ -238,13 +249,21 @@ impl MeshGraph {
 
                 new_vertices.push(new_vertex_id);
 
+                // Keep the surviving part of the star in its original list
+                // order, so the vertex's rotation order (and the seed picked
+                // from it) stays a pure function of the mesh.
+                let kept = outgoing
+                    .iter()
+                    .copied()
+                    .filter(|he_id| outgoing_halfedges.contains(he_id))
+                    .collect_vec();
+
                 self.vertices
                     .get_mut(vertex_id)
                     .or_else(error_none!("Vertex not found"))?
-                    .outgoing_halfedge = Some(*outgoing_halfedges.iter().next().unwrap()); // check above that outgoing_halfedges is not empty
+                    .outgoing_halfedge = Some(kept[0]); // checked above that outgoing_halfedges is not empty
 
-                self.outgoing_halfedges
-                    .insert(vertex_id, Vec::from_iter(outgoing_halfedges));
+                self.outgoing_halfedges.insert(vertex_id, kept);
 
                 return Some(new_vertices);
             }
@@ -810,28 +829,32 @@ impl MeshGraph {
                     self.log_face_rerun("flap2", face_id2);
                 }
 
-                let mut halfedges_of_faces = HashSet::<HalfedgeId>::from_iter(
-                    self.halfedges.iter().filter_map(|(he_id, he)| {
+                // Ordered, not a `HashSet`: the pair loop below removes
+                // halfedges and re-twins their survivors, so the iteration order
+                // decides which candidate pair is repaired first. A set here
+                // would make the repair depend on the set's iteration order
+                // rather than on the mesh. The scan is in slotmap order, which
+                // depends only on the mesh.
+                let mut halfedges_of_faces = self
+                    .halfedges
+                    .iter()
+                    .filter_map(|(he_id, he)| {
                         if he.face == Some(face_id1) || he.face == Some(face_id2) {
                             Some(he_id)
                         } else {
                             None
                         }
-                    }),
-                );
+                    })
+                    .collect_vec();
 
                 let (vs, hes) = self.remove_face(face_id1);
-                for he_id in &hes {
-                    halfedges_of_faces.remove(he_id);
-                }
+                halfedges_of_faces.retain(|he_id| !hes.contains(he_id));
                 removed_vertices.extend(vs);
                 removed_halfedges.extend(hes);
                 removed_faces.push(face_id1);
 
                 let (vs, hes) = self.remove_face(face_id2);
-                for he_id in &hes {
-                    halfedges_of_faces.remove(he_id);
-                }
+                halfedges_of_faces.retain(|he_id| !hes.contains(he_id));
                 removed_vertices.extend(vs);
                 removed_halfedges.extend(hes);
                 removed_faces.push(face_id2);
@@ -988,7 +1011,7 @@ impl MeshGraph {
                 } else if halfedges_of_faces.len() == 1 {
                     tracing::debug!("Single orphaned halfedge after flap removal (boundary edge)");
 
-                    if let Some(&single_he_id) = halfedges_of_faces.iter().next() {
+                    if let Some(&single_he_id) = halfedges_of_faces.first() {
                         if let Some(single_he) = self.halfedges.get(single_he_id) {
                             if single_he.twin.is_none() {
                                 tracing::error!("Single orphaned halfedge found and has no twin");

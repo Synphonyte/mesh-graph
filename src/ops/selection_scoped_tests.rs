@@ -10,8 +10,8 @@
 //!    the rest of the mesh alone.
 //! 3. **Equivalence** - selecting everything reproduces the whole-mesh operation.
 
+use crate::hash::HashSet;
 use glam::Vec3;
-use hashbrown::HashSet;
 
 use crate::{
     EdgeLengthCleanup, FaceId, HalfedgeId, MeshGraph, ScopedCleanup, Selection, SelectionOps,
@@ -96,8 +96,16 @@ fn assert_bookkeeping(
 
     // `added` must be exactly what is newly live, and all of it alive.
     assert_eq!(
-        result.added.vertices.iter().copied().collect::<HashSet<_>>(),
-        live_v.difference(&before.0).copied().collect::<HashSet<_>>(),
+        result
+            .added
+            .vertices
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>(),
+        live_v
+            .difference(&before.0)
+            .copied()
+            .collect::<HashSet<_>>(),
         "reported added vertices"
     );
     assert_eq!(
@@ -107,18 +115,27 @@ fn assert_bookkeeping(
             .iter()
             .copied()
             .collect::<HashSet<_>>(),
-        live_he.difference(&before.1).copied().collect::<HashSet<_>>(),
+        live_he
+            .difference(&before.1)
+            .copied()
+            .collect::<HashSet<_>>(),
         "reported added halfedges"
     );
     assert_eq!(
         result.added.faces.iter().copied().collect::<HashSet<_>>(),
-        live_f.difference(&before.2).copied().collect::<HashSet<_>>(),
+        live_f
+            .difference(&before.2)
+            .copied()
+            .collect::<HashSet<_>>(),
         "reported added faces"
     );
 
     // `removed` must be dead, and must have been selected beforehand.
     for v_id in &result.removed.vertices {
-        assert!(!live_v.contains(v_id), "removed vertex {v_id:?} is still live");
+        assert!(
+            !live_v.contains(v_id),
+            "removed vertex {v_id:?} is still live"
+        );
         assert!(
             sel_before.vertices.contains(v_id),
             "removed vertex {v_id:?} was never selected"
@@ -131,7 +148,10 @@ fn assert_bookkeeping(
         );
     }
     for f_id in &result.removed.faces {
-        assert!(!live_f.contains(f_id), "removed face {f_id:?} is still live");
+        assert!(
+            !live_f.contains(f_id),
+            "removed face {f_id:?} is still live"
+        );
     }
 
     // Nothing may be reported as both added and removed - that is the ambiguity a
@@ -148,14 +168,17 @@ fn assert_bookkeeping(
     replayed.remove_edit(&result.removed);
     replayed.extend_with_edit(&result.added);
     assert_eq!(replayed.vertices, sel_after.vertices, "replayed vertices");
-    assert_eq!(replayed.halfedges, sel_after.halfedges, "replayed halfedges");
+    assert_eq!(
+        replayed.halfedges, sel_after.halfedges,
+        "replayed halfedges"
+    );
     assert_eq!(replayed.faces, sel_after.faces, "replayed faces");
 }
 
 /// The vertices the scope covers: the endpoints of every halfedge the selection resolves
 /// to. Collapse may move these; everything else must hold still.
 fn scope_vertices(mg: &MeshGraph, sel: &Selection) -> HashSet<VertexId> {
-    let mut verts = HashSet::new();
+    let mut verts = HashSet::default();
 
     for he_id in sel.resolve_to_halfedges(mg) {
         let Some(he) = mg.halfedges.get(he_id) else {
@@ -174,7 +197,7 @@ fn scope_vertices(mg: &MeshGraph, sel: &Selection) -> HashSet<VertexId> {
 /// the selection resolves to. Must be captured *before* the operation — subdivision
 /// re-pairs twins, so deriving it afterwards names a different set.
 fn full_scope(mg: &MeshGraph, sel: &Selection) -> HashSet<HalfedgeId> {
-    let mut scope = HashSet::new();
+    let mut scope = HashSet::default();
 
     for he_id in sel.resolve_to_halfedges(mg) {
         scope.insert(he_id);
@@ -225,8 +248,8 @@ fn test_scoped_subdivide_selection_matches_brute_force_key_diff() {
         let result = mg.subdivide_selected_until_edges_below_max_length(
             sel,
             0.3,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut HashSet::default(),
+            &mut HashSet::default(),
         );
 
         assert!(
@@ -249,7 +272,7 @@ fn test_scoped_collapse_selection_matches_brute_force_key_diff() {
         // 1.5 sits between the grid's axis edges (1.0) and its diagonals (2.0), so every
         // axis edge in scope is a collapse candidate.
         let result =
-            mg.collapse_selected_until_edges_above_min_length(sel, 1.5, &mut HashSet::new());
+            mg.collapse_selected_until_edges_above_min_length(sel, 1.5, &mut HashSet::default());
 
         assert!(
             mesh_invariant_violations(&mg).is_empty(),
@@ -291,13 +314,13 @@ fn test_scoped_ops_leave_no_stale_ids() {
     mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.2,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
     assert!(selection_violations(&mg, &sel).is_empty());
     assert!(mesh_invariant_violations(&mg).is_empty());
 
-    mg.collapse_selected_until_edges_above_min_length(&mut sel, 0.5, &mut HashSet::new());
+    mg.collapse_selected_until_edges_above_min_length(&mut sel, 0.5, &mut HashSet::default());
     assert!(
         selection_violations(&mg, &sel).is_empty(),
         "{:?}",
@@ -325,13 +348,14 @@ fn test_element_created_and_destroyed_within_one_op_appears_in_neither_list() {
     mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.2,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     let before = element_keys(&mg);
     let sel_before = sel.clone();
-    let result = mg.collapse_selected_until_edges_above_min_length(&mut sel, 1.0, &mut HashSet::new());
+    let result =
+        mg.collapse_selected_until_edges_above_min_length(&mut sel, 1.0, &mut HashSet::default());
 
     assert_bookkeeping(&mg, &before, &sel_before, &sel, &result);
     assert!(mesh_invariant_violations(&mg).is_empty());
@@ -352,8 +376,8 @@ fn test_scoped_subdivide_never_splits_an_out_of_scope_edge() {
     mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.3,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     let after_positions = edge_endpoint_positions(&mg);
@@ -372,7 +396,10 @@ fn test_scoped_subdivide_never_splits_an_out_of_scope_edge() {
         );
     }
 
-    assert!(checked > 0, "fixture put every edge in scope - test is vacuous");
+    assert!(
+        checked > 0,
+        "fixture put every edge in scope - test is vacuous"
+    );
 }
 
 /// Collapse moves exactly one vertex per edge - the surviving endpoint, always an
@@ -385,7 +412,7 @@ fn test_scoped_collapse_moves_no_vertex_outside_the_scope() {
     let in_scope = scope_vertices(&mg, &sel);
     let before: Vec<(VertexId, Vec3)> = mg.positions.iter().map(|(v, &p)| (v, p)).collect();
 
-    mg.collapse_selected_until_edges_above_min_length(&mut sel, 1.5, &mut HashSet::new());
+    mg.collapse_selected_until_edges_above_min_length(&mut sel, 1.5, &mut HashSet::default());
 
     let mut checked = 0;
     for (v_id, pos) in before {
@@ -399,7 +426,10 @@ fn test_scoped_collapse_moves_no_vertex_outside_the_scope() {
         assert_eq!(*now, pos, "vertex {v_id:?} outside the scope moved");
     }
 
-    assert!(checked > 0, "fixture put every vertex in scope - test is vacuous");
+    assert!(
+        checked > 0,
+        "fixture put every vertex in scope - test is vacuous"
+    );
     assert!(mesh_invariant_violations(&mg).is_empty());
 }
 
@@ -412,12 +442,16 @@ fn test_empty_selection_is_a_no_op() {
     let sub = mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.1,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
-    let col = mg.collapse_selected_until_edges_above_min_length(&mut sel, 10.0, &mut HashSet::new());
+    let col =
+        mg.collapse_selected_until_edges_above_min_length(&mut sel, 10.0, &mut HashSet::default());
 
-    assert!(sub.converged(), "an empty selection has nothing left to fix");
+    assert!(
+        sub.converged(),
+        "an empty selection has nothing left to fix"
+    );
     assert!(col.converged());
     assert!(sub.added.is_empty() && sub.removed.is_empty());
     assert!(col.added.is_empty() && col.removed.is_empty());
@@ -451,8 +485,8 @@ fn test_scoped_subdivide_preserves_selected_area() {
     mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.3,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     // Subdivision never changes the area of the mesh.
@@ -514,8 +548,8 @@ fn test_scoped_subdivide_selects_both_halves_of_a_split_edge() {
     mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         1.0,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     let mid = (start_pos + end_pos) * 0.5;
@@ -536,8 +570,14 @@ fn test_scoped_subdivide_selects_both_halves_of_a_split_edge() {
         })
     };
 
-    assert!(covers(start_pos, mid), "first half of the split edge is not selected");
-    assert!(covers(mid, end_pos), "second half of the split edge is not selected");
+    assert!(
+        covers(start_pos, mid),
+        "first half of the split edge is not selected"
+    );
+    assert!(
+        covers(mid, end_pos),
+        "second half of the split edge is not selected"
+    );
 }
 
 // ---------------------------------------------------------------- D. equivalence
@@ -547,14 +587,18 @@ fn test_select_all_scoped_matches_unscoped_subdivide() {
     let mut unscoped = build_grid(4);
     let mut scoped = unscoped.clone();
 
-    unscoped.subdivide_until_edges_below_max_length(0.3, &mut HashSet::new(), &mut HashSet::new());
+    unscoped.subdivide_until_edges_below_max_length(
+        0.3,
+        &mut HashSet::default(),
+        &mut HashSet::default(),
+    );
 
     let mut sel = Selection::select_all(&scoped);
     scoped.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.3,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     assert_eq!(scoped.vertices.len(), unscoped.vertices.len());
@@ -568,10 +612,10 @@ fn test_select_all_scoped_matches_unscoped_collapse() {
     let mut unscoped = build_grid(4);
     let mut scoped = unscoped.clone();
 
-    unscoped.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
+    unscoped.collapse_until_edges_above_min_length(1.5, &mut HashSet::default());
 
     let mut sel = Selection::select_all(&scoped);
-    scoped.collapse_selected_until_edges_above_min_length(&mut sel, 1.5, &mut HashSet::new());
+    scoped.collapse_selected_until_edges_above_min_length(&mut sel, 1.5, &mut HashSet::default());
 
     assert_eq!(scoped.vertices.len(), unscoped.vertices.len());
     assert_eq!(scoped.halfedges.len(), unscoped.halfedges.len());
@@ -591,8 +635,8 @@ fn test_scoped_subdivide_is_idempotent_once_converged() {
     mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.9,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     let keys = element_keys(&mg);
@@ -601,8 +645,8 @@ fn test_scoped_subdivide_is_idempotent_once_converged() {
     let again = mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.9,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     assert!(again.converged());
@@ -627,7 +671,7 @@ fn test_scoped_op_tolerates_a_stale_selection() {
     sel.halfedges = mg.halfedges.keys().collect();
 
     // Invalidate it behind the selection's back.
-    mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::new());
+    mg.collapse_until_edges_above_min_length(1.5, &mut HashSet::default());
     assert!(
         !selection_violations(&mg, &sel).is_empty(),
         "fixture failed to invalidate anything - test is vacuous"
@@ -638,8 +682,8 @@ fn test_scoped_op_tolerates_a_stale_selection() {
     let result = mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.5,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     assert!(selection_violations(&mg, &sel).is_empty());
@@ -664,8 +708,8 @@ fn test_scoped_subdivide_scope_creeps_by_design() {
     mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.3,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     let scope_after: HashSet<HalfedgeId> = sel.resolve_to_halfedges(&mg);
@@ -694,8 +738,8 @@ fn test_scoped_subdivide_reports_converged_when_it_drains() {
     let result = mg.subdivide_selected_until_edges_below_max_length(
         &mut sel,
         0.9,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
     );
 
     assert_eq!(result.outcome, EdgeLengthCleanup::Converged);
@@ -713,4 +757,3 @@ fn test_scoped_subdivide_reports_converged_when_it_drains() {
         );
     }
 }
-

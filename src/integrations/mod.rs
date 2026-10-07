@@ -1,7 +1,7 @@
 use std::iter::repeat_n;
 
+use crate::hash::HashMap;
 use glam::Vec3;
-use hashbrown::HashMap;
 use slotmap::SecondaryMap;
 use tracing::{error, instrument};
 

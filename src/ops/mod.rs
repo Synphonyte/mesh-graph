@@ -4,16 +4,16 @@ mod collapse;
 mod edit;
 mod merge_one_ring;
 mod query;
+mod remove;
 #[cfg(test)]
 mod selection_scoped_tests;
-mod remove;
 mod subdivide;
 mod transform;
 
 use std::{cmp::Reverse, collections::BinaryHeap};
 
+use crate::hash::{HashMap, HashSet};
 pub use add::*;
-use hashbrown::HashMap;
 pub use merge_one_ring::*;
 
 use ordered_float::OrderedFloat;
@@ -94,13 +94,13 @@ impl MeshGraph {
     pub(crate) fn run_scoped(
         &mut self,
         selection: &mut Selection,
-        op: impl FnOnce(&mut Self, &mut hashbrown::HashSet<HalfedgeId>) -> EdgeLengthCleanup,
+        op: impl FnOnce(&mut Self, &mut HashSet<HalfedgeId>) -> EdgeLengthCleanup,
     ) -> ScopedCleanup {
         // Purge first: a selection carrying ids killed by some earlier operation must
         // not widen the scope, and the caller's mirror needs to hear about them too.
         let mut removed = selection.retain_live(self);
 
-        let mut scope = hashbrown::HashSet::new();
+        let mut scope = HashSet::default();
         for he_id in selection.resolve_to_halfedges(self) {
             scope.insert(he_id);
             // Both directions: `subdivide_edge` re-pairs twins, so which halfedge of a
@@ -188,7 +188,7 @@ pub(crate) enum PendingOrder {
 /// Ties are broken towards the smallest halfedge id in both orderings, so the
 /// choice is deterministic. (The linear scans this replaced used a strict
 /// comparison and so resolved ties by `hashbrown` iteration order, which
-/// `foldhash`'s randomly-seeded state makes vary between runs.)
+/// follows the insertion history rather than the mesh.)
 pub(crate) struct PendingEdges {
     lengths: HashMap<HalfedgeId, f32>,
     /// Max-heap over the sort key. `ShortestFirst` negates the length so that
@@ -320,7 +320,7 @@ impl MeshGraph {
     /// One entry per undirected edge whose squared length satisfies `predicate`,
     /// keyed by the canonical halfedge `min(he, twin)`.
     pub fn halfedges_map(&mut self, predicate: impl Fn(f32) -> bool) -> HashMap<HalfedgeId, f32> {
-        let mut halfedges_map = HashMap::new();
+        let mut halfedges_map = HashMap::default();
 
         for (he_id, he) in &self.halfedges {
             // A twinless halfedge is a broken edge, not a reason to abandon the scan:
@@ -354,10 +354,10 @@ impl MeshGraph {
     /// of a pair is the canonical `min(he, twin)`.
     pub(crate) fn halfedges_map_in(
         &mut self,
-        scope: &hashbrown::HashSet<HalfedgeId>,
+        scope: &HashSet<HalfedgeId>,
         predicate: impl Fn(f32) -> bool,
     ) -> HashMap<HalfedgeId, f32> {
-        let mut halfedges_map = HashMap::new();
+        let mut halfedges_map = HashMap::default();
 
         for &he_id in scope {
             let Some(he) = self.halfedges.get(he_id) else {
@@ -401,7 +401,7 @@ mod pending_edges_test {
     #[test]
     fn pops_shortest_first() {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), PendingOrder::ShortestFirst);
+        let mut p = PendingEdges::new(HashMap::default(), PendingOrder::ShortestFirst);
         p.insert(id[0], 9.0);
         p.insert(id[1], 1.0);
         p.insert(id[2], 5.0);
@@ -414,7 +414,7 @@ mod pending_edges_test {
     #[test]
     fn pops_longest_first() {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), PendingOrder::LongestFirst);
+        let mut p = PendingEdges::new(HashMap::default(), PendingOrder::LongestFirst);
         p.insert(id[0], 9.0);
         p.insert(id[1], 1.0);
         p.insert(id[2], 5.0);
@@ -427,7 +427,7 @@ mod pending_edges_test {
     #[test]
     fn removed_entries_are_skipped() {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), PendingOrder::LongestFirst);
+        let mut p = PendingEdges::new(HashMap::default(), PendingOrder::LongestFirst);
         p.insert(id[0], 9.0);
         p.insert(id[1], 1.0);
 
@@ -439,7 +439,7 @@ mod pending_edges_test {
     #[test]
     fn superseded_entries_are_skipped() {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), PendingOrder::LongestFirst);
+        let mut p = PendingEdges::new(HashMap::default(), PendingOrder::LongestFirst);
         p.insert(id[0], 9.0);
         // Same id re-inserted shorter: the stale 9.0 heap entry must not be returned.
         p.insert(id[0], 2.0);
@@ -456,7 +456,7 @@ mod pending_edges_test {
     #[test]
     fn requeue_makes_a_declined_entry_reachable_again() {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), PendingOrder::ShortestFirst);
+        let mut p = PendingEdges::new(HashMap::default(), PendingOrder::ShortestFirst);
         p.insert(id[0], 1.0);
 
         let popped = p.pop_live().expect("entry is live");
@@ -482,7 +482,7 @@ mod pending_edges_test {
     #[test]
     fn requeue_then_remove_stays_gone() {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), PendingOrder::ShortestFirst);
+        let mut p = PendingEdges::new(HashMap::default(), PendingOrder::ShortestFirst);
         p.insert(id[0], 1.0);
         p.pop_live();
         p.requeue(id[0], 1.0);
@@ -502,7 +502,7 @@ mod pending_edges_test {
     #[test]
     fn reinsert_after_remove_can_yield_the_same_id_twice() {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), PendingOrder::ShortestFirst);
+        let mut p = PendingEdges::new(HashMap::default(), PendingOrder::ShortestFirst);
         p.insert(id[0], 1.0);
 
         p.remove(&id[0]);
@@ -526,7 +526,7 @@ mod pending_edges_test {
     #[test]
     fn unchanged_reinsert_does_not_grow_the_heap() {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), PendingOrder::LongestFirst);
+        let mut p = PendingEdges::new(HashMap::default(), PendingOrder::LongestFirst);
         p.insert(id[0], 4.0);
         let heap_len = p.heap.len();
 
@@ -541,7 +541,7 @@ mod pending_edges_test {
     #[test]
     fn seeding_from_a_map_preserves_order() {
         let id = ids();
-        let mut seed = HashMap::new();
+        let mut seed = HashMap::default();
         seed.insert(id[0], 3.0);
         seed.insert(id[1], 7.0);
 
@@ -552,13 +552,13 @@ mod pending_edges_test {
 
     /// Equal lengths must resolve to the smallest halfedge id. The linear scans
     /// this replaced used a strict comparison, so ties fell to `hashbrown`
-    /// iteration order and varied between runs; every other test here uses
+    /// iteration order; every other test here uses
     /// distinct lengths, which leaves the `Reverse(HalfedgeId)` half of the sort
     /// key unexercised. Ids go in out of order so a heap that leaked insertion
     /// order would fail too.
     fn assert_ties_break_towards_smallest_id(order: PendingOrder) {
         let id = ids();
-        let mut p = PendingEdges::new(HashMap::new(), order);
+        let mut p = PendingEdges::new(HashMap::default(), order);
         p.insert(id[2], 4.0);
         p.insert(id[0], 4.0);
         p.insert(id[1], 4.0);
