@@ -3,7 +3,7 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.11.0] - 2026-09-13
+## [Unreleased]
 
 - Added `collapse_selected_until_edges_above_min_length` and
   `subdivide_selected_until_edges_below_max_length`, which restrict the edge-length
@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elements the operation destroys are dropped from it and elements it creates are added,
   so it never holds a dead id. The scope is `Selection::resolve_to_halfedges`, so a
   selected face puts all three of its edges in scope. The whole-mesh entry points are
-  unchanged and now delegate to the scoped ones with a full-mesh selection
+  unchanged
 - Added `ScopedCleanup`, returned by both scoped operations: the `EdgeLengthCleanup`
   outcome plus `added`/`removed` `SelectionEdit`s. Replaying `removed` then `added` onto
   the selection an operation started from reproduces the one it ended with, so a caller
@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SubdivideEdge`'s fields are now public and it derives `Debug`. The struct was public
   with private fields and no accessors, so `subdivide_edge` told external callers nothing
   about what it had created
+
+## [0.11.0] - 2026-09-13
+
 - `collapse_until_edges_above_min_length` and `subdivide_until_edges_below_max_length`
   now pick the next edge from a binary heap, resolving equal-length ties
   deterministically and running 1.3–2.4x faster on production scans
