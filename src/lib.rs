@@ -68,6 +68,7 @@
 //! <img src="https://raw.githubusercontent.com/Synphonyte/mesh-graph/refs/heads/main/docs/vertex/all.svg" alt="Connectivity" style="max-width: 50em" />
 
 mod access;
+mod creation_journal;
 mod elements;
 pub mod hash;
 pub mod integrations;
@@ -581,6 +582,11 @@ pub struct MeshGraph {
     /// Maps vertex IDs to their corresponding outgoing halfedges (not in any particular order)
     #[cfg_attr(feature = "serde", serde(skip))]
     pub outgoing_halfedges: SecondaryMap<VertexId, Vec<HalfedgeId>>,
+
+    /// Records elements created while recording is on, so selection-scoped ops can
+    /// learn exactly what they added. Off unless a scoped op is running.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) creation_journal: crate::creation_journal::CreationJournal,
 }
 
 impl MeshGraph {
@@ -692,6 +698,8 @@ impl MeshGraph {
             positions: SecondaryMap::with_capacity(vertex_positions.len()),
             vertex_normals: None,
             outgoing_halfedges: SecondaryMap::with_capacity(vertex_positions.len()),
+
+            creation_journal: Default::default(),
         };
 
         let mut vertex_ids = Vec::with_capacity(vertex_positions.len());
