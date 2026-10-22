@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SubdivideEdge`'s fields are now public and it derives `Debug`. The struct was public
   with private fields and no accessors, so `subdivide_edge` told external callers nothing
   about what it had created
+- `remove_face` finds the face's halfedges from the face itself instead of scanning
+  every halfedge in the mesh, so its cost no longer grows with mesh size. This makes
+  `merge_vertices_one_rings` about 4x faster on a 983k-halfedge mesh. Faces with broken
+  `next` chains are still removed completely, and the removal order is unchanged
 
 ## [0.11.0] - 2026-09-13
 

@@ -26,15 +26,9 @@ impl MeshGraph {
         }
 
         let halfedges = self
-            .halfedges
-            .iter()
-            .filter_map(|(he_id, he)| {
-                if he.face == Some(face_id) {
-                    Some((he_id, *he))
-                } else {
-                    None
-                }
-            })
+            .face_members(face_id)
+            .into_iter()
+            .map(|he_id| (he_id, self.halfedges[he_id]))
             .collect_vec();
 
         #[cfg(feature = "instrumentation")]
@@ -47,9 +41,9 @@ impl MeshGraph {
         // halfedges are freed from the slotmap (and therefore which ids the
         // next allocations reuse), which vertices are visited below, and what
         // the caller gets back. Draining a set here would make all of that
-        // depend on the set's iteration order rather than on the mesh. The scan
-        // above is in slotmap order, so keeping that order makes them a pure
-        // function of the mesh.
+        // depend on the set's iteration order rather than on the mesh. The
+        // members come back in key order, so keeping that order makes them a
+        // pure function of the mesh.
         let mut removed_halfedges: Vec<HalfedgeId> = Vec::with_capacity(4);
         for (he_id, he) in halfedges {
             // A twinless member (left over by a re-pair sever or a dangling-twin clear)
@@ -141,6 +135,91 @@ impl MeshGraph {
         (removed_vertices, removed_halfedges)
     }
 
+    /// All live halfedges whose `face` is `face_id`, sorted by key.
+    ///
+    /// Found locally rather than by scanning every halfedge, which made each face
+    /// removal O(halfedges). The `next` chain from the face's seed halfedge finds
+    /// the members of an intact face. A broken chain (twinless or dangling members,
+    /// a `next` that leaves the face) can hide members from it, so the outgoing
+    /// halfedges of every vertex the members touch, and their twins, are searched
+    /// as well, growing the vertex set until no new member turns up. A member is
+    /// missed only if it touches none of the face's vertices and the chain doesn't
+    /// reach it. A seed that is dead or not a member leaves nothing to search from;
+    /// only then are all halfedges scanned.
+    ///
+    /// Sorted by key so the result matches the slotmap-order scan this replaced:
+    /// the callers free the members in this order, which decides which ids the
+    /// next allocations reuse.
+    fn face_members(&self, face_id: FaceId) -> Vec<HalfedgeId> {
+        let mut members: Vec<HalfedgeId> = Vec::with_capacity(3);
+        let mut vertices: Vec<VertexId> = Vec::with_capacity(3);
+
+        let add =
+            |he_id: HalfedgeId, members: &mut Vec<HalfedgeId>, vertices: &mut Vec<VertexId>| {
+                let Some(he) = self.halfedges.get(he_id) else {
+                    return false;
+                };
+                if he.face != Some(face_id) || members.contains(&he_id) {
+                    return false;
+                }
+                members.push(he_id);
+                push_unique(vertices, he.end_vertex);
+                if let Some(twin) = he.twin.and_then(|t| self.halfedges.get(t)) {
+                    push_unique(vertices, twin.end_vertex);
+                }
+                true
+            };
+
+        let mut he_id = self.faces.get(face_id).map(|f| f.halfedge);
+        while let Some(id) = he_id {
+            if !add(id, &mut members, &mut vertices) {
+                break;
+            }
+            he_id = self.halfedges[id].next;
+        }
+
+        let scan = || {
+            self.halfedges
+                .iter()
+                .filter(|(_, he)| he.face == Some(face_id))
+                .map(|(he_id, _)| he_id)
+                .collect_vec()
+        };
+        if members.is_empty() {
+            return scan();
+        }
+
+        // `vertices` grows while it is walked.
+        let mut i = 0;
+        while let Some(&v_id) = vertices.get(i) {
+            i += 1;
+            let Some(out_he_ids) = self.outgoing_halfedges.get(v_id) else {
+                continue;
+            };
+            for &out_he_id in out_he_ids {
+                add(out_he_id, &mut members, &mut vertices);
+                if let Some(twin_id) = self.halfedges.get(out_he_id).and_then(|he| he.twin) {
+                    add(twin_id, &mut members, &mut vertices);
+                }
+            }
+        }
+
+        members.sort_unstable();
+
+        #[cfg(feature = "instrumentation")]
+        {
+            let scanned = scan();
+            if scanned != members {
+                crate::mark_integrity_violation();
+                eprintln!(
+                    "FACE MEMBER SEARCH MISMATCH for face {face_id:?}: local {members:?}, scan {scanned:?}"
+                );
+            }
+        }
+
+        members
+    }
+
     /// Deletes only a vertex, without deleting any faces or halfedges connected to it.
     pub fn remove_only_vertex(&mut self, vertex_id: VertexId) {
         self.outgoing_halfedges.remove(vertex_id);
@@ -195,9 +274,66 @@ mod tests {
     use glam::{Mat4, vec3};
 
     use crate::{
-        utils::{extend_with, get_tracing_subscriber},
+        utils::{build_grid, extend_with, get_tracing_subscriber},
         *,
     };
+
+    /// A face of `mesh` none of whose edges lie on the boundary.
+    fn interior_face(mesh: &MeshGraph) -> FaceId {
+        mesh.faces
+            .keys()
+            .find(|&face_id| {
+                mesh.faces[face_id].halfedges(mesh).all(|he_id| {
+                    let twin_id = mesh.halfedges[he_id].twin.unwrap();
+                    mesh.halfedges[twin_id].face.is_some()
+                })
+            })
+            .unwrap()
+    }
+
+    fn has_member(mesh: &MeshGraph, face_id: FaceId) -> bool {
+        mesh.halfedges.values().any(|he| he.face == Some(face_id))
+    }
+
+    /// The `next` chain stops after the seed and the last member is twinless, so
+    /// the members after the seed are reachable only through the face's vertices.
+    #[test]
+    fn test_remove_face_broken_chain() {
+        let mut mesh = build_grid(4);
+        let face_id = interior_face(&mesh);
+        let seed = mesh.faces[face_id].halfedge;
+        let second = mesh.halfedges[seed].next.unwrap();
+        let third = mesh.halfedges[second].next.unwrap();
+
+        mesh.halfedges[seed].next = None;
+        let twin = mesh.halfedges[third].twin.take().unwrap();
+        mesh.halfedges[twin].twin = None;
+
+        let (_, removed_halfedges) = mesh.remove_face(face_id);
+
+        assert!(!mesh.faces.contains_key(face_id));
+        assert!(!has_member(&mesh, face_id));
+        // The twinless member is freed; the others become boundary halfedges of
+        // their (interior) twins.
+        assert_eq!(removed_halfedges, vec![third]);
+        assert!(mesh.halfedges[seed].face.is_none());
+        assert!(mesh.halfedges[second].face.is_none());
+    }
+
+    /// A seed that is not a member gives the local search nothing to start from.
+    #[test]
+    fn test_remove_face_foreign_seed() {
+        let mut mesh = build_grid(4);
+        let face_id = interior_face(&mesh);
+        let other_face_id = mesh.faces.keys().find(|&f| f != face_id).unwrap();
+        mesh.faces[face_id].halfedge = mesh.faces[other_face_id].halfedge;
+
+        mesh.remove_face(face_id);
+
+        assert!(!mesh.faces.contains_key(face_id));
+        assert!(!has_member(&mesh, face_id));
+        assert!(mesh.faces.contains_key(other_face_id));
+    }
 
     #[test]
     fn test_remove_face() {
