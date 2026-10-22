@@ -3,4 +3,6 @@ Cargo.lock
 
 .agents/**/*.out
 *agents/**/*.sh
+# Agent skills are shared; .claude/skills/ links each one in for Claude Code.
+!.agents/skills/**
 .empryo
