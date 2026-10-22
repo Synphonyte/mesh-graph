@@ -179,15 +179,16 @@ impl MeshGraph {
         // gets split off and the write-back order below depend on the set's
         // iteration order rather than on the mesh. The set is kept only as the
         // "not yet walked" membership test.
-        let outgoing = self
+        let prev_outgoing_halfedges = self
             .outgoing_halfedges
             .get(vertex_id)
             .or_else(error_none!("Outgoing halfedges not found"))?
             .clone();
 
-        let mut outgoing_halfedges = HashSet::<HalfedgeId>::from_iter(outgoing.iter().copied());
+        let mut outgoing_halfedges =
+            HashSet::<HalfedgeId>::from_iter(prev_outgoing_halfedges.iter().copied());
 
-        for &start_he_id in &outgoing {
+        for &start_he_id in &prev_outgoing_halfedges {
             if !outgoing_halfedges.contains(&start_he_id) {
                 continue;
             }
@@ -252,7 +253,7 @@ impl MeshGraph {
                 // Keep the surviving part of the star in its original list
                 // order, so the vertex's rotation order (and the seed picked
                 // from it) stays a pure function of the mesh.
-                let kept = outgoing
+                let kept = prev_outgoing_halfedges
                     .iter()
                     .copied()
                     .filter(|he_id| outgoing_halfedges.contains(he_id))
