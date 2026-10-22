@@ -46,12 +46,16 @@ ms per merge:
 |---|---|---|---|---|---|
 | `e0b3091` (before local `remove_face`) | 0.13 | 0.36 | 0.83 | 3.2 | 15.7 |
 | `134945e` (`remove_face` finds members locally) | 0.11 | 0.18 | 0.23 | 0.78 | 3.0 |
+| `7ccf06a` (boundary scans scoped to the merge region, old `remove_face`) | 0.23 | 0.32 | 0.69 | 2.6 | 10.1 |
+| `93eeef6` (both) | 0.15 | 0.12 | 0.08 | 0.10 | 0.09 |
 
-At `134945e` the remaining growth (about 4x per level from 5 to 7) is not in
-`remove_face`, which costs 6–15 µs per merge at every level. It matches the
-whole-mesh boundary scans added after v0.11.0, e.g. the `outgoing_halfedges` sweep
-in `src/ops/merge_one_ring/rim_probe.rs`. Once those are local, levels 5–7 should
-come out roughly flat. Add a row for every change that moves these numbers.
+The last two rows were measured side by side with a re-run of `134945e`, which
+matched its row (0.22 / 0.79 / 3.2 at levels 5–7). At `93eeef6` the
+merge is local: levels 5–7 are flat. Each of the two fixes alone still grows about
+4x per level, because the other one is a whole-mesh pass: `remove_face`'s member scan
+at `7ccf06a`, and the merge's five boundary scans (entry snapshot, rim snapshot, two
+rim deltas, the closer's opened-edge search) at `134945e`. Add a row for every
+change that moves these numbers.
 
 ## Comparing against another commit
 

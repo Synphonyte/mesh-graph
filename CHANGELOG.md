@@ -30,9 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leave. Its boundary bookkeeping covers only the region within three edges of the two
   vertices, so it adds no cost that grows with the mesh
 - `remove_face` finds the face's halfedges from the face itself instead of scanning
-  every halfedge in the mesh, so its cost no longer grows with mesh size. This makes
-  `merge_vertices_one_rings` about 4x faster on a 983k-halfedge mesh. Faces with broken
-  `next` chains are still removed completely, and the removal order is unchanged
+  every halfedge in the mesh, so its cost no longer grows with mesh size. Faces with
+  broken `next` chains are still removed completely, and the removal order is
+  unchanged. Together with the scoped boundary bookkeeping, a
+  `merge_vertices_one_rings` call costs the same at every mesh size: about 0.1 ms on a
+  983k-halfedge sphere, down from 10 ms
 - `merge_vertices_one_rings` no longer leaves dead ids in the caller's marked sets, even
   when a set is kept across many calls, and no longer reports an id as both added and
   removed
