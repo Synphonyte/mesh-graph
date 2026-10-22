@@ -16,7 +16,7 @@ the vertex pairs is not.
 From anywhere in the checkout:
 
 ```bash
-.claude/skills/merge-bench/run.sh
+.agents/skills/merge-bench/run.sh
 ```
 
 `run.sh` copies `merge_bench.rs` into `examples/`, runs it with `--release`, and
@@ -60,15 +60,20 @@ next to the new one:
 
 ```bash
 git worktree add --detach /tmp/merge-bench-base <commit>
-mkdir -p /tmp/merge-bench-base/.claude/skills
-cp -r .claude/skills/merge-bench /tmp/merge-bench-base/.claude/skills/
-CARGO_TARGET_DIR="$PWD/target" /tmp/merge-bench-base/.claude/skills/merge-bench/run.sh
+mkdir -p /tmp/merge-bench-base/.agents/skills
+cp -r .agents/skills/merge-bench /tmp/merge-bench-base/.agents/skills/
+/tmp/merge-bench-base/.agents/skills/merge-bench/run.sh
 git worktree remove --force /tmp/merge-bench-base
 ```
 
-Copy the skill in as shown, because older commits don't have it. Sharing
-`CARGO_TARGET_DIR` reuses the compiled dependencies. Use your scratchpad instead of
-`/tmp` when you have one.
+Copy the skill in as shown, because older commits don't have it. Use your
+scratchpad instead of `/tmp` when you have one.
+
+Don't point both checkouts at the same `CARGO_TARGET_DIR` to save build time. Both
+build `mesh-graph` into identically named artifacts. The other checkout's library
+can then end up in this checkout's binary without cargo rebuilding it, and you
+silently measure the wrong code. If a run disagrees with the reference table for no
+reason, `touch src/lib.rs` and run again.
 
 ## Finding what grows
 
