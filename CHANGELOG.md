@@ -22,6 +22,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SubdivideEdge`'s fields are now public and it derives `Debug`. The struct was public
   with private fields and no accessors, so `subdivide_edge` told external callers nothing
   about what it had created
+- `merge_vertices_one_rings` plans its band from the boundary the star removals actually
+  open (the rim) and uses that plan whenever it consumes the whole rim, falling back to
+  the ring-range planner otherwise. It closes the extracted weld cases that used to leave
+  holes, closes whatever hole its own removals open on every exit path (including the
+  flip-and-collapse and failed-pairing exits), and welds the parallel edges a band can
+  leave. Its boundary bookkeeping covers only the region within three edges of the two
+  vertices, so it adds no cost that grows with the mesh
+- `merge_vertices_one_rings` no longer leaves dead ids in the caller's marked sets, even
+  when a set is kept across many calls, and no longer reports an id as both added and
+  removed
+- `collapse_until_edges_above_min_length` (and its selection-scoped variant) skips edges
+  whose collapse would break the link condition, boundary edges included, and closes
+  the holes its own removals open with the same closer as the merge
+- Every map and set in the crate uses a fixed-seed hasher, so the same input produces
+  the same ids and the same mesh on every run. New dependency: `foldhash`
+
+### Breaking Changes
+
+- Every public `HashMap`/`HashSet` is now `mesh_graph::hash::HashMap`/`HashSet`
+  (hashbrown with `foldhash::fast::FixedState`) instead of hashbrown's default-hasher
+  types: the marked sets of `merge_vertices_one_rings`,
+  `collapse_until_edges_above_min_length` and `subdivide_until_edges_below_max_length`,
+  `Selection`'s fields and return values, `MeshGraph::index_to_face_id`,
+  `halfedges_map` and the attribute maps of the integrations. Build them with
+  `mesh_graph::hash::HashSet::default()` (or `HashMap::default()`); `new()` and
+  `with_capacity()` do not exist for a non-default hasher
 
 ## [0.11.0] - 2026-09-13
 

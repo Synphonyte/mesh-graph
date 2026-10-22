@@ -3854,12 +3854,12 @@ fn test_rim_taxonomy_baseline() {
     for case in WELD_CASES {
         let expected = match case.what {
             // The rim-first planner closes this case's pre-net hole (unconsumed
-            // and new_boundary are 0). Two parallel halfedges still appear
-            // pre-net, but the nets now clear them by end of op, so the weld
-            // case is clean where it used to end with two parallels.
-            "band wraps the full ring and leaves one seam triangle" => {
-                [0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0]
-            }
+            // and new_boundary are 0). Its first split zipped a chord along an
+            // edge that already joins the two rings outside the hole, which left
+            // two parallel halfedges for the nets; the lobe now moves its split
+            // until no chord duplicates an existing edge, so nothing is parallel
+            // pre-net either.
+            "band wraps the full ring and leaves one seam triangle" => [0; 11],
             // Closed by the rim-first planner: the strip removal opens a small
             // closed rim it consumes exactly.
             "reversed weld order, radius 1, +5 boundary halfedges" => [0; 11],
@@ -4172,6 +4172,7 @@ fn test_merge_closer_keeps_a_border_recreated_under_new_ids() {
     // (c, a, d) is the missing face.
 
     let pairs_at_entry = mesh.boundary_edge_pairs();
+    let boundary_at_entry = super::rim::RegionBoundary::new(&mesh, &[a, b, c, d]);
     let ids_at_entry = super::rim::boundary_halves(&mesh);
     assert_eq!(pairs_at_entry.len(), 3);
 
@@ -4193,8 +4194,10 @@ fn test_merge_closer_keeps_a_border_recreated_under_new_ids() {
     mesh.close_merge_opened_holes(
         &[a, b, c, d],
         &[],
-        &pairs_at_entry,
+        &boundary_at_entry,
         &crate::ops::collapse::VertexRenames::default(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
         &mut result,
     );
 
@@ -4231,7 +4234,8 @@ fn test_merge_closer_keeps_a_border_at_absorbed_vertices() {
     }
     assert_eq!(mesh.boundary_edge_pairs().len(), 4 + 6);
 
-    let pairs_at_entry = mesh.boundary_edge_pairs();
+    let all_vertices: Vec<VertexId> = mesh.vertices.keys().collect();
+    let boundary_at_entry = super::rim::RegionBoundary::new(&mesh, &all_vertices);
     let mut renames = crate::ops::collapse::VertexRenames::default();
     for (survivor, absorbed) in [(loose[0], a), (loose[1], c)] {
         let merged = mesh.merge_vertices([survivor, absorbed]);
@@ -4244,8 +4248,10 @@ fn test_merge_closer_keeps_a_border_at_absorbed_vertices() {
     mesh.close_merge_opened_holes(
         &[loose[0], b, loose[1], d],
         &[],
-        &pairs_at_entry,
+        &boundary_at_entry,
         &renames,
+        &mut HashSet::default(),
+        &mut HashSet::default(),
         &mut result,
     );
 
@@ -4266,8 +4272,11 @@ fn test_merge_closer_removes_a_lone_triangle() {
     mesh.close_merge_opened_holes(
         &[a, b, c],
         &[],
-        &HashSet::default(),
+        // Nothing was a border at entry: the snapshot of an empty mesh over these vertices.
+        &super::rim::RegionBoundary::new(&MeshGraph::new(), &[a, b, c]),
         &crate::ops::collapse::VertexRenames::default(),
+        &mut HashSet::default(),
+        &mut HashSet::default(),
         &mut result,
     );
 
@@ -4326,4 +4335,156 @@ fn test_vertex_renames() {
     let resolved = renames.resolve(&snapshot);
     assert!(resolved.contains(&key(c, e)), "the old c-d edge, now c-e");
     assert!(resolved.contains(&key(a, e)) && resolved.contains(&key(b, e)));
+}
+
+/// `RimPlan::is_complete` is the gate between the rim plan and the old planner, so each of
+/// its refusals is pinned on a rim it can be checked by hand: the three face-less halves
+/// around a lone triangle `abc`.
+#[test]
+fn test_rim_plan_is_complete_refuses_what_does_not_close_the_rim() {
+    use super::rim_planner::RimPlan;
+    use super::{PlannedFace, PlannedFaceOrder::Single};
+
+    let mut mesh = MeshGraph::new();
+    let a = mesh.add_vertex(vec3(0.0, 0.0, 0.0));
+    let b = mesh.add_vertex(vec3(1.0, 0.0, 0.0));
+    let c = mesh.add_vertex(vec3(0.0, 1.0, 0.0));
+    let d = mesh.add_vertex(vec3(0.3, 0.3, 1.0));
+    let e = mesh.add_vertex(vec3(0.3, -1.0, 0.5));
+    mesh.add_face_from_vertices(a, b, c).unwrap();
+
+    let rim: HashSet<HalfedgeId> = super::rim::boundary_halves(&mesh);
+    assert_eq!(rim.len(), 3);
+
+    let plan = |faces: &[(VertexId, VertexId, VertexId)]| RimPlan {
+        faces: faces
+            .iter()
+            .map(|&(v1, v2, v3)| PlannedFace::new(v1, v2, v3, Single))
+            .collect(),
+        unhandled: Vec::new(),
+    };
+
+    // A tetrahedron over the rim: every rim half consumed, every other edge paired.
+    assert!(plan(&[(a, c, d), (c, b, d), (b, a, d)]).is_complete(&mesh, &rim));
+
+    // `abc` a second time: its directed edges already carry the existing face.
+    assert!(!plan(&[(a, b, c)]).is_complete(&mesh, &rim));
+
+    // Every rim half consumed, but `d -> a` and `b -> d`, `a -> e` and `e -> b` have no
+    // partner in the plan and are not rim halves: the plan would open boundary of its own.
+    assert!(!plan(&[(a, c, d), (c, b, d), (b, a, e)]).is_complete(&mesh, &rim));
+}
+
+/// A caller keeps its marked sets across many merges (freestyle's protected sets), so they
+/// arrive holding ids the merge is about to remove. None of them may come back dead, and the
+/// result must never report an id as both added and removed.
+#[test]
+fn test_merge_keeps_long_lived_marked_sets_live() {
+    get_tracing_subscriber();
+
+    let check = |label: &str, mut mesh: MeshGraph, merge: (VertexId, VertexId), flip: f32| {
+        let mut marked_halfedges: HashSet<HalfedgeId> = mesh.halfedges.keys().collect();
+        let mut marked_vertices: HashSet<VertexId> = mesh.vertices.keys().collect();
+
+        let result = mesh.merge_vertices_one_rings(
+            merge.0,
+            merge.1,
+            flip,
+            &mut marked_halfedges,
+            &mut marked_vertices,
+        );
+        drain_rim_taxonomy();
+
+        assert!(
+            !result.removed_halfedges.is_empty(),
+            "{label}: the merge removed nothing - test is vacuous"
+        );
+        for he_id in &marked_halfedges {
+            assert!(
+                mesh.halfedges.contains_key(*he_id),
+                "{label}: marked halfedge {he_id:?} is dead"
+            );
+        }
+        for v_id in &marked_vertices {
+            assert!(
+                mesh.vertices.contains_key(*v_id),
+                "{label}: marked vertex {v_id:?} is dead"
+            );
+        }
+        for he_id in &result.added_halfedges {
+            assert!(
+                !result.removed_halfedges.contains(he_id),
+                "{label}: halfedge {he_id:?} is reported as both added and removed"
+            );
+        }
+        for face_id in &result.added_faces {
+            assert!(
+                !result.removed_faces.contains(face_id),
+                "{label}: face {face_id:?} is reported as both added and removed"
+            );
+        }
+    };
+
+    for case in WELD_CASES.iter().chain(CUT_TRUNCATED_CASES) {
+        let (mesh, vertex_ids) = case.build();
+        check(
+            case.what,
+            mesh,
+            (vertex_ids[case.merge.0], vertex_ids[case.merge.1]),
+            // The weld's `SculptParams::min_edge_length_squared`, as in `WeldCase::replay`.
+            0.0096,
+        );
+    }
+
+    let (mesh, vertex_ids) = build_lens_region(true);
+    check(
+        "lens",
+        mesh,
+        (vertex_ids[LENS_MERGE_V1], vertex_ids[LENS_MERGE_V2]),
+        LENS_FLIP_THRESHOLD_SQR,
+    );
+}
+
+/// The parallel-edge weld drops orphan halves, and an orphan is often the free half a
+/// planned face of the same merge just added: it must leave `added_halfedges` rather than
+/// be listed as removed too, and must leave the marked set.
+#[test]
+fn test_weld_parallel_edges_drops_its_own_orphans_cleanly() {
+    let mut mesh = MeshGraph::new();
+    let a = mesh.add_vertex(vec3(0.0, 0.0, 0.0));
+    let b = mesh.add_vertex(vec3(1.0, 0.0, 0.0));
+    let c = mesh.add_vertex(vec3(0.5, 1.0, 0.0));
+    let d = mesh.add_vertex(vec3(0.5, -1.0, 0.0));
+
+    mesh.add_face_from_vertices(a, b, c).unwrap();
+    let old_orphan = mesh
+        .halfedges_from_to(b, a)
+        .into_iter()
+        .next()
+        .expect("the face's own b -> a twin");
+
+    // A second, parallel a-b edge, whose b -> a half carries the face on the other side.
+    let parallel = mesh.add_edge(b, a).unwrap();
+    let a_d = mesh.add_edge(a, d).unwrap();
+    let d_b = mesh.add_edge(d, b).unwrap();
+    mesh.add_face(
+        parallel.start_to_end_he_id,
+        a_d.start_to_end_he_id,
+        d_b.start_to_end_he_id,
+    );
+    let new_orphan = parallel.twin_he_id;
+
+    let mut result = MergeVerticesOneRing {
+        added_halfedges: vec![new_orphan],
+        ..Default::default()
+    };
+    let mut marked_halfedges = HashSet::from_iter([new_orphan, old_orphan]);
+
+    mesh.weld_parallel_edges([a, b], &mut marked_halfedges, &mut result);
+
+    assert!(!mesh.halfedges.contains_key(new_orphan));
+    assert!(!mesh.halfedges.contains_key(old_orphan));
+    assert!(result.added_halfedges.is_empty());
+    assert_eq!(result.removed_halfedges, vec![old_orphan]);
+    assert!(marked_halfedges.is_empty());
 }

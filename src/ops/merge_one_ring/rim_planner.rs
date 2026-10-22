@@ -22,7 +22,10 @@
 //!   planner aimed for. Any other closed lobe is zipped between two arcs of its
 //!   boundary split at roughly opposite vertices, through the same machinery; a
 //!   walk that revisits a vertex (a pinch inside one walk, e.g. the extracted
-//!   weld case) is split into simple lobes at the repeated vertex first.
+//!   weld case) is split into simple lobes at the repeated vertex first. A
+//!   lobe's split moves along its boundary until none of its chords runs along
+//!   an edge that already joins two of its vertices outside the hole, and a
+//!   bigon whose fixed rungs do falls back to that lobe zip.
 //! - Two *disjoint* single-side loops - the two stars' rings sharing no vertex -
 //!   are stitched to each other by an open-cap band seeded at the nearest
 //!   position ([`plan_disjoint_band`]). Capping each loop on its own is a valid
@@ -35,9 +38,14 @@
 //!
 //! Measured on the captured corpus: this planner closes the extracted weld case
 //! and moved `radius 1, +5` and `radius 1, +6` out of `OPEN_WELD_CASES` into
-//! `WELD_CASES`. With it driving the op, the whole corpus is green with the
-//! repair nets disabled (`MESH_GRAPH_MERGE_NETS=0`), which was the Phase 2
-//! oracle.
+//! `WELD_CASES`. With it driving the op, the corpus is green with the repair
+//! nets disabled (`MESH_GRAPH_MERGE_NETS=0`, the Phase 2 oracle) except for the
+//! later `gap=0.05` case, whose hole the coincident fusion opens before any band
+//! is planned.
+//!
+//! Rims that are open chains still go to the old ring-range planner: in the
+//! in-repo suite (measured when the lobe rotation went in) that was 241 band
+//! merges against 472 planned here.
 //!
 //! External soak (freestyle-sculpt via a local `[patch]` to this commit):
 //!
@@ -269,12 +277,11 @@ impl RimPlan {
         mesh: &MeshGraph,
         halves: &HashSet<HalfedgeId>,
     ) -> HashSet<HalfedgeId> {
-        let mut directed: HashSet<(VertexId, VertexId)> = HashSet::default();
-        for face in &self.faces {
-            directed.insert((face.v1, face.new_he_v1));
-            directed.insert((face.new_he_v1, face.new_he_v2));
-            directed.insert((face.new_he_v2, face.v1));
-        }
+        let directed: HashSet<(VertexId, VertexId)> = self
+            .faces
+            .iter()
+            .flat_map(PlannedFace::directed_edges)
+            .collect();
 
         halves
             .iter()
@@ -300,8 +307,12 @@ impl RimPlan {
     ///   consistently oriented triangulation has each interior edge once per
     ///   direction and each boundary edge once),
     /// - every rim halfedge is consumed,
-    /// - and no face runs along a *pre-existing* border halfedge, which would
-    ///   seal a genuine open border rather than the hole the merge opened.
+    /// - every planned edge whose reverse is not planned is a rim halfedge, so the
+    ///   plan opens no boundary of its own,
+    /// - and every planned edge fits ([`edge_fits`]): none runs along a
+    ///   *pre-existing* border halfedge, which would seal a genuine open border
+    ///   rather than the hole the merge opened, and none duplicates a halfedge
+    ///   that already carries a face, which would put a second face on it.
     pub fn is_complete(&self, mesh: &MeshGraph, halves: &HashSet<HalfedgeId>) -> bool {
         if !self.unhandled.is_empty() {
             return false;
@@ -316,7 +327,7 @@ impl RimPlan {
             if v[0] == v[1] || v[1] == v[2] || v[0] == v[2] {
                 return false;
             }
-            for edge in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+            for edge in face.directed_edges() {
                 if !directed.insert(edge) {
                     return false;
                 }
@@ -336,18 +347,48 @@ impl RimPlan {
         }
 
         for &(start, end) in &directed {
-            for he_id in mesh.halfedges_from_to(start, end) {
-                if let Some(he) = mesh.halfedges.get(he_id)
-                    && he.face.is_none()
-                    && !halves.contains(&he_id)
-                {
-                    return false;
-                }
+            if !edge_fits(mesh, start, end, halves) {
+                return false;
+            }
+
+            if !directed.contains(&(end, start))
+                && !mesh
+                    .halfedges_from_to(start, end)
+                    .iter()
+                    .any(|he_id| halves.contains(he_id))
+            {
+                return false;
             }
         }
 
         true
     }
+}
+
+/// Whether a planned face may carry the directed edge `start -> end`: every halfedge the
+/// mesh already has in that direction must be a face-less rim half, the one the face
+/// consumes. A faced one would get a second face on the same edge, and a face-less one
+/// off the rim is a pre-existing border the merge must not seal.
+fn edge_fits(
+    mesh: &MeshGraph,
+    start: VertexId,
+    end: VertexId,
+    halves: &HashSet<HalfedgeId>,
+) -> bool {
+    mesh.halfedges_from_to(start, end).into_iter().all(|he_id| {
+        mesh.halfedges
+            .get(he_id)
+            .is_none_or(|he| he.face.is_none() && halves.contains(&he_id))
+    })
+}
+
+/// Whether every edge of `faces` fits ([`edge_fits`]).
+fn faces_fit(mesh: &MeshGraph, faces: &[PlannedFace], halves: &HashSet<HalfedgeId>) -> bool {
+    faces.iter().all(|face| {
+        face.directed_edges()
+            .into_iter()
+            .all(|(start, end)| edge_fits(mesh, start, end, halves))
+    })
 }
 
 /// Plan the band from the live rim.
@@ -371,7 +412,7 @@ pub(crate) fn plan(
     }
 
     for structure in structures {
-        plan_structure(mesh, &structure, &mut plan);
+        plan_structure(mesh, &structure, halves, &mut plan);
     }
 
     plan
@@ -462,7 +503,12 @@ fn plan_disjoint_band(mesh: &MeshGraph, first: &RimRun, second: &RimRun, plan: &
         .extend(mesh.plan_connect_pair(&range, [arc1, &arc2]));
 }
 
-fn plan_structure(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
+fn plan_structure(
+    mesh: &MeshGraph,
+    structure: &RimStructure,
+    halves: &HashSet<HalfedgeId>,
+    plan: &mut RimPlan,
+) {
     if !structure.cyclic {
         plan.unhandled
             .push(format!("open chain of {} runs", structure.runs.len()));
@@ -473,11 +519,19 @@ fn plan_structure(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan
         && structure.runs[0].side != RimSide::Strip
         && structure.runs[1].side != RimSide::Strip
     {
-        plan_bigon(mesh, structure, plan);
-        return;
+        // The bigon's rungs are fixed by its two junctions. When one of them already
+        // joins its two vertices outside the hole, zip it as a lobe instead, which can
+        // move its chords.
+        let mut bigon = RimPlan::default();
+        plan_bigon(mesh, structure, &mut bigon);
+        if !bigon.unhandled.is_empty() || faces_fit(mesh, &bigon.faces, halves) {
+            plan.faces.extend(bigon.faces);
+            plan.unhandled.extend(bigon.unhandled);
+            return;
+        }
     }
 
-    plan_lobe(mesh, structure, plan);
+    plan_lobe(mesh, structure, halves, plan);
 }
 
 /// A two-run cyclic structure: one side-1 arc and one side-2 arc between the
@@ -539,7 +593,12 @@ fn plan_bigon(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
 /// Bresenham pairing. That consumes every boundary half and adds only interior
 /// edges, and spreads the triangles over the lobe far more evenly than a fan
 /// from one vertex.
-fn plan_lobe(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
+fn plan_lobe(
+    mesh: &MeshGraph,
+    structure: &RimStructure,
+    halves: &HashSet<HalfedgeId>,
+    plan: &mut RimPlan,
+) {
     let seq = match closed_boundary_vertices(structure) {
         Ok(seq) => seq,
         Err(reason) => {
@@ -558,12 +617,41 @@ fn plan_lobe(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
             // refusal rather than silently dropping boundary.
             continue;
         }
-        plan_simple_lobe(mesh, &cycle, plan);
+        plan_simple_lobe(mesh, &cycle, halves, plan);
     }
 }
 
 /// Zip one simple closed boundary cycle into triangles with two opposite arcs.
-fn plan_simple_lobe(mesh: &MeshGraph, cycle: &[VertexId], plan: &mut RimPlan) {
+///
+/// The zip's chords are new edges, but two vertices of the lobe can already be joined
+/// outside the hole (a thin region, or a second strip between the rings). A chord along
+/// such an edge would put a second pair of faces on it. The split is therefore tried at
+/// each head in walk order, and the first whose faces all fit ([`faces_fit`]) is taken;
+/// when none does, the first is kept and [`RimPlan::is_complete`] refuses the plan.
+fn plan_simple_lobe(
+    mesh: &MeshGraph,
+    cycle: &[VertexId],
+    halves: &HashSet<HalfedgeId>,
+    plan: &mut RimPlan,
+) {
+    let mut first = None;
+    let mut rotated = cycle.to_vec();
+
+    for _ in 0..cycle.len() {
+        let faces = zip_lobe(mesh, &rotated);
+        if faces_fit(mesh, &faces, halves) {
+            plan.faces.extend(faces);
+            return;
+        }
+        first.get_or_insert(faces);
+        rotated.rotate_left(1);
+    }
+
+    plan.faces.extend(first.unwrap_or_default());
+}
+
+/// The faces of [`plan_simple_lobe`] for the split headed at `cycle[0]`.
+fn zip_lobe(mesh: &MeshGraph, cycle: &[VertexId]) -> Vec<PlannedFace> {
     let mid = cycle.len() / 2;
 
     // `arc_a` runs forwards from the head to `mid`; `arc_b` runs backwards from
@@ -574,7 +662,7 @@ fn plan_simple_lobe(mesh: &MeshGraph, cycle: &[VertexId], plan: &mut RimPlan) {
     arc_b.reverse();
 
     if arc_a.len() < 2 || arc_b.len() < 2 {
-        return;
+        return Vec::new();
     }
 
     let range = ConnectPair::new(
@@ -585,8 +673,7 @@ fn plan_simple_lobe(mesh: &MeshGraph, cycle: &[VertexId], plan: &mut RimPlan) {
         ConnectPairCap::Closed,
     );
 
-    plan.faces
-        .extend(mesh.plan_connect_pair(&range, [arc_a, &arc_b]));
+    mesh.plan_connect_pair(&range, [arc_a, &arc_b])
 }
 
 /// The closed boundary vertex cycle of a cyclic structure, with any repeated

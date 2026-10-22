@@ -113,6 +113,45 @@ impl VertexRenames {
 
         resolved
     }
+
+    /// The vertices that stand *only* for vertices of `region`: a snapshot taken over
+    /// `region` knows every edge at them.
+    ///
+    /// Conservative on purpose. A survivor that absorbed a region vertex but was outside
+    /// the region itself also carries edges the snapshot never saw, so it is left out; an
+    /// edge at it then counts as covered only through its other end.
+    pub(crate) fn resolve_region(&self, region: &HashSet<VertexId>) -> HashSet<VertexId> {
+        let inside = |origins: &[VertexId]| origins.iter().all(|v_id| region.contains(v_id));
+
+        let mut resolved: HashSet<VertexId> = region
+            .iter()
+            .copied()
+            .filter(|v_id| self.origins.get(v_id).is_none_or(|origins| inside(origins)))
+            .collect();
+        for (live, origins) in &self.origins {
+            if inside(origins) {
+                resolved.insert(*live);
+            }
+        }
+
+        resolved
+    }
+}
+
+/// Which edges were already a border when an op started, for the hole closers: a closer
+/// only ever closes boundary that is not one of these, so it never seals a border the op
+/// found open.
+pub(crate) trait BoundaryAtEntry {
+    /// Whether the edge between `a` and `b` was a border at entry, or is one the snapshot
+    /// does not cover - which a closer must leave alone just the same.
+    fn was_boundary(&self, a: VertexId, b: VertexId) -> bool;
+}
+
+/// A whole-mesh snapshot, keyed by [`edge_key`]: it covers every edge.
+impl BoundaryAtEntry for HashSet<(VertexId, VertexId)> {
+    fn was_boundary(&self, a: VertexId, b: VertexId) -> bool {
+        self.contains(&edge_key(a, b))
+    }
 }
 
 /// What one run of [`MeshGraph::close_collapse_boundary_loops`] did.
@@ -746,7 +785,7 @@ impl MeshGraph {
     pub(crate) fn boundary_loop_from(
         &self,
         start_v: VertexId,
-        boundary_before: &HashSet<(VertexId, VertexId)>,
+        boundary_before: &(impl BoundaryAtEntry + ?Sized),
     ) -> Option<Vec<HalfedgeId>> {
         let mut he_id = self.sole_new_boundary_out(start_v, boundary_before)?;
         let mut loop_hes = vec![he_id];
@@ -779,28 +818,80 @@ impl MeshGraph {
         &self,
         boundary_before: &HashSet<(VertexId, VertexId)>,
     ) -> Vec<VertexId> {
+        vertices_of_pairs(self.opened_boundary_pairs(boundary_before))
+    }
+
+    /// The boundary edges that are not in `boundary_before`, sorted: the boundary this op
+    /// opened, across the whole mesh.
+    pub(crate) fn opened_boundary_pairs(
+        &self,
+        boundary_before: &HashSet<(VertexId, VertexId)>,
+    ) -> Vec<(VertexId, VertexId)> {
         let mut opened: Vec<(VertexId, VertexId)> = self
             .boundary_edge_pairs()
             .into_iter()
             .filter(|pair| !boundary_before.contains(pair))
             .collect();
-        // The pairs come out of a hash set; the walks start from these vertices in this
+        // The pairs come out of a hash set; the walks start from their vertices in this
         // order, so give it one that depends on the mesh only.
         opened.sort_unstable();
+        opened
+    }
 
-        let mut seen = HashSet::default();
-        let mut vertices = Vec::new();
-        for (a, b) in opened {
-            for v_id in [a, b] {
-                if seen.insert(v_id) {
-                    vertices.push(v_id);
+    /// [`Self::opened_boundary_pairs`] among the edges at `region`'s vertices only, for an
+    /// op that knows where it worked: it costs the region's edges instead of a scan of the
+    /// whole mesh.
+    pub(crate) fn opened_boundary_pairs_around(
+        &self,
+        region: impl IntoIterator<Item = VertexId>,
+        boundary_before: &impl BoundaryAtEntry,
+    ) -> Vec<(VertexId, VertexId)> {
+        let mut opened: Vec<(VertexId, VertexId)> = Vec::new();
+
+        for v_id in region {
+            let Some(out_he_ids) = self.outgoing_halfedges.get(v_id) else {
+                continue;
+            };
+            for &he_id in out_he_ids {
+                let Some(he) = self.halfedges.get(he_id) else {
+                    continue;
+                };
+                // Either half: a border edge whose face-less half ends here is still an
+                // edge at this vertex.
+                let twin_open = he
+                    .twin
+                    .and_then(|twin_id| self.halfedges.get(twin_id))
+                    .is_some_and(|twin| twin.is_boundary());
+                if (he.is_boundary() || twin_open)
+                    && !boundary_before.was_boundary(v_id, he.end_vertex)
+                {
+                    opened.push(edge_key(v_id, he.end_vertex));
                 }
             }
         }
 
-        vertices
+        opened.sort_unstable();
+        opened.dedup();
+        opened
+    }
+}
+
+/// The vertices of `pairs`, each once, in pair order: where the closers start their walks.
+pub(crate) fn vertices_of_pairs(pairs: Vec<(VertexId, VertexId)>) -> Vec<VertexId> {
+    let mut seen = HashSet::default();
+    let mut vertices = Vec::new();
+    for (a, b) in pairs {
+        for v_id in [a, b] {
+            if seen.insert(v_id) {
+                vertices.push(v_id);
+            }
+        }
     }
 
+    vertices
+}
+
+impl MeshGraph {
     /// The outgoing boundary halfedge of a vertex whose edge is *not* in `boundary_before` —
     /// i.e. boundary this op opened — and the lowest id when the vertex has several.
     ///
@@ -811,7 +902,7 @@ impl MeshGraph {
     fn sole_new_boundary_out(
         &self,
         vertex_id: VertexId,
-        boundary_before: &HashSet<(VertexId, VertexId)>,
+        boundary_before: &(impl BoundaryAtEntry + ?Sized),
     ) -> Option<HalfedgeId> {
         let mut found = None;
 
@@ -823,7 +914,7 @@ impl MeshGraph {
                 continue;
             };
 
-            if he.face.is_some() || boundary_before.contains(&edge_key(start, he.end_vertex)) {
+            if he.face.is_some() || boundary_before.was_boundary(start, he.end_vertex) {
                 continue;
             }
 

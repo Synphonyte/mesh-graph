@@ -5,6 +5,7 @@ mod rim_probe;
 #[cfg(test)]
 mod tests;
 
+use std::hash::Hash;
 use std::ops::RangeInclusive;
 
 use crate::hash::{HashMap, HashSet};
@@ -15,7 +16,7 @@ use crate::{
     FaceId, HalfedgeId, MeshGraph, VertexId, error_none,
     ops::{
         add::AddFace,
-        collapse::{CollapseEdge, VertexRenames},
+        collapse::{CollapseEdge, VertexRenames, vertices_of_pairs},
         edit::MergeVertices,
     },
     utils::unwrap_or_return,
@@ -42,8 +43,9 @@ pub struct MergeVerticesOneRing {
 /// nets off, the corpus measures whether the rebuild itself closes exactly what
 /// the removals opened, instead of whether the nets mop up afterwards.
 ///
-/// Phase 0 baseline with the nets off: `parallel_edge_leftover` and
-/// `weld_cases_stay_watertight` fail; the rest of the corpus passes.
+/// With the nets off, the one failure is `weld_cases_stay_watertight`'s
+/// `gap=0.05` case: its coincident fusion opens boundary before any band is
+/// planned, and only the closer seals that.
 #[cfg(test)]
 fn merge_nets_enabled() -> bool {
     use std::sync::OnceLock;
@@ -68,6 +70,21 @@ fn record_removal<T: PartialEq>(added: &mut Vec<T>, removed: &mut Vec<T>, id: T)
     } else {
         removed.push(id);
     }
+}
+
+/// [`record_removal`] for a vertex or halfedge, which also leaves the caller's marked set.
+///
+/// [`MeshGraph::finish_merge`] drops everything in `removed_*` from the marked sets, but an
+/// id this op added and removed again is in neither list by then, while the op may already
+/// have marked it.
+fn record_marked_removal<T: Copy + Eq + Hash>(
+    added: &mut Vec<T>,
+    removed: &mut Vec<T>,
+    marked: &mut HashSet<T>,
+    id: T,
+) {
+    record_removal(added, removed, id);
+    marked.remove(&id);
 }
 
 impl MeshGraph {
@@ -175,9 +192,19 @@ impl MeshGraph {
         //
         // The closers compare against this one rather than against `boundary_before` further
         // down: that one is snapshotted after the fusion, deliberately, so the band's `H`
-        // describes the stars' doing rather than the fusion's. It costs a scan of the whole
-        // halfedge set, like `boundary_before` and the `opened_rim` deltas below.
-        let boundary_pairs_at_entry = self.boundary_edge_pairs();
+        // describes the stars' doing rather than the fusion's.
+        //
+        // Both snapshots, and the deltas taken against them, cover only the region within
+        // three edges of the two vertices, which holds everything the op touches: the stars
+        // and the strip are one ring out, the fusion's and the cleanup's face removals around
+        // ring vertices reach two, and merging a ring vertex with its border neighbours
+        // (`merge_remaining_unconnected`) reaches the faces one ring further. The merge runs
+        // hundreds of times per stroke, so whole-mesh scans here made it grow with the mesh.
+        // A region that turned out too small could only leave a hole open, never seal a
+        // border (see `rim::RegionBoundary`), and the test build checks every merge against
+        // the whole-mesh scans.
+        let region = self.vertices_around(&[vertex_id1, vertex_id2], 3);
+        let boundary_at_entry = rim::RegionBoundary::new(self, &region);
         // The vertex merges and splits this op makes, so the snapshot can be carried to the
         // closers (see `VertexRenames`).
         let mut renames = VertexRenames::default();
@@ -271,13 +298,15 @@ impl MeshGraph {
                 self.close_merge_opened_holes(
                     &one_ring_v_ids1,
                     &one_ring_v_ids2,
-                    &boundary_pairs_at_entry,
+                    &boundary_at_entry,
                     &renames,
+                    marked_halfedges,
+                    marked_vertices,
                     &mut result,
                 );
             }
 
-            return self.finish_merge(result);
+            return self.finish_merge(result, marked_halfedges, marked_vertices);
         }
 
         // The boundary the removals open. `H = boundary(after) \ boundary(before)`:
@@ -285,7 +314,9 @@ impl MeshGraph {
         // them, so the twins of the removed halfedges are *not* the rim the op
         // has to close (see `rim::opened_rim`). Snapshot after the coincident
         // fusion so the delta is exactly the stars' doing.
-        let boundary_before = rim::boundary_halves(self);
+        let boundary_before = rim::boundary_halves_around(self, &region);
+        #[cfg(test)]
+        let whole_mesh_boundary_before = rim::boundary_halves(self);
 
         self.remove_vertex_faces(vertex_id1, &mut result);
 
@@ -293,7 +324,13 @@ impl MeshGraph {
         {
             test_rim_probe.h1 = rim::opened_rim(self, &test_rim_probe.before);
         }
-        let star_h1_raw = rim::opened_rim(self, &boundary_before);
+        let star_h1_raw = rim::opened_rim_around(self, &region, &boundary_before);
+        #[cfg(test)]
+        assert_eq!(
+            star_h1_raw,
+            rim::opened_rim(self, &whole_mesh_boundary_before),
+            "the first star's rim reaches past the merge region"
+        );
 
         self.remove_vertex_faces(vertex_id2, &mut result);
 
@@ -327,13 +364,15 @@ impl MeshGraph {
                     self.close_merge_opened_holes(
                         &one_ring_v_ids1,
                         &one_ring_v_ids2,
-                        &boundary_pairs_at_entry,
+                        &boundary_at_entry,
                         &renames,
+                        marked_halfedges,
+                        marked_vertices,
                         &mut result,
                     );
                 }
 
-                return self.finish_merge(result);
+                return self.finish_merge(result, marked_halfedges, marked_vertices);
             }
         };
 
@@ -399,7 +438,13 @@ impl MeshGraph {
         // does not hold the old faces stand - the same plan the old flow
         // produced after the same teardown.
         self.remove_faces(&strip_faces, &mut result);
-        let (rim, h1, h2) = self.strip_first_rim(&boundary_before, &star_h1);
+        let (rim, h1, h2) = self.strip_first_rim(&region, &boundary_before, &star_h1);
+        #[cfg(test)]
+        assert_eq!(
+            rim,
+            rim::opened_rim(self, &whole_mesh_boundary_before),
+            "the stars' and the strip's rim reaches past the merge region"
+        );
         let plan = rim_planner::plan(self, &rim, &h1, &h2);
         for note in &plan.unhandled {
             tracing::debug!("rim-first planner unhandled: {note}");
@@ -432,6 +477,7 @@ impl MeshGraph {
             &one_ring_v_set1,
             &one_ring_v_set2,
             marked_halfedges,
+            marked_vertices,
             &mut result,
         );
 
@@ -448,6 +494,7 @@ impl MeshGraph {
                     .chain(&result.added_vertices)
                     .copied()
                     .collect_vec(),
+                marked_halfedges,
                 &mut result,
             );
         }
@@ -468,6 +515,8 @@ impl MeshGraph {
             one_ring_v_ids1.clone(),
             one_ring_v_ids2.clone(),
             &mut renames,
+            marked_halfedges,
+            marked_vertices,
             &mut result,
         );
 
@@ -482,14 +531,17 @@ impl MeshGraph {
                     .chain(&result.added_vertices)
                     .copied()
                     .collect_vec(),
+                marked_halfedges,
                 &mut result,
             );
 
             self.close_merge_opened_holes(
                 &one_ring_v_ids1,
                 &one_ring_v_ids2,
-                &boundary_pairs_at_entry,
+                &boundary_at_entry,
                 &renames,
+                marked_halfedges,
+                marked_vertices,
                 &mut result,
             );
         }
@@ -508,24 +560,35 @@ impl MeshGraph {
             rim_probe::push(test_rim_probe);
         }
 
-        self.finish_merge(result)
+        self.finish_merge(result, marked_halfedges, marked_vertices)
     }
 
-    /// Common op-end path: run the integrity/hole inspectors and push the mesh
-    /// onto the state-history ring (hunt instrumentation), then return the result.
-    /// Every exit of the op goes through here (including the early failure
-    /// exits), so the ring stays continuous with the journal (resume
+    /// Common op-end path: drop the removed ids from the caller's marked sets, run the
+    /// integrity/hole inspectors and push the mesh onto the state-history ring (hunt
+    /// instrumentation), then return the result. Every exit of the op that has touched
+    /// the mesh goes through here, so the ring stays continuous with the journal (resume
     /// continuity) and no corruption can skip the checks.
-    #[cfg(feature = "instrumentation")]
-    fn finish_merge(&self, result: MergeVerticesOneRing) -> MergeVerticesOneRing {
+    ///
+    /// The marked sets are long-lived (a caller keeps them across hundreds of merges), so
+    /// they are pruned by the ids the op reports rather than scanned for dead ones.
+    fn finish_merge(
+        &self,
+        result: MergeVerticesOneRing,
+        marked_halfedges: &mut HashSet<HalfedgeId>,
+        marked_vertices: &mut HashSet<VertexId>,
+    ) -> MergeVerticesOneRing {
+        for he_id in &result.removed_halfedges {
+            marked_halfedges.remove(he_id);
+        }
+        for v_id in &result.removed_vertices {
+            marked_vertices.remove(v_id);
+        }
+
+        #[cfg(feature = "instrumentation")]
         if self.probe_chain_integrity("merge_vertices_one_rings") {
             crate::state_history_push(self, "merge_vertices_one_rings");
         }
-        result
-    }
 
-    #[cfg(not(feature = "instrumentation"))]
-    fn finish_merge(&self, result: MergeVerticesOneRing) -> MergeVerticesOneRing {
         result
     }
 
@@ -534,6 +597,8 @@ impl MeshGraph {
         mut one_ring_v_ids1: Vec<VertexId>,
         mut one_ring_v_ids2: Vec<VertexId>,
         renames: &mut VertexRenames,
+        marked_halfedges: &mut HashSet<HalfedgeId>,
+        marked_vertices: &mut HashSet<VertexId>,
         result: &mut MergeVerticesOneRing,
     ) {
         while let Some(v_id) = one_ring_v_ids1.pop() {
@@ -580,9 +645,27 @@ impl MeshGraph {
                     }
                 }
 
-                result.removed_vertices.extend(removed_vertices);
-                result.removed_halfedges.extend(removed_halfedges);
-                result.removed_faces.extend(removed_faces);
+                // The cleanup ran before this, so a merged vertex or a removed edge can be
+                // one it split off or the band added.
+                for v_id in removed_vertices {
+                    record_marked_removal(
+                        &mut result.added_vertices,
+                        &mut result.removed_vertices,
+                        marked_vertices,
+                        v_id,
+                    );
+                }
+                for he_id in removed_halfedges {
+                    record_marked_removal(
+                        &mut result.added_halfedges,
+                        &mut result.removed_halfedges,
+                        marked_halfedges,
+                        he_id,
+                    );
+                }
+                for face_id in removed_faces {
+                    record_removal(&mut result.added_faces, &mut result.removed_faces, face_id);
+                }
             }
         }
     }
@@ -1075,6 +1158,7 @@ impl MeshGraph {
     /// category the planner classifies).
     fn strip_first_rim(
         &self,
+        region: &[VertexId],
         boundary_before: &HashSet<HalfedgeId>,
         star_h1: &HashSet<HalfedgeId>,
     ) -> (
@@ -1082,7 +1166,7 @@ impl MeshGraph {
         HashSet<HalfedgeId>,
         HashSet<HalfedgeId>,
     ) {
-        let rim = rim::opened_rim(self, boundary_before);
+        let rim = rim::opened_rim_around(self, region, boundary_before);
         let h1: HashSet<HalfedgeId> = star_h1
             .iter()
             .copied()
@@ -1102,15 +1186,22 @@ impl MeshGraph {
         one_ring_set1: &HashSet<VertexId>,
         one_ring_set2: &HashSet<VertexId>,
         marked_halfedges: &mut HashSet<HalfedgeId>,
+        marked_vertices: &mut HashSet<VertexId>,
         result: &mut MergeVerticesOneRing,
     ) {
         let mut prev_he = None;
 
         for planned_face in planned_faces {
             let inserted = if let Some(prev_he) = prev_he {
-                planned_face.add_to_mesh_graph_and_he(self, prev_he, result)
+                planned_face.add_to_mesh_graph_and_he(
+                    self,
+                    prev_he,
+                    marked_halfedges,
+                    marked_vertices,
+                    result,
+                )
             } else {
-                planned_face.add_to_mesh_graph(self, result)
+                planned_face.add_to_mesh_graph(self, marked_halfedges, marked_vertices, result)
             };
 
             let Some(inserted) = inserted else {
@@ -1168,6 +1259,7 @@ impl MeshGraph {
     fn weld_parallel_edges(
         &mut self,
         region_v_ids: impl IntoIterator<Item = VertexId>,
+        marked_halfedges: &mut HashSet<HalfedgeId>,
         result: &mut MergeVerticesOneRing,
     ) {
         let mut seen = HashSet::<VertexId>::default();
@@ -1233,8 +1325,14 @@ impl MeshGraph {
                         .get(he_id)
                         .is_some_and(|he| he.face.is_none())
                     {
+                        // An orphan is often the free half a planned face just added.
                         self.remove_only_halfedge(he_id);
-                        result.removed_halfedges.push(he_id);
+                        record_marked_removal(
+                            &mut result.added_halfedges,
+                            &mut result.removed_halfedges,
+                            marked_halfedges,
+                            he_id,
+                        );
                     }
                 }
 
@@ -1250,6 +1348,10 @@ impl MeshGraph {
     /// the op opened since entry: a hole can sit outside the rings (the coincident fusion,
     /// the star removal and the strip walk all reach further).
     ///
+    /// Both the search and the snapshot cover only the region around the merge
+    /// ([`rim::RegionBoundary`]); the test build checks that a whole-mesh scan finds the
+    /// same opened boundary.
+    ///
     /// "Opened" is keyed by vertex pair, not halfedge id: the merge deletes border edges and
     /// re-creates them under new ids, and an id-keyed set would take such an edge for one the
     /// merge opened and seal a border that is meant to stay open. The walker is the collapse
@@ -1261,15 +1363,27 @@ impl MeshGraph {
     ///
     /// A three-halfedge loop around a lone triangle is emptied rather than closed: the
     /// triangle is removed (see [`MeshGraph::lone_face_behind`]).
+    #[allow(clippy::too_many_arguments)]
     fn close_merge_opened_holes(
         &mut self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
-        boundary_pairs_at_entry: &HashSet<(VertexId, VertexId)>,
+        boundary_at_entry: &rim::RegionBoundary,
         renames: &VertexRenames,
+        marked_halfedges: &mut HashSet<HalfedgeId>,
+        marked_vertices: &mut HashSet<VertexId>,
         result: &mut MergeVerticesOneRing,
     ) {
-        let boundary_pairs_at_entry = &renames.resolve(boundary_pairs_at_entry);
+        let boundary_at_entry = &boundary_at_entry.resolve(renames);
+
+        let opened =
+            self.opened_boundary_pairs_around(boundary_at_entry.region(), boundary_at_entry);
+        #[cfg(test)]
+        assert_eq!(
+            opened,
+            self.opened_boundary_pairs(&boundary_at_entry.whole_mesh),
+            "the merge opened boundary past its region"
+        );
 
         let mut closer_region = one_ring_v_ids1
             .iter()
@@ -1279,7 +1393,7 @@ impl MeshGraph {
             .collect_vec();
         let mut in_region: HashSet<VertexId> = closer_region.iter().copied().collect();
 
-        for v_id in self.opened_boundary_vertices(boundary_pairs_at_entry) {
+        for v_id in vertices_of_pairs(opened) {
             if in_region.insert(v_id) {
                 closer_region.push(v_id);
             }
@@ -1295,8 +1409,7 @@ impl MeshGraph {
                     continue;
                 }
 
-                let Some(loop_hes) = self.boundary_loop_from(start_v, boundary_pairs_at_entry)
-                else {
+                let Some(loop_hes) = self.boundary_loop_from(start_v, boundary_at_entry) else {
                     continue;
                 };
 
@@ -1304,16 +1417,18 @@ impl MeshGraph {
                     let (removed_vertices, removed_halfedges) = self.remove_face(face_id);
                     record_removal(&mut result.added_faces, &mut result.removed_faces, face_id);
                     for he_id in removed_halfedges {
-                        record_removal(
+                        record_marked_removal(
                             &mut result.added_halfedges,
                             &mut result.removed_halfedges,
+                            marked_halfedges,
                             he_id,
                         );
                     }
                     for v_id in removed_vertices {
-                        record_removal(
+                        record_marked_removal(
                             &mut result.added_vertices,
                             &mut result.removed_vertices,
+                            marked_vertices,
                             v_id,
                         );
                     }
@@ -1332,6 +1447,39 @@ impl MeshGraph {
                 break;
             }
         }
+    }
+
+    /// The vertices within `hops` edges of `seeds`, seeds first, in breadth-first order over
+    /// the raw outgoing lists - so every fan of a pinched vertex is followed, not just the
+    /// one `one_ring` sees.
+    fn vertices_around(&self, seeds: &[VertexId], hops: usize) -> Vec<VertexId> {
+        let mut region: Vec<VertexId> = Vec::new();
+        let mut seen: HashSet<VertexId> = HashSet::default();
+        for &seed in seeds {
+            if seen.insert(seed) {
+                region.push(seed);
+            }
+        }
+
+        let mut frontier_start = 0;
+        for _ in 0..hops {
+            let frontier_end = region.len();
+            for idx in frontier_start..frontier_end {
+                let Some(out_he_ids) = self.outgoing_halfedges.get(region[idx]) else {
+                    continue;
+                };
+                for he_id in out_he_ids {
+                    if let Some(he) = self.halfedges.get(*he_id)
+                        && seen.insert(he.end_vertex)
+                    {
+                        region.push(he.end_vertex);
+                    }
+                }
+            }
+            frontier_start = frontier_end;
+        }
+
+        region
     }
 
     /// Remove every face incident to `vertex_id`, walking the vertex's raw
@@ -1387,15 +1535,38 @@ impl MeshGraph {
     /// re-file. Only faces inside the merged region are affected: a halfedge that
     /// is re-filed by a planned face always has its other side owned by a face of
     /// the same region, never by an outside surface.
-    fn dismantle_faced_member(&mut self, he_id: HalfedgeId, result: &mut MergeVerticesOneRing) {
+    ///
+    /// The face can be one this op's band inserted a moment earlier, so the removal goes
+    /// through [`record_removal`].
+    fn dismantle_faced_member(
+        &mut self,
+        he_id: HalfedgeId,
+        marked_halfedges: &mut HashSet<HalfedgeId>,
+        marked_vertices: &mut HashSet<VertexId>,
+        result: &mut MergeVerticesOneRing,
+    ) {
         if let Some(he) = self.halfedges.get(he_id)
             && let Some(face_id) = he.face
             && self.faces.contains_key(face_id)
         {
             let (del_v, del_he) = self.remove_face(face_id);
-            result.removed_faces.push(face_id);
-            result.removed_halfedges.extend(del_he);
-            result.removed_vertices.extend(del_v);
+            record_removal(&mut result.added_faces, &mut result.removed_faces, face_id);
+            for he_id in del_he {
+                record_marked_removal(
+                    &mut result.added_halfedges,
+                    &mut result.removed_halfedges,
+                    marked_halfedges,
+                    he_id,
+                );
+            }
+            for v_id in del_v {
+                record_marked_removal(
+                    &mut result.added_vertices,
+                    &mut result.removed_vertices,
+                    marked_vertices,
+                    v_id,
+                );
+            }
         }
     }
 
@@ -2540,6 +2711,15 @@ impl PlannedFace {
         }
     }
 
+    /// The face's three directed edges, in its winding.
+    fn directed_edges(&self) -> [(VertexId, VertexId); 3] {
+        [
+            (self.v1, self.new_he_v1),
+            (self.new_he_v1, self.new_he_v2),
+            (self.new_he_v2, self.v1),
+        ]
+    }
+
     /// Pre-insertion validation, before any mutation: the three vertices must
     /// be distinct and alive. A failing face is skipped; a transaction never
     /// starts.
@@ -2558,10 +2738,12 @@ impl PlannedFace {
         Some(())
     }
 
-    #[instrument(skip(mesh_graph, result))]
+    #[instrument(skip(mesh_graph, marked_halfedges, marked_vertices, result))]
     fn add_to_mesh_graph(
         &self,
         mesh_graph: &mut MeshGraph,
+        marked_halfedges: &mut HashSet<HalfedgeId>,
+        marked_vertices: &mut HashSet<VertexId>,
         result: &mut MergeVerticesOneRing,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
@@ -2608,7 +2790,7 @@ impl PlannedFace {
             add_or_get_edge1.start_to_end_he_id,
             add_or_get_edge2.start_to_end_he_id,
         ] {
-            mesh_graph.dismantle_faced_member(he_id, result);
+            mesh_graph.dismantle_faced_member(he_id, marked_halfedges, marked_vertices, result);
         }
 
         #[cfg(test)]
@@ -2668,11 +2850,13 @@ impl PlannedFace {
         ))
     }
 
-    #[instrument(skip(mesh_graph, result))]
+    #[instrument(skip(mesh_graph, marked_halfedges, marked_vertices, result))]
     fn add_to_mesh_graph_and_he(
         &self,
         mesh_graph: &mut MeshGraph,
         existing_he_id: HalfedgeId,
+        marked_halfedges: &mut HashSet<HalfedgeId>,
+        marked_vertices: &mut HashSet<VertexId>,
         result: &mut MergeVerticesOneRing,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
@@ -2727,8 +2911,18 @@ impl PlannedFace {
         // Dismantle the claiming face before re-filing, and the existing
         // edge (the other side of the shared border) likewise, so no live
         // chain keeps referencing a re-filed halfedge.
-        mesh_graph.dismantle_faced_member(existing_he_id, result);
-        mesh_graph.dismantle_faced_member(add_or_get_edge.start_to_end_he_id, result);
+        mesh_graph.dismantle_faced_member(
+            existing_he_id,
+            marked_halfedges,
+            marked_vertices,
+            result,
+        );
+        mesh_graph.dismantle_faced_member(
+            add_or_get_edge.start_to_end_he_id,
+            marked_halfedges,
+            marked_vertices,
+            result,
+        );
 
         // Re-resolve the shared edge after the dismantle.
         let existing_he_id = match mesh_graph

@@ -1,9 +1,9 @@
 //! Rim tooling for `merge_vertices_one_rings`: the view of the boundary that
 //! the op's removals *actually* open.
 //!
-//! Test-only for now; the rim-first rebuild promotes this to production use.
-//! One definition here is load-bearing and was wrong in the obvious
-//! formulation:
+//! The op computes its rim with [`opened_rim_around`] and the rim-first planner
+//! walks it with [`next_rim_half`]. One definition here is load-bearing and was
+//! wrong in the obvious formulation:
 //!
 //! - [`opened_rim`] is `boundary(after) \ boundary(before)`, **not** the twins
 //!   of the removed halfedges. `remove_face` (remove.rs, the `else` branch)
@@ -20,9 +20,13 @@
 
 use crate::hash::HashSet;
 
-use crate::{HalfedgeId, MeshGraph};
+use crate::ops::collapse::{BoundaryAtEntry, VertexRenames, edge_key};
+use crate::{HalfedgeId, MeshGraph, VertexId};
 
 /// All live halfedges without a face: the current boundary.
+///
+/// A scan of the whole mesh; the op itself uses [`boundary_halves_around`].
+#[cfg(test)]
 pub(crate) fn boundary_halves(mesh: &MeshGraph) -> HashSet<HalfedgeId> {
     mesh.halfedges
         .iter()
@@ -35,6 +39,7 @@ pub(crate) fn boundary_halves(mesh: &MeshGraph) -> HashSet<HalfedgeId> {
 /// Snapshot `boundary_before` immediately before a removal batch. No allocation
 /// happens inside a removal, so ids are stable across the snapshot; the
 /// generational ids of the slotmaps keep freed and reused slots apart.
+#[cfg(test)]
 pub(crate) fn opened_rim(
     mesh: &MeshGraph,
     boundary_before: &HashSet<HalfedgeId>,
@@ -43,6 +48,113 @@ pub(crate) fn opened_rim(
         .into_iter()
         .filter(|he_id| !boundary_before.contains(he_id))
         .collect()
+}
+
+/// The live face-less halfedges that start at `region`'s vertices.
+///
+/// A removed face's members all start at one of its vertices, so as long as the
+/// region holds the vertices of every face a removal batch takes out, this sees
+/// the whole rim that batch opens - at the cost of the region's edges rather than
+/// a scan of the mesh. The test build checks it against [`boundary_halves`].
+pub(crate) fn boundary_halves_around(mesh: &MeshGraph, region: &[VertexId]) -> HashSet<HalfedgeId> {
+    let mut halves = HashSet::default();
+    for &v_id in region {
+        let Some(out_he_ids) = mesh.outgoing_halfedges.get(v_id) else {
+            continue;
+        };
+        for &he_id in out_he_ids {
+            if mesh
+                .halfedges
+                .get(he_id)
+                .is_some_and(|he| he.face.is_none())
+            {
+                halves.insert(he_id);
+            }
+        }
+    }
+    halves
+}
+
+/// [`opened_rim`] over `region` only: `boundary_halves_around(after) \ before`,
+/// with `before` taken by [`boundary_halves_around`] over the same region.
+pub(crate) fn opened_rim_around(
+    mesh: &MeshGraph,
+    region: &[VertexId],
+    boundary_before: &HashSet<HalfedgeId>,
+) -> HashSet<HalfedgeId> {
+    boundary_halves_around(mesh, region)
+        .into_iter()
+        .filter(|he_id| !boundary_before.contains(he_id))
+        .collect()
+}
+
+/// The border as the merge found it, keyed by vertex pair, for its hole closer -
+/// taken over the region around the merge instead of the whole mesh.
+///
+/// It knows every edge at a vertex of `region`. An edge with neither end in the
+/// region counts as an old border ([`BoundaryAtEntry`]), so a region that turned
+/// out too small could only make the closer leave a hole open, never seal a
+/// border it knows nothing about. The test build checks, merge by merge, that the
+/// closer sees exactly what a whole-mesh snapshot would.
+pub(crate) struct RegionBoundary {
+    pairs: HashSet<(VertexId, VertexId)>,
+    region: HashSet<VertexId>,
+    /// The whole-mesh snapshot, for that check.
+    #[cfg(test)]
+    pub(crate) whole_mesh: HashSet<(VertexId, VertexId)>,
+}
+
+impl RegionBoundary {
+    pub(crate) fn new(mesh: &MeshGraph, region: &[VertexId]) -> Self {
+        let mut pairs = HashSet::default();
+        for &v_id in region {
+            let Some(out_he_ids) = mesh.outgoing_halfedges.get(v_id) else {
+                continue;
+            };
+            for &he_id in out_he_ids {
+                let Some(he) = mesh.halfedges.get(he_id) else {
+                    continue;
+                };
+                let twin_open = he
+                    .twin
+                    .and_then(|twin_id| mesh.halfedges.get(twin_id))
+                    .is_some_and(|twin| twin.is_boundary());
+                if he.is_boundary() || twin_open {
+                    pairs.insert(edge_key(v_id, he.end_vertex));
+                }
+            }
+        }
+
+        Self {
+            pairs,
+            region: region.iter().copied().collect(),
+            #[cfg(test)]
+            whole_mesh: mesh.boundary_edge_pairs(),
+        }
+    }
+
+    /// The snapshot carried through the vertex merges and splits the op made, like
+    /// [`VertexRenames::resolve`].
+    pub(crate) fn resolve(&self, renames: &VertexRenames) -> Self {
+        Self {
+            pairs: renames.resolve(&self.pairs),
+            region: renames.resolve_region(&self.region),
+            #[cfg(test)]
+            whole_mesh: renames.resolve(&self.whole_mesh),
+        }
+    }
+
+    /// The live region vertices, where the closer looks for opened boundary.
+    pub(crate) fn region(&self) -> impl Iterator<Item = VertexId> + '_ {
+        self.region.iter().copied()
+    }
+}
+
+impl BoundaryAtEntry for RegionBoundary {
+    fn was_boundary(&self, a: VertexId, b: VertexId) -> bool {
+        self.pairs.contains(&edge_key(a, b))
+            || (!self.region.contains(&a) && !self.region.contains(&b))
+    }
 }
 
 /// One step of a rim walk.
