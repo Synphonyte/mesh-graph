@@ -48,8 +48,11 @@ impl PointQueryWithLocation for MeshGraph {
         solid: bool,
         max_dist: f32,
     ) -> Option<(PointProjection, Self::Location)> {
-        let (shape_id, (mut proj, _)) =
+        let (shape_id, mut proj, _) =
             CompositeShapeRef(self).project_local_point_and_get_location(point, max_dist, solid)?;
+        // `project_local_point_and_get_feature` takes the projection straight from here, so
+        // name the triangle that answered the same way parry's own composite impls do.
+        proj.subshape = shape_id;
 
         // TODO : this could be more precise by interpolating the normal depending on the hit location
 
@@ -203,4 +206,41 @@ impl MeshGraph {
     //         None
     //     }
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn point_projection_names_the_triangle_that_answered() {
+        let mut mesh_graph = MeshGraph::new();
+        // Added first, so the triangle that answers gets a non-zero index: `subshape` is 0
+        // by default and only a non-zero index proves it was filled in.
+        mesh_graph.add_face_from_positions(
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(11.0, 0.0, 0.0),
+            Vec3::new(10.0, 1.0, 0.0),
+        );
+        let face_id = mesh_graph
+            .add_face_from_positions(
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            )
+            .face_id;
+        mesh_graph.rebuild_bvh();
+
+        let (projection, hit_face) =
+            mesh_graph.project_local_point_and_get_location(Vec3::new(0.2, 0.2, 1.0), false);
+
+        assert_eq!(
+            mesh_graph.index_to_face_id.get(&hit_face.index),
+            Some(&face_id)
+        );
+        assert_eq!(
+            projection.subshape, hit_face.index,
+            "the projection should name the triangle that answered"
+        );
+    }
 }

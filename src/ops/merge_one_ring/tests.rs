@@ -1,3 +1,4 @@
+use super::MergeRecord;
 use crate::hash::HashSet;
 use crate::{
     utils::{extend_with, get_tracing_subscriber},
@@ -4190,16 +4191,16 @@ fn test_merge_closer_keeps_a_border_recreated_under_new_ids() {
     );
 
     let faces_before = mesh.faces.len();
-    let mut result = MergeVerticesOneRing::default();
+    let (mut marked_halfedges, mut marked_vertices) = (HashSet::default(), HashSet::default());
+    let mut record = MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
     mesh.close_merge_opened_holes(
         &[a, b, c, d],
         &[],
         &boundary_at_entry,
         &crate::ops::collapse::VertexRenames::default(),
-        &mut HashSet::default(),
-        &mut HashSet::default(),
-        &mut result,
+        &mut record,
     );
+    let result = record.result;
 
     assert_eq!(mesh.faces.len(), faces_before, "the open border was sealed");
     assert!(result.added_faces.is_empty());
@@ -4244,15 +4245,14 @@ fn test_merge_closer_keeps_a_border_at_absorbed_vertices() {
     }
 
     let faces_before = mesh.faces.len();
-    let mut result = MergeVerticesOneRing::default();
+    let (mut marked_halfedges, mut marked_vertices) = (HashSet::default(), HashSet::default());
+    let mut record = MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
     mesh.close_merge_opened_holes(
         &[loose[0], b, loose[1], d],
         &[],
         &boundary_at_entry,
         &renames,
-        &mut HashSet::default(),
-        &mut HashSet::default(),
-        &mut result,
+        &mut record,
     );
 
     assert_eq!(mesh.faces.len(), faces_before, "the open border was sealed");
@@ -4268,17 +4268,17 @@ fn test_merge_closer_removes_a_lone_triangle() {
     let c = mesh.add_vertex(vec3(0.0, 1.0, 0.0));
     let face_id = mesh.add_face_from_vertices(a, b, c).unwrap().face_id;
 
-    let mut result = MergeVerticesOneRing::default();
+    let (mut marked_halfedges, mut marked_vertices) = (HashSet::default(), HashSet::default());
+    let mut record = MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
     mesh.close_merge_opened_holes(
         &[a, b, c],
         &[],
         // Nothing was a border at entry: the snapshot of an empty mesh over these vertices.
         &super::rim::RegionBoundary::new(&MeshGraph::new(), &[a, b, c]),
         &crate::ops::collapse::VertexRenames::default(),
-        &mut HashSet::default(),
-        &mut HashSet::default(),
-        &mut result,
+        &mut record,
     );
+    let result = record.result;
 
     assert_eq!(mesh.faces.len(), 0, "the lone triangle is gone, no pillow");
     assert!(result.added_faces.is_empty());
@@ -4474,13 +4474,13 @@ fn test_weld_parallel_edges_drops_its_own_orphans_cleanly() {
     );
     let new_orphan = parallel.twin_he_id;
 
-    let mut result = MergeVerticesOneRing {
-        added_halfedges: vec![new_orphan],
-        ..Default::default()
-    };
     let mut marked_halfedges = HashSet::from_iter([new_orphan, old_orphan]);
+    let mut marked_vertices = HashSet::default();
+    let mut record = MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
+    record.result.added_halfedges.push(new_orphan);
 
-    mesh.weld_parallel_edges([a, b], &mut marked_halfedges, &mut result);
+    mesh.weld_parallel_edges([a, b], &mut record);
+    let result = record.result;
 
     assert!(!mesh.halfedges.contains_key(new_orphan));
     assert!(!mesh.halfedges.contains_key(old_orphan));

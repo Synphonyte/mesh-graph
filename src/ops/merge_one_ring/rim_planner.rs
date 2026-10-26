@@ -1,99 +1,46 @@
 //! The rim-first band planner: plan the stitch band from the live rim `H`.
 //!
 //! The op runs this planner on the rim the removals opened, after tearing the
-//! already-connected strip out (strips-first), and uses the result when
-//! [`RimPlan::is_complete`] holds. When it does not, the old ring-range planner's
-//! faces stand, so this planner is purely additive: it can close holes the old
-//! one left, never take away a plan that worked.
-//!
-//! The shape of the model follows the measurements in the handoff:
+//! already-connected strip out, and uses the result when [`RimPlan::is_complete`]
+//! holds. When it does not, the ring-range planner's faces stand, so this planner
+//! can close holes the ring-range planner leaves but never takes away a plan that
+//! worked.
 //!
 //! - `H` is walked head-first (`rim::next_rim_half`) in ascending id order, so
 //!   the structure is deterministic and independent of slotmap hash order.
 //! - Each walk is split into maximal same-side **runs** (`h1` / `h2` / `strip`).
 //!   A walk whose last half ends where its first half starts closes at a pinch
 //!   even when `next_rim_half` reports `ChainEnd`; the wrap runs are then merged
-//!   so a run is maximal *cyclically* too. That is what turns the sharp
-//!   `radius 1, +5` case (walked as `h2, h1, h2`) into the two-run bigon it
-//!   really is.
-//! - A cyclic structure whose runs are two opposite-side arcs is planned with
-//!   the existing Bresenham machinery
-//!   ([`MeshGraph::plan_connect_pair`]), so the band keeps the shape the old
-//!   planner aimed for. Any other closed lobe is zipped between two arcs of its
-//!   boundary split at roughly opposite vertices, through the same machinery; a
-//!   walk that revisits a vertex (a pinch inside one walk, e.g. the extracted
-//!   weld case) is split into simple lobes at the repeated vertex first. A
-//!   lobe's split moves along its boundary until none of its chords runs along
-//!   an edge that already joins two of its vertices outside the hole, and a
-//!   bigon whose fixed rungs do falls back to that lobe zip.
+//!   so a run is maximal *cyclically* too. A walk that reads `h2, h1, h2` is then
+//!   the two-run bigon it really is.
+//! - A cyclic structure whose runs are two opposite-side arcs (a bigon) is planned
+//!   with the Bresenham machinery ([`MeshGraph::plan_connect_pair`]), so the band
+//!   keeps the shape the ring-range planner aims for. Any other closed lobe is
+//!   zipped between two arcs of its boundary split at roughly opposite vertices,
+//!   through the same machinery; a walk that revisits a vertex (a pinch inside one
+//!   walk) is split into simple lobes at the repeated vertex first. A lobe's split
+//!   moves along its boundary until none of its chords runs along an edge that
+//!   already joins two of its vertices outside the hole, and a bigon whose fixed
+//!   rungs do falls back to that lobe zip.
 //! - Two *disjoint* single-side loops - the two stars' rings sharing no vertex -
 //!   are stitched to each other by an open-cap band seeded at the nearest
 //!   position ([`plan_disjoint_band`]). Capping each loop on its own is a valid
 //!   closed mesh that `is_complete` cannot tell from the real band, but it is not
 //!   a merge.
-//! - What is deliberately *not* guessed at: open chains, whose ends run into a
-//!   pre-existing border of the cut region. They are reported as `unhandled`
-//!   instead of producing faces from a boundary model that does not describe
-//!   them.
-//!
-//! Measured on the captured corpus: this planner closes the extracted weld case
-//! and moved `radius 1, +5` and `radius 1, +6` out of `OPEN_WELD_CASES` into
-//! `WELD_CASES`. With it driving the op, the corpus is green with the repair
-//! nets disabled (`MESH_GRAPH_MERGE_NETS=0`, the Phase 2 oracle) except for the
-//! later `gap=0.05` case, whose hole the coincident fusion opens before any band
-//! is planned.
-//!
-//! Rims that are open chains still go to the old ring-range planner: in the
-//! in-repo suite (measured when the lobe rotation went in) that was 241 band
-//! merges against 472 planned here.
-//!
-//! External soak (freestyle-sculpt via a local `[patch]` to this commit):
-//!
-//! - shipping order, 200 iterations: 200 watertight (three consecutive runs).
-//! - reversed order (temporary `std::cmp::Reverse` on the merge-candidate sort
-//!   key, then reverted), 200 iterations: 200 watertight.
-//! - debug build, 200 iterations: 200 watertight with the assertions live.
-//!
-//! The old planner's `wrapped`/span heuristics are gone. Two traps are worth
-//! recording, because both looked like "the deletion broke the weld" and were
-//! not:
-//!
-//! - The `wrapped` flag lived next to the walk's termination `break` (`if
-//!   start_idx1 == orig_start_idx1 { wrapped = true; break; }`). Deleting the
-//!   flag's assignment together with the `break` turned the retained walk into
-//!   an infinite loop, which the soak reported as an OOM kill after minutes of
-//!   no progress. Only the flag goes; the `break` stays.
-//! - Before the crate used a fixed-seed hasher, the weld's merge order was
-//!   nondeterministic, so the same source change could pass one run and be
-//!   OOM-killed the next. With `hash` (fixed seed) the order is reproducible and
-//!   both planner variants produce the same mesh, so a deletion can be A/B'd:
-//!   shipping 200 iterations `faces 1406..=1406` and reversed 200 `faces
-//!   1416..=1416`, identical with and without the span code.
-//!
-//! The two remaining ex-open cases (`radius 2, +4` and its mirror) cannot be
-//! planned from their fixture at all, and not for want of machinery: their rim
-//! is an **open chain**. A triangulation's boundary is always a union of closed
-//! curves, so no set of triangles can consume an open chain using only rim
-//! halves and interior edges. Closing it would mean consuming the pre-existing
-//! border halfedges the chain runs into - which would seal a genuine open border
-//! and is exactly what `close_merge_opened_holes` is written to avoid. See
-//! `tests::test_open_weld_chain_cases_are_cut_truncated`.
-//!
-//! They are unfaithful fixtures, not defects: the extractor's
-//! `NO STANDALONE REPRO` fallback prints the widest cut *without* minimising it,
-//! which drops one-ring faces and leaves a *ring* vertex on the cut. They now
-//! live in `CUT_TRUNCATED_CASES` and `OPEN_WELD_CASES` is empty. Re-running that
-//! same reversed soak with this planner temporarily disabled and the capture
-//! radius raised reproduces a genuine, minimised case at radius 1; it is
-//! `WELD_CASES`'s `re-extracted reversed weld order, radius 1, +4` entry, and
-//! this planner closes it (`boundary 13 -> 13`).
+//! - Open chains, whose ends run into a pre-existing border of the cut region,
+//!   are reported as `unhandled` and left to the ring-range planner. A
+//!   triangulation's boundary is always a union of closed curves, so no set of
+//!   triangles can consume an open chain using only rim halves and interior
+//!   edges; closing it would mean consuming the pre-existing border halfedges the
+//!   chain runs into, which would seal a genuine open border (see
+//!   `tests::test_open_weld_chain_cases_are_cut_truncated`).
 
 use crate::hash::{HashMap, HashSet};
 
 use crate::{HalfedgeId, MeshGraph, VertexId};
 
 use super::rim::{self, RimStep};
-use super::{ConnectPair, ConnectPairCap, PlannedFace};
+use super::{ConnectPair, ConnectPairCap, PlannedFace, nearest_index};
 
 /// Which ring a rim half bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,16 +128,17 @@ pub(crate) fn rim_structures(
         // A chain whose ends meet at a pinch vertex closes geometrically even
         // though the boundary walk stops there (the continuation is a
         // pre-existing border half).
-        let cyclic = cyclic
-            || match (
-                ordered.first().and_then(|he_id| start_vertex(mesh, *he_id)),
-                ordered.last().and_then(|he_id| end_vertex(mesh, *he_id)),
-            ) {
-                (Some(a), Some(b)) => a == b,
-                _ => false,
-            };
+        let first_start = ordered
+            .first()
+            .and_then(|he_id| mesh.halfedge_endpoints(*he_id))
+            .map(|(start, _)| start);
+        let last_end = ordered
+            .last()
+            .and_then(|he_id| mesh.halfedges.get(*he_id))
+            .map(|he| he.end_vertex);
+        let cyclic = cyclic || (first_start.is_some() && first_start == last_end);
 
-        structures.push(structure_from_walk(mesh, ordered, cyclic, h1, h2));
+        structures.push(structure_from_walk(mesh, &ordered, cyclic, h1, h2));
     };
 
     for &start in starts.iter().filter(|he| !has_predecessor.contains(*he)) {
@@ -207,30 +155,19 @@ pub(crate) fn rim_structures(
     structures
 }
 
-fn start_vertex(mesh: &MeshGraph, he_id: HalfedgeId) -> Option<VertexId> {
-    mesh.halfedges.get(he_id)?.start_vertex(mesh)
-}
-
-fn end_vertex(mesh: &MeshGraph, he_id: HalfedgeId) -> Option<VertexId> {
-    mesh.halfedges.get(he_id).map(|he| he.end_vertex)
-}
-
 /// Group an ordered walk into maximal same-side runs, merging the wrap runs of a
 /// cyclic walk.
 fn structure_from_walk(
     mesh: &MeshGraph,
-    ordered: Vec<HalfedgeId>,
+    ordered: &[HalfedgeId],
     cyclic: bool,
     h1: &HashSet<HalfedgeId>,
     h2: &HashSet<HalfedgeId>,
 ) -> RimStructure {
     let mut runs: Vec<RimRun> = Vec::new();
-    for he_id in ordered.iter().copied() {
+    for &he_id in ordered {
         let side = side_of(he_id, h1, h2);
-        let Some(start) = start_vertex(mesh, he_id) else {
-            continue;
-        };
-        let Some(end) = end_vertex(mesh, he_id) else {
+        let Some((start, end)) = mesh.halfedge_endpoints(he_id) else {
             continue;
         };
 
@@ -251,10 +188,7 @@ fn structure_from_walk(
         let first = runs.first_mut().expect("runs.len() > 1");
         let mut merged = last.vertices;
         merged.extend(first.vertices.iter().skip(1).copied());
-        *first = RimRun {
-            side: first.side,
-            vertices: merged,
-        };
+        first.vertices = merged;
     }
 
     RimStructure { cyclic, runs }
@@ -287,19 +221,15 @@ impl RimPlan {
             .iter()
             .copied()
             .filter(|he_id| {
-                let (Some(start), Some(end)) =
-                    (start_vertex(mesh, *he_id), end_vertex(mesh, *he_id))
-                else {
-                    return false;
-                };
-                directed.contains(&(start, end))
+                mesh.halfedge_endpoints(*he_id)
+                    .is_some_and(|edge| directed.contains(&edge))
             })
             .collect()
     }
 
     /// Whether this plan consumes the whole rim and nothing else.
     ///
-    /// The op only replaces the old planner's faces with this plan when this
+    /// The op only replaces the ring-range planner's faces with this plan when this
     /// returns `true`, so it is the safety contract, not a heuristic:
     ///
     /// - every structure was planned (no `unhandled`),
@@ -323,8 +253,7 @@ impl RimPlan {
 
         let mut directed: HashSet<(VertexId, VertexId)> = HashSet::default();
         for face in &self.faces {
-            let v = [face.v1, face.new_he_v1, face.new_he_v2];
-            if v[0] == v[1] || v[1] == v[2] || v[0] == v[2] {
+            if face.is_degenerate() {
                 return false;
             }
             for edge in face.directed_edges() {
@@ -421,34 +350,36 @@ pub(crate) fn plan(
 /// The two structures, if the rim is exactly two single-side loops with no
 /// vertex in common - one per merged star.
 fn disjoint_single_side_pair(structures: &[RimStructure]) -> Option<(&RimRun, &RimRun)> {
-    if structures.len() != 2 {
+    let [first, second] = structures else {
+        return None;
+    };
+    if !first.cyclic || !second.cyclic {
+        return None;
+    }
+    let ([first], [second]) = (&first.runs[..], &second.runs[..]) else {
+        return None;
+    };
+
+    if first.side == RimSide::Strip || second.side == RimSide::Strip {
+        return None;
+    }
+    if first.side == second.side {
         return None;
     }
 
-    let mut runs: Vec<&RimRun> = Vec::with_capacity(2);
-    for structure in structures {
-        if !structure.cyclic || structure.runs.len() != 1 {
-            return None;
-        }
-        runs.push(&structure.runs[0]);
-    }
-
-    if runs[0].side == RimSide::Strip || runs[1].side == RimSide::Strip {
-        return None;
-    }
-    if runs[0].side == runs[1].side {
+    let first_v_ids: HashSet<VertexId> = first.vertices.iter().copied().collect();
+    if second
+        .vertices
+        .iter()
+        .any(|v_id| first_v_ids.contains(v_id))
+    {
         return None;
     }
 
-    let first: HashSet<VertexId> = runs[0].vertices.iter().copied().collect();
-    if runs[1].vertices.iter().any(|v_id| first.contains(v_id)) {
-        return None;
-    }
-
-    Some((runs[0], runs[1]))
+    Some((first, second))
 }
 
-/// Stitch two disjoint rings with the old planner's open-cap walk: seed the
+/// Stitch two disjoint rings with the ring-range planner's open-cap walk: seed the
 /// correspondence by nearest position from the first ring's head, then run the
 /// Bresenham pairing around both loops and let the `Open` cap close the band.
 fn plan_disjoint_band(mesh: &MeshGraph, first: &RimRun, second: &RimRun, plan: &mut RimPlan) {
@@ -464,40 +395,28 @@ fn plan_disjoint_band(mesh: &MeshGraph, first: &RimRun, second: &RimRun, plan: &
     let ring2 = &second.vertices[..wrap2];
 
     // Nearest position, lowest index on a tie - the same deterministic seed the
-    // old planner used when the rings shared no vertex.
+    // ring-range planner uses when the rings shared no vertex.
     let Some(target) = mesh.positions.get(arc1[0]).copied() else {
         plan.unhandled.push("missing position".to_string());
         return;
     };
-    let mut start2 = 0;
-    let mut min_dist_sqr = f32::INFINITY;
-    for (idx, v_id) in ring2.iter().enumerate() {
-        let Some(pos) = mesh.positions.get(*v_id) else {
-            continue;
-        };
-        let dist_sqr = pos.distance_squared(target);
-        if dist_sqr < min_dist_sqr {
-            min_dist_sqr = dist_sqr;
-            start2 = idx;
-        }
-    }
+    let start2 = nearest_index(
+        target,
+        ring2
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, v_id)| mesh.positions.get(*v_id).map(|pos| (idx, *pos))),
+    );
 
     // The two loops bound one annulus (a closed surface minus the two stars), so
     // they run in opposite directions when the region is kept on the left:
     // `arc1` is the walk direction, `arc2` walks the other ring backwards from
     // the nearest vertex.
-    let mut arc2 = Vec::with_capacity(wrap2);
-    for step in 0..wrap2 {
-        arc2.push(ring2[(start2 + wrap2 - step) % wrap2]);
-    }
+    let arc2: Vec<VertexId> = (0..wrap2)
+        .map(|step| ring2[(start2 + wrap2 - step) % wrap2])
+        .collect();
 
-    let range = ConnectPair::new(
-        0..=arc1.len() - 1,
-        arc1.len(),
-        0..=arc2.len() - 1,
-        arc2.len(),
-        ConnectPairCap::Open,
-    );
+    let range = ConnectPair::whole(arc1.len(), arc2.len(), ConnectPairCap::Open);
 
     plan.faces
         .extend(mesh.plan_connect_pair(&range, [arc1, &arc2]));
@@ -535,8 +454,8 @@ fn plan_structure(
 }
 
 /// A two-run cyclic structure: one side-1 arc and one side-2 arc between the
-/// same two junctions. Reuse the old Bresenham pairing so the band geometry is
-/// the same shape the old planner aimed for.
+/// same two junctions. Reuse the Bresenham pairing so the band geometry is
+/// the same shape the ring-range planner aims for.
 fn plan_bigon(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
     let a = &structure.runs[0];
     let b = &structure.runs[1];
@@ -563,17 +482,10 @@ fn plan_bigon(mesh: &MeshGraph, structure: &RimStructure, plan: &mut RimPlan) {
     }
 
     // Orient both arcs to start at `a.vertices[0]` so the pairing is closed at
-    // the shared junction, exactly like the old `ConnectPairCap::Closed`.
-    let mut b_reversed = b.vertices.clone();
-    b_reversed.reverse();
+    // the shared junction, like `ConnectPairCap::Closed`.
+    let b_reversed: Vec<VertexId> = b.vertices.iter().rev().copied().collect();
 
-    let range_a = ConnectPair::new(
-        0..=a.vertices.len() - 1,
-        a.vertices.len(),
-        0..=b_reversed.len() - 1,
-        b_reversed.len(),
-        ConnectPairCap::Closed,
-    );
+    let range_a = ConnectPair::whole(a.vertices.len(), b_reversed.len(), ConnectPairCap::Closed);
 
     plan.faces
         .extend(mesh.plan_connect_pair(&range_a, [&a.vertices, &b_reversed]));
@@ -665,13 +577,7 @@ fn zip_lobe(mesh: &MeshGraph, cycle: &[VertexId]) -> Vec<PlannedFace> {
         return Vec::new();
     }
 
-    let range = ConnectPair::new(
-        0..=arc_a.len() - 1,
-        arc_a.len(),
-        0..=arc_b.len() - 1,
-        arc_b.len(),
-        ConnectPairCap::Closed,
-    );
+    let range = ConnectPair::whole(arc_a.len(), arc_b.len(), ConnectPairCap::Closed);
 
     mesh.plan_connect_pair(&range, [arc_a, &arc_b])
 }

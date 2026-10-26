@@ -1,9 +1,8 @@
 //! Test-only collector for the boundary-delta taxonomy of a single merge.
 //!
 //! The op pushes one [`RimProbe`] per band merge (thread-local, so parallel
-//! tests do not interleave). Probes are measurements, not assertions: Phase 0
-//! records how far the current rebuild is from "closes exactly what it opened"
-//! before Phase 1/2 make that structural.
+//! tests do not interleave). Probes are measurements, not assertions: they record
+//! how far a merge is from "closes exactly what it opened".
 
 use std::cell::{Cell, RefCell};
 
@@ -42,10 +41,10 @@ pub(crate) struct RimProbe {
     pub proto_unhandled: Vec<String>,
     /// Per-structure run composition of the rim, for diagnostics.
     pub proto_structure_detail: Vec<String>,
-    /// Lengths of the ordered ring each star's rim forms. The old planner ran
-    /// on the pre-removal one-rings, which include vertices that are *not* on
-    /// the rim (strip-connected and hole-interior ones); these lengths are the
-    /// rim-only truth Phase 2's planner must consume.
+    /// Lengths of the ordered ring each star's rim forms. The ring-range planner
+    /// runs on the pre-removal one-rings, which include vertices that are *not* on
+    /// the rim (strip-connected and hole-interior ones); these lengths are what the
+    /// rim-first planner consumes.
     pub h1_ring_len: usize,
     pub h2_ring_len: usize,
 
@@ -204,7 +203,7 @@ impl RimProbe {
         // be walked from their heads (no predecessor) first: walking them from
         // an ascending seed that happens to land mid-chain makes the walk enter
         // an already-visited half and would score a legitimate chain as
-        // `rim_bad` (the Phase 0/1 review caught exactly that). Whatever is
+        // `rim_bad`. Whatever is
         // left after the head pass is loops (and anything a head pass could not
         // reach).
         let mut has_predecessor = HashSet::default();

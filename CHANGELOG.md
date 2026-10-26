@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the holes its own removals open with the same closer as the merge
 - Every map and set in the crate uses a fixed-seed hasher, so the same input produces
   the same ids and the same mesh on every run. New dependency: `foldhash`
+- Updated `bevy` to `0.20`, `parry3d` to `0.31` and `rerun` to `0.40`. The Bevy 0.20
+  bump required no source changes; parry's composite point query now reports the
+  sub-shape separately, so `MeshGraph`'s projections carry the triangle that answered
+  in `PointProjection::subshape`
+- `Mesh::from(MeshGraph)` no longer inserts an empty `ATTRIBUTE_NORMAL` when the graph
+  has no vertex normals; Bevy renders such a mesh with its default normal instead of
+  receiving a normal attribute shorter than the vertex count
 
 ### Breaking Changes
 

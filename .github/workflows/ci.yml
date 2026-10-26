@@ -45,3 +45,13 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -- -D warnings
+
+      # The default build never compiles the optional Bevy integration, so a Bevy
+      # upgrade can break it without the steps above noticing.
+      - name: Clippy with Bevy integration
+        if: matrix.toolchain == 'stable'
+        run: cargo clippy --features bevy --all-targets -- -D warnings
+
+      - name: Test with Bevy integration
+        if: matrix.toolchain == 'stable'
+        run: cargo test --features bevy

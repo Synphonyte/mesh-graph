@@ -116,6 +116,23 @@ impl Halfedge {
         self.face.is_none()
     }
 
+    /// Returns `true` if this halfedge or its twin has no face: the edge is part of a border.
+    pub(crate) fn is_border_edge(&self, mesh_graph: &MeshGraph) -> bool {
+        self.is_boundary() || self.twin_is_boundary(mesh_graph)
+    }
+
+    /// Returns `true` if neither this halfedge nor its twin has a face: a wire edge, which
+    /// carries no surface.
+    pub(crate) fn is_wire_edge(&self, mesh_graph: &MeshGraph) -> bool {
+        self.is_boundary() && self.twin_is_boundary(mesh_graph)
+    }
+
+    fn twin_is_boundary(&self, mesh_graph: &MeshGraph) -> bool {
+        self.twin
+            .and_then(|twin_id| mesh_graph.halfedges.get(twin_id))
+            .is_some_and(Halfedge::is_boundary)
+    }
+
     /// Returns `true` if the start or end vertex is a boundary vertex.
     #[instrument(skip(mesh_graph))]
     pub fn is_adjacent_to_boundary(&self, mesh_graph: &MeshGraph) -> bool {

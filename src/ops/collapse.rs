@@ -51,11 +51,7 @@ impl VertexRenames {
             .origins
             .entry(survivor)
             .or_insert_with(|| vec![survivor]);
-        for v_id in carried {
-            if !entry.contains(&v_id) {
-                entry.push(v_id);
-            }
-        }
+        push_missing(entry, carried);
     }
 
     /// `new` was split off `original`: some of the original's edges now run from `new`, and
@@ -66,12 +62,7 @@ impl VertexRenames {
             .entry(original)
             .or_insert_with(|| carried.clone());
 
-        let entry = self.origins.entry(new).or_default();
-        for v_id in carried {
-            if !entry.contains(&v_id) {
-                entry.push(v_id);
-            }
-        }
+        push_missing(self.origins.entry(new).or_default(), carried);
     }
 
     /// `snapshot` with every pair carried through the recorded renames: each end replaced by
@@ -135,6 +126,15 @@ impl VertexRenames {
         }
 
         resolved
+    }
+}
+
+/// Appends the vertices of `v_ids` that `origins` doesn't hold yet.
+fn push_missing(origins: &mut Vec<VertexId>, v_ids: Vec<VertexId>) {
+    for v_id in v_ids {
+        if !origins.contains(&v_id) {
+            origins.push(v_id);
+        }
     }
 }
 
@@ -611,9 +611,9 @@ impl MeshGraph {
     /// `candidates` is [`Self::opened_boundary_vertices`] of `boundary_before`: the walk
     /// starts from those, and a hole the op opened always touches one of them.
     ///
-    /// This is part of the op rather than a repair net, so `MESH_GRAPH_MERGE_NETS=0`
-    /// (the merge's nets-off oracle) does not disable it: what it closes is boundary this
-    /// op itself opened, not a leftover of another algorithm's removals.
+    /// This is part of the op rather than a repair net, so `MESH_GRAPH_MERGE_NETS=0` does
+    /// not disable it: what it closes is boundary this op itself opened, not a leftover of
+    /// another algorithm's removals.
     ///
     /// A three-halfedge loop around a lone triangle is not closed but emptied: the triangle
     /// is removed (see [`Self::lone_face_behind`]).
@@ -703,7 +703,8 @@ impl MeshGraph {
     /// cannot be closed until the wire is gone, which is why the caller alternates this
     /// with the closer.
     ///
-    /// Returns the halfedges it removed (both halves per wire).
+    /// Returns the wire halfedges it found leaving a candidate, all of them removed along with
+    /// their twins: both halves of a wire when both of its ends are candidates, one otherwise.
     fn remove_wire_edges(&mut self, candidates: &[VertexId]) -> Vec<HalfedgeId> {
         let mut wires: Vec<HalfedgeId> = Vec::new();
 
@@ -713,26 +714,17 @@ impl MeshGraph {
             };
 
             for he_id in out_hes {
-                let is_wire = self.halfedges.get(*he_id).is_some_and(|he| {
-                    he.is_boundary()
-                        && he
-                            .twin
-                            .and_then(|twin_id| self.halfedges.get(twin_id))
-                            .is_some_and(|twin| twin.is_boundary())
-                });
-
-                // The twin reports the same edge; the liveness filter below drops the
-                // duplicate once the first half has taken the pair with it.
-                if is_wire {
+                // When both ends are candidates, the twin reports the same edge, and
+                // removing it again below is a no-op.
+                if self
+                    .halfedges
+                    .get(*he_id)
+                    .is_some_and(|he| he.is_wire_edge(self))
+                {
                     wires.push(*he_id);
                 }
             }
         }
-
-        let wires: Vec<HalfedgeId> = wires
-            .into_iter()
-            .filter(|he_id| self.halfedges.contains_key(*he_id))
-            .collect();
 
         let mut endpoints: Vec<VertexId> = Vec::new();
         for he_id in &wires {
@@ -844,7 +836,7 @@ impl MeshGraph {
     pub(crate) fn opened_boundary_pairs_around(
         &self,
         region: impl IntoIterator<Item = VertexId>,
-        boundary_before: &impl BoundaryAtEntry,
+        boundary_before: &(impl BoundaryAtEntry + ?Sized),
     ) -> Vec<(VertexId, VertexId)> {
         let mut opened: Vec<(VertexId, VertexId)> = Vec::new();
 
@@ -858,13 +850,7 @@ impl MeshGraph {
                 };
                 // Either half: a border edge whose face-less half ends here is still an
                 // edge at this vertex.
-                let twin_open = he
-                    .twin
-                    .and_then(|twin_id| self.halfedges.get(twin_id))
-                    .is_some_and(|twin| twin.is_boundary());
-                if (he.is_boundary() || twin_open)
-                    && !boundary_before.was_boundary(v_id, he.end_vertex)
-                {
+                if he.is_border_edge(self) && !boundary_before.was_boundary(v_id, he.end_vertex) {
                     opened.push(edge_key(v_id, he.end_vertex));
                 }
             }
@@ -904,39 +890,26 @@ impl MeshGraph {
         vertex_id: VertexId,
         boundary_before: &(impl BoundaryAtEntry + ?Sized),
     ) -> Option<HalfedgeId> {
-        let mut found = None;
-
-        for he_id in self.outgoing_halfedges.get(vertex_id)? {
-            let Some(he) = self.halfedges.get(*he_id) else {
-                continue;
-            };
-            let Some(start) = he.start_vertex(self) else {
-                continue;
-            };
-
-            if he.face.is_some() || boundary_before.was_boundary(start, he.end_vertex) {
-                continue;
-            }
-
-            if found.is_none() || he_id < found.as_ref().unwrap() {
-                found = Some(*he_id);
-            }
-        }
-
-        found
+        self.outgoing_halfedges
+            .get(vertex_id)?
+            .iter()
+            .copied()
+            .filter(|he_id| {
+                self.halfedges.get(*he_id).is_some_and(|he| {
+                    he.is_boundary()
+                        && he.start_vertex(self).is_some_and(|start| {
+                            !boundary_before.was_boundary(start, he.end_vertex)
+                        })
+                })
+            })
+            .min()
     }
 
     /// The wire edges of the mesh — both halves face-less — as unordered vertex pairs.
     fn wire_edge_pairs(&self) -> HashSet<(VertexId, VertexId)> {
         self.halfedges
             .iter()
-            .filter(|(_, he)| {
-                he.is_boundary()
-                    && he
-                        .twin
-                        .and_then(|twin_id| self.halfedges.get(twin_id))
-                        .is_some_and(|twin| twin.is_boundary())
-            })
+            .filter(|(_, he)| he.is_wire_edge(self))
             .filter_map(|(_, he)| {
                 he.start_vertex(self)
                     .map(|start| edge_key(start, he.end_vertex))

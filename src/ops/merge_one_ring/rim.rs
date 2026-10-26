@@ -21,7 +21,7 @@
 use crate::hash::HashSet;
 
 use crate::ops::collapse::{BoundaryAtEntry, VertexRenames, edge_key};
-use crate::{HalfedgeId, MeshGraph, VertexId};
+use crate::{Halfedge, HalfedgeId, MeshGraph, VertexId};
 
 /// All live halfedges without a face: the current boundary.
 ///
@@ -57,22 +57,23 @@ pub(crate) fn opened_rim(
 /// the whole rim that batch opens - at the cost of the region's edges rather than
 /// a scan of the mesh. The test build checks it against [`boundary_halves`].
 pub(crate) fn boundary_halves_around(mesh: &MeshGraph, region: &[VertexId]) -> HashSet<HalfedgeId> {
-    let mut halves = HashSet::default();
-    for &v_id in region {
-        let Some(out_he_ids) = mesh.outgoing_halfedges.get(v_id) else {
-            continue;
-        };
-        for &he_id in out_he_ids {
-            if mesh
-                .halfedges
-                .get(he_id)
-                .is_some_and(|he| he.face.is_none())
-            {
-                halves.insert(he_id);
-            }
-        }
-    }
-    halves
+    region_halfedges(mesh, region)
+        .filter_map(|(_, he_id, he)| he.is_boundary().then_some(he_id))
+        .collect()
+}
+
+/// Every live outgoing halfedge of `region`'s vertices, with the vertex it leaves.
+fn region_halfedges<'a>(
+    mesh: &'a MeshGraph,
+    region: &'a [VertexId],
+) -> impl Iterator<Item = (VertexId, HalfedgeId, &'a Halfedge)> + 'a {
+    region.iter().flat_map(move |&v_id| {
+        mesh.outgoing_halfedges
+            .get(v_id)
+            .into_iter()
+            .flatten()
+            .filter_map(move |&he_id| Some((v_id, he_id, mesh.halfedges.get(he_id)?)))
+    })
 }
 
 /// [`opened_rim`] over `region` only: `boundary_halves_around(after) \ before`,
@@ -106,24 +107,10 @@ pub(crate) struct RegionBoundary {
 
 impl RegionBoundary {
     pub(crate) fn new(mesh: &MeshGraph, region: &[VertexId]) -> Self {
-        let mut pairs = HashSet::default();
-        for &v_id in region {
-            let Some(out_he_ids) = mesh.outgoing_halfedges.get(v_id) else {
-                continue;
-            };
-            for &he_id in out_he_ids {
-                let Some(he) = mesh.halfedges.get(he_id) else {
-                    continue;
-                };
-                let twin_open = he
-                    .twin
-                    .and_then(|twin_id| mesh.halfedges.get(twin_id))
-                    .is_some_and(|twin| twin.is_boundary());
-                if he.is_boundary() || twin_open {
-                    pairs.insert(edge_key(v_id, he.end_vertex));
-                }
-            }
-        }
+        let pairs = region_halfedges(mesh, region)
+            .filter(|(_, _, he)| he.is_border_edge(mesh))
+            .map(|(v_id, _, he)| edge_key(v_id, he.end_vertex))
+            .collect();
 
         Self {
             pairs,
@@ -196,11 +183,7 @@ pub(crate) fn next_rim_half(mesh: &MeshGraph, b: HalfedgeId, rim: &HashSet<Halfe
     };
 
     // The walk visits at most one outgoing halfedge per face incident to `v`.
-    let cap = mesh
-        .outgoing_halfedges
-        .get(end_v_id)
-        .map_or(0, |out_hes| out_hes.len())
-        + 2;
+    let cap = mesh.outgoing_halfedges.get(end_v_id).map_or(0, Vec::len) + 2;
 
     for _ in 0..cap {
         let Some(he) = mesh.halfedges.get(x) else {
@@ -239,7 +222,7 @@ pub(crate) fn next_rim_half(mesh: &MeshGraph, b: HalfedgeId, rim: &HashSet<Halfe
 pub(crate) fn ring_from_halves(
     mesh: &MeshGraph,
     halves: &HashSet<HalfedgeId>,
-) -> (Vec<crate::VertexId>, Vec<HalfedgeId>) {
+) -> (Vec<VertexId>, Vec<HalfedgeId>) {
     let mut starts: Vec<HalfedgeId> = halves.iter().copied().collect();
     starts.sort_unstable();
 

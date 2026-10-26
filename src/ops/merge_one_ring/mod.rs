@@ -9,6 +9,7 @@ use std::hash::Hash;
 use std::ops::RangeInclusive;
 
 use crate::hash::{HashMap, HashSet};
+use glam::Vec3;
 use itertools::Itertools;
 use tracing::{error, instrument};
 
@@ -37,11 +38,10 @@ pub struct MergeVerticesOneRing {
 /// `weld_parallel_edges` (before and after the neighborhood cleanup) and
 /// `close_merge_opened_holes`.
 ///
-/// Enabled by default; production behavior is unchanged (the non-test branch
-/// folds to `true`). Test builds can turn them off with
-/// `MESH_GRAPH_MERGE_NETS=0`, which is the rim-first rebuild's oracle: with the
-/// nets off, the corpus measures whether the rebuild itself closes exactly what
-/// the removals opened, instead of whether the nets mop up afterwards.
+/// Always on outside tests. Test builds can turn them off with
+/// `MESH_GRAPH_MERGE_NETS=0`: with the nets off, the tests measure whether the band
+/// itself closes exactly what the removals opened, instead of whether the nets mop
+/// up afterwards.
 ///
 /// With the nets off, the one failure is `weld_cases_stay_watertight`'s
 /// `gap=0.05` case: its coincident fusion opens boundary before any band is
@@ -74,8 +74,8 @@ fn record_removal<T: PartialEq>(added: &mut Vec<T>, removed: &mut Vec<T>, id: T)
 
 /// [`record_removal`] for a vertex or halfedge, which also leaves the caller's marked set.
 ///
-/// [`MeshGraph::finish_merge`] drops everything in `removed_*` from the marked sets, but an
-/// id this op added and removed again is in neither list by then, while the op may already
+/// [`MergeRecord::finish`] drops everything in `removed_*` from the marked sets, but an id
+/// this op added and removed again is in neither list by then, while the op may already
 /// have marked it.
 fn record_marked_removal<T: Copy + Eq + Hash>(
     added: &mut Vec<T>,
@@ -85,6 +85,112 @@ fn record_marked_removal<T: Copy + Eq + Hash>(
 ) {
     record_removal(added, removed, id);
     marked.remove(&id);
+}
+
+/// What the op has done so far, together with the caller's marked sets, which every
+/// removal has to keep in step.
+struct MergeRecord<'a> {
+    result: MergeVerticesOneRing,
+    marked_halfedges: &'a mut HashSet<HalfedgeId>,
+    marked_vertices: &'a mut HashSet<VertexId>,
+}
+
+impl<'a> MergeRecord<'a> {
+    fn new(
+        marked_halfedges: &'a mut HashSet<HalfedgeId>,
+        marked_vertices: &'a mut HashSet<VertexId>,
+    ) -> Self {
+        Self {
+            result: MergeVerticesOneRing::default(),
+            marked_halfedges,
+            marked_vertices,
+        }
+    }
+
+    fn vertex_removed(&mut self, v_id: VertexId) {
+        record_marked_removal(
+            &mut self.result.added_vertices,
+            &mut self.result.removed_vertices,
+            self.marked_vertices,
+            v_id,
+        );
+    }
+
+    fn halfedge_removed(&mut self, he_id: HalfedgeId) {
+        record_marked_removal(
+            &mut self.result.added_halfedges,
+            &mut self.result.removed_halfedges,
+            self.marked_halfedges,
+            he_id,
+        );
+    }
+
+    fn face_removed(&mut self, face_id: FaceId) {
+        record_removal(
+            &mut self.result.added_faces,
+            &mut self.result.removed_faces,
+            face_id,
+        );
+    }
+
+    /// `face_id` was removed and took the vertices and halfedges `remove_face` returned
+    /// with it.
+    fn face_removed_with(
+        &mut self,
+        face_id: FaceId,
+        (v_ids, he_ids): (Vec<VertexId>, Vec<HalfedgeId>),
+    ) {
+        self.face_removed(face_id);
+        for he_id in he_ids {
+            self.halfedge_removed(he_id);
+        }
+        for v_id in v_ids {
+            self.vertex_removed(v_id);
+        }
+    }
+
+    /// The result, with the removed ids dropped from the marked sets.
+    ///
+    /// The marked sets are long-lived (a caller keeps them across hundreds of merges), so
+    /// they are pruned by the ids the op reports rather than scanned for dead ones.
+    fn finish(self) -> MergeVerticesOneRing {
+        for he_id in &self.result.removed_halfedges {
+            self.marked_halfedges.remove(he_id);
+        }
+        for v_id in &self.result.removed_vertices {
+            self.marked_vertices.remove(v_id);
+        }
+        self.result
+    }
+}
+
+/// The index of the position nearest to `target`, the lowest on a tie, or `0` when there
+/// is none.
+fn nearest_index(target: Vec3, positions: impl IntoIterator<Item = (usize, Vec3)>) -> usize {
+    let mut nearest = 0;
+    let mut min_dist_sqr = f32::INFINITY;
+    for (idx, pos) in positions {
+        let dist_sqr = pos.distance_squared(target);
+        if dist_sqr < min_dist_sqr {
+            min_dist_sqr = dist_sqr;
+            nearest = idx;
+        }
+    }
+    nearest
+}
+
+/// The vertices of both rings and the ones the op added, where its repair passes look.
+fn ring_region(
+    one_ring_v_ids1: &[VertexId],
+    one_ring_v_ids2: &[VertexId],
+    added_vertices: &[VertexId],
+) -> Vec<VertexId> {
+    one_ring_v_ids1
+        .iter()
+        .chain(one_ring_v_ids2)
+        .chain(added_vertices)
+        .copied()
+        .collect()
 }
 
 impl MeshGraph {
@@ -107,14 +213,20 @@ impl MeshGraph {
         crate::set_current_op("merge_one_ring");
         #[cfg(feature = "instrumentation")]
         crate::probe_chain_begin(self);
-        let mut result = MergeVerticesOneRing::default();
-
-        let vertex1 = *unwrap_or_return!(self.vertices.get(vertex_id1), "Vertex not found", result);
-        let vertex2 = *unwrap_or_return!(self.vertices.get(vertex_id2), "Vertex not found", result);
+        let vertex1 = *unwrap_or_return!(
+            self.vertices.get(vertex_id1),
+            "Vertex not found",
+            MergeVerticesOneRing::default()
+        );
+        let vertex2 = *unwrap_or_return!(
+            self.vertices.get(vertex_id2),
+            "Vertex not found",
+            MergeVerticesOneRing::default()
+        );
 
         if vertex_id1 == vertex_id2 {
             error!("Cannot merge a vertex with itself");
-            return result;
+            return MergeVerticesOneRing::default();
         }
 
         let one_ring_he_ids1 = vertex1.one_ring(self).collect_vec();
@@ -138,43 +250,29 @@ impl MeshGraph {
                 one_ring_he_ids1.len(),
                 one_ring_he_ids2.len()
             );
-            return result;
+            return MergeVerticesOneRing::default();
         }
 
-        // halfedges' existence already checked in `one_ring()`.
-        let mut one_ring_v_ids1 = one_ring_he_ids1
-            .iter()
-            .filter_map(|he_id| {
-                // `one_ring` derives the ids from the outgoing star of the vertex via
-                // twins; a dead id here (stale seed or dangling twin) would panic on
-                // the index below, so skip it defensively.
-                if self.halfedges.contains_key(*he_id) {
-                    Some(self.halfedges[*he_id].end_vertex)
-                } else {
-                    None
-                }
-            })
-            .collect_vec();
-        one_ring_v_ids1.rotate_right(1);
-        let mut one_ring_v_ids2 = one_ring_he_ids2
-            .iter()
-            .filter_map(|he_id| {
-                if self.halfedges.contains_key(*he_id) {
-                    Some(self.halfedges[*he_id].end_vertex)
-                } else {
-                    None
-                }
-            })
-            .collect_vec();
-        one_ring_v_ids2.rotate_right(1);
+        // `one_ring` derives the ids from the outgoing star of the vertex via twins; a dead id
+        // (stale seed or dangling twin) is skipped.
+        let ring_end_vertices = |he_ids: &[HalfedgeId]| {
+            let mut v_ids = he_ids
+                .iter()
+                .filter_map(|he_id| self.halfedges.get(*he_id).map(|he| he.end_vertex))
+                .collect_vec();
+            v_ids.rotate_right(1);
+            v_ids
+        };
+        let one_ring_v_ids1 = ring_end_vertices(&one_ring_he_ids1);
+        let mut one_ring_v_ids2 = ring_end_vertices(&one_ring_he_ids2);
 
         if one_ring_v_ids1.len() < 3 || one_ring_v_ids2.len() < 3 {
             error!("One rings are too small");
-            return result;
+            return MergeVerticesOneRing::default();
         }
 
-        // Phase 0 rim taxonomy: measure the boundary the op opens and closes.
-        // Test-only; records one probe per band merge into a thread-local.
+        // Rim taxonomy: measure the boundary the op opens and closes. Test-only; records one
+        // probe per band merge into a thread-local.
         #[cfg(test)]
         let mut test_rim_probe = rim_probe::RimProbe::default();
         #[cfg(test)]
@@ -208,6 +306,7 @@ impl MeshGraph {
         // The vertex merges and splits this op makes, so the snapshot can be carried to the
         // closers (see `VertexRenames`).
         let mut renames = VertexRenames::default();
+        let mut record = MergeRecord::new(marked_halfedges, marked_vertices);
 
         // Weld position-coincident cross-ring vertices before planning the band.
         //
@@ -232,7 +331,7 @@ impl MeshGraph {
                     && self
                         .positions
                         .get(v_id1)
-                        .is_some_and(|p1| self.positions.get(v_id2).is_some_and(|p2| p1 == p2))
+                        .is_some_and(|p1| self.positions.get(v_id2) == Some(p1))
                 {
                     coincident_pairs.push((v_id1, v_id2));
                 }
@@ -251,6 +350,7 @@ impl MeshGraph {
             // Survivor is the ring-1 vertex, so the fused id stays on both rings
             // and shows up in `shared_v_ids` below.
             let fused = self.merge_vertices([*v1_id, *v2_id]);
+            let result = &mut record.result;
             result.removed_faces.extend(fused.removed_faces);
             result.removed_halfedges.extend(fused.removed_halfedges);
             // `fused.removed_vertices` is `[*v2_id]` plus any vertex the face removal isolated.
@@ -271,16 +371,19 @@ impl MeshGraph {
             }
         }
 
-        let one_ring_he_set1 = HashSet::<HalfedgeId>::from_iter(one_ring_he_ids1.iter().copied());
-        let one_ring_he_set2 = HashSet::<HalfedgeId>::from_iter(one_ring_he_ids2.iter().copied());
-        let shared_he_ids = HashSet::<HalfedgeId>::from_iter(
-            one_ring_he_set1.intersection(&one_ring_he_set2).copied(),
-        );
+        let one_ring_he_set1: HashSet<HalfedgeId> = one_ring_he_ids1.iter().copied().collect();
+        let one_ring_he_set2: HashSet<HalfedgeId> = one_ring_he_ids2.iter().copied().collect();
+        let shared_he_ids: HashSet<HalfedgeId> = one_ring_he_set1
+            .intersection(&one_ring_he_set2)
+            .copied()
+            .collect();
 
-        let one_ring_v_set1 = HashSet::<VertexId>::from_iter(one_ring_v_ids1.iter().copied());
-        let one_ring_v_set2 = HashSet::<VertexId>::from_iter(one_ring_v_ids2.iter().copied());
-        let shared_v_ids =
-            HashSet::<VertexId>::from_iter(one_ring_v_set1.intersection(&one_ring_v_set2).copied());
+        let one_ring_v_set1: HashSet<VertexId> = one_ring_v_ids1.iter().copied().collect();
+        let one_ring_v_set2: HashSet<VertexId> = one_ring_v_ids2.iter().copied().collect();
+        let shared_v_ids: HashSet<VertexId> = one_ring_v_set1
+            .intersection(&one_ring_v_set2)
+            .copied()
+            .collect();
 
         tracing::debug!("ring1 (v_ids): {one_ring_v_ids1:?}");
         tracing::debug!("ring2 (v_ids): {one_ring_v_ids2:?}");
@@ -290,23 +393,21 @@ impl MeshGraph {
             &shared_he_ids,
             flip_threshold_sqr,
             &mut renames,
-            &mut result,
+            &mut record.result,
         ) {
             // That flip-plus-collapse removes faces, so it leaves the same kind of hole the band
-            // does, and this path used to return before any net ran.
+            // does.
             if merge_nets_enabled() {
                 self.close_merge_opened_holes(
                     &one_ring_v_ids1,
                     &one_ring_v_ids2,
                     &boundary_at_entry,
                     &renames,
-                    marked_halfedges,
-                    marked_vertices,
-                    &mut result,
+                    &mut record,
                 );
             }
 
-            return self.finish_merge(result, marked_halfedges, marked_vertices);
+            return self.finish_merge(record);
         }
 
         // The boundary the removals open. `H = boundary(after) \ boundary(before)`:
@@ -318,7 +419,7 @@ impl MeshGraph {
         #[cfg(test)]
         let whole_mesh_boundary_before = rim::boundary_halves(self);
 
-        self.remove_vertex_faces(vertex_id1, &mut result);
+        self.remove_vertex_faces(vertex_id1, &mut record.result);
 
         #[cfg(test)]
         {
@@ -332,7 +433,7 @@ impl MeshGraph {
             "the first star's rim reaches past the merge region"
         );
 
-        self.remove_vertex_faces(vertex_id2, &mut result);
+        self.remove_vertex_faces(vertex_id2, &mut record.result);
 
         #[cfg(test)]
         {
@@ -366,13 +467,11 @@ impl MeshGraph {
                         &one_ring_v_ids2,
                         &boundary_at_entry,
                         &renames,
-                        marked_halfedges,
-                        marked_vertices,
-                        &mut result,
+                        &mut record,
                     );
                 }
 
-                return self.finish_merge(result, marked_halfedges, marked_vertices);
+                return self.finish_merge(record);
             }
         };
 
@@ -422,22 +521,16 @@ impl MeshGraph {
             );
         }
 
-        // ---- rim-first band planner (Phase 2b) ------------------------------
-        //
-        // The old planner walks the pre-removal one-rings, which cannot describe
-        // the hole the removals actually opened: a pinched star opens more rim
-        // than `one_ring()` sees, and a chain can end on the cut. Plan the band
-        // from the live rim too, and use that plan when it consumes the whole
-        // rim; otherwise keep the old faces, so the fallback is exactly the
-        // previous behavior.
+        // The ring-range planner above walks the pre-removal one-rings, which cannot
+        // describe the hole the removals actually opened: a pinched star opens more rim
+        // than `one_ring()` sees, and a chain can end on the cut. Plan the band from the
+        // live rim too (`rim_planner`), and use that plan when it consumes the whole rim;
+        // otherwise keep the ring-range faces.
         let strip_faces = already_connected_face_ids;
 
-        // Strips-first, unconditionally. The strip faces lie inside the rim the
-        // band has to consume, and the decision does not need the old planner's
-        // output: `is_complete` is the only gate on the rim plan, and when it
-        // does not hold the old faces stand - the same plan the old flow
-        // produced after the same teardown.
-        self.remove_faces(&strip_faces, &mut result);
+        // The strip faces lie inside the rim the band has to consume, so they go first,
+        // whichever plan is used.
+        self.remove_faces(&strip_faces, &mut record.result);
         let (rim, h1, h2) = self.strip_first_rim(&region, &boundary_before, &star_h1);
         #[cfg(test)]
         assert_eq!(
@@ -476,9 +569,7 @@ impl MeshGraph {
             planned_faces,
             &one_ring_v_set1,
             &one_ring_v_set2,
-            marked_halfedges,
-            marked_vertices,
-            &mut result,
+            &mut record,
         );
 
         #[cfg(test)]
@@ -488,14 +579,12 @@ impl MeshGraph {
 
         if merge_nets_enabled() {
             self.weld_parallel_edges(
-                one_ring_v_ids1
-                    .iter()
-                    .chain(&one_ring_v_ids2)
-                    .chain(&result.added_vertices)
-                    .copied()
-                    .collect_vec(),
-                marked_halfedges,
-                &mut result,
+                ring_region(
+                    &one_ring_v_ids1,
+                    &one_ring_v_ids2,
+                    &record.result.added_vertices,
+                ),
+                &mut record,
             );
         }
 
@@ -505,19 +594,15 @@ impl MeshGraph {
         self.cleanup_bookkeeping(
             &one_ring_v_ids1,
             &one_ring_v_ids2,
-            marked_vertices,
-            marked_halfedges,
             &mut renames,
-            &mut result,
+            &mut record,
         );
 
         self.merge_remaining_unconnected(
             one_ring_v_ids1.clone(),
             one_ring_v_ids2.clone(),
             &mut renames,
-            marked_halfedges,
-            marked_vertices,
-            &mut result,
+            &mut record,
         );
 
         // Again after the cleanup: a pair can still be parallel here that was not
@@ -525,14 +610,12 @@ impl MeshGraph {
         // edge until the cleanup rebuilt one of them.
         if merge_nets_enabled() {
             self.weld_parallel_edges(
-                one_ring_v_ids1
-                    .iter()
-                    .chain(&one_ring_v_ids2)
-                    .chain(&result.added_vertices)
-                    .copied()
-                    .collect_vec(),
-                marked_halfedges,
-                &mut result,
+                ring_region(
+                    &one_ring_v_ids1,
+                    &one_ring_v_ids2,
+                    &record.result.added_vertices,
+                ),
+                &mut record,
             );
 
             self.close_merge_opened_holes(
@@ -540,19 +623,15 @@ impl MeshGraph {
                 &one_ring_v_ids2,
                 &boundary_at_entry,
                 &renames,
-                marked_halfedges,
-                marked_vertices,
-                &mut result,
+                &mut record,
             );
         }
 
-        self.smooth_vertices(
-            one_ring_v_ids1
-                .iter()
-                .chain(&one_ring_v_ids2)
-                .chain(&result.added_vertices)
-                .copied(),
-        );
+        self.smooth_vertices(ring_region(
+            &one_ring_v_ids1,
+            &one_ring_v_ids2,
+            &record.result.added_vertices,
+        ));
 
         #[cfg(test)]
         {
@@ -560,29 +639,16 @@ impl MeshGraph {
             rim_probe::push(test_rim_probe);
         }
 
-        self.finish_merge(result, marked_halfedges, marked_vertices)
+        self.finish_merge(record)
     }
 
-    /// Common op-end path: drop the removed ids from the caller's marked sets, run the
-    /// integrity/hole inspectors and push the mesh onto the state-history ring (hunt
-    /// instrumentation), then return the result. Every exit of the op that has touched
-    /// the mesh goes through here, so the ring stays continuous with the journal (resume
-    /// continuity) and no corruption can skip the checks.
-    ///
-    /// The marked sets are long-lived (a caller keeps them across hundreds of merges), so
-    /// they are pruned by the ids the op reports rather than scanned for dead ones.
-    fn finish_merge(
-        &self,
-        result: MergeVerticesOneRing,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
-        marked_vertices: &mut HashSet<VertexId>,
-    ) -> MergeVerticesOneRing {
-        for he_id in &result.removed_halfedges {
-            marked_halfedges.remove(he_id);
-        }
-        for v_id in &result.removed_vertices {
-            marked_vertices.remove(v_id);
-        }
+    /// Common op-end path: drop the removed ids from the caller's marked sets
+    /// ([`MergeRecord::finish`]), run the integrity/hole inspectors and push the mesh onto
+    /// the state-history ring (instrumentation), then return the result. Every exit of the
+    /// op that has touched the mesh goes through here, so the ring stays continuous with the
+    /// journal (resume continuity) and no corruption can skip the checks.
+    fn finish_merge(&self, record: MergeRecord) -> MergeVerticesOneRing {
+        let result = record.finish();
 
         #[cfg(feature = "instrumentation")]
         if self.probe_chain_integrity("merge_vertices_one_rings") {
@@ -597,9 +663,7 @@ impl MeshGraph {
         mut one_ring_v_ids1: Vec<VertexId>,
         mut one_ring_v_ids2: Vec<VertexId>,
         renames: &mut VertexRenames,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
-        marked_vertices: &mut HashSet<VertexId>,
-        result: &mut MergeVerticesOneRing,
+        record: &mut MergeRecord,
     ) {
         while let Some(v_id) = one_ring_v_ids1.pop() {
             let Some(vert) = self.vertices.get(v_id) else {
@@ -648,23 +712,13 @@ impl MeshGraph {
                 // The cleanup ran before this, so a merged vertex or a removed edge can be
                 // one it split off or the band added.
                 for v_id in removed_vertices {
-                    record_marked_removal(
-                        &mut result.added_vertices,
-                        &mut result.removed_vertices,
-                        marked_vertices,
-                        v_id,
-                    );
+                    record.vertex_removed(v_id);
                 }
                 for he_id in removed_halfedges {
-                    record_marked_removal(
-                        &mut result.added_halfedges,
-                        &mut result.removed_halfedges,
-                        marked_halfedges,
-                        he_id,
-                    );
+                    record.halfedge_removed(he_id);
                 }
                 for face_id in removed_faces {
-                    record_removal(&mut result.added_faces, &mut result.removed_faces, face_id);
+                    record.face_removed(face_id);
                 }
             }
         }
@@ -780,18 +834,14 @@ impl MeshGraph {
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
         pairing: &Pairing,
-        idx_step: i32,
+        idx_step: isize,
         connected_he_ids: &mut HashSet<HalfedgeId>,
         connected_face_ids: &mut Vec<FaceId>,
     ) -> Vec<Pairing> {
-        let (single_v_ids, other_v_ids) = if pairing.single_range_idx == 0 {
-            (one_ring_v_ids1, one_ring_v_ids2)
-        } else {
-            (one_ring_v_ids2, one_ring_v_ids1)
-        };
+        let (single_v_ids, other_v_ids) = pairing.rings([one_ring_v_ids1, one_ring_v_ids2]);
 
-        let next_single_idx = ((pairing.single_idx_in_range + single_v_ids.len()) as i32 + idx_step)
-            as usize
+        let next_single_idx = (pairing.single_idx_in_range + single_v_ids.len())
+            .wrapping_add_signed(idx_step)
             % single_v_ids.len();
         let next_v_id = single_v_ids[next_single_idx];
 
@@ -959,11 +1009,7 @@ impl MeshGraph {
         connected_he_ids: &mut HashSet<HalfedgeId>,
         connected_face_ids: &mut Vec<FaceId>,
     ) {
-        let (single_ids, other_ids) = if current_pairing.single_range_idx == 0 {
-            (one_ring_v_ids1, one_ring_v_ids2)
-        } else {
-            (one_ring_v_ids2, one_ring_v_ids1)
-        };
+        let (single_ids, other_ids) = current_pairing.rings([one_ring_v_ids1, one_ring_v_ids2]);
 
         let other_len = other_ids.len();
         let single_v_id = single_ids[current_pairing.single_idx_in_range % single_ids.len()];
@@ -1063,11 +1109,10 @@ impl MeshGraph {
                 return false;
             };
 
-        let other_len = if current_pairing.single_range_idx == 0 {
-            one_ring_v_ids2.len()
-        } else {
-            one_ring_v_ids1.len()
-        };
+        let other_len = current_pairing
+            .rings([one_ring_v_ids1, one_ring_v_ids2])
+            .1
+            .len();
 
         *current_pairing = Pairing::new_triangle(
             current_pairing.single_range_idx,
@@ -1084,10 +1129,8 @@ impl MeshGraph {
         &mut self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
-        marked_vertices: &mut HashSet<VertexId>,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
         renames: &mut VertexRenames,
-        result: &mut MergeVerticesOneRing,
+        record: &mut MergeRecord,
     ) {
         for vertex_id in one_ring_v_ids1.iter().chain(one_ring_v_ids2).copied() {
             if !self.vertices.contains_key(vertex_id) {
@@ -1103,42 +1146,20 @@ impl MeshGraph {
             }
 
             if !cleanup.added_vertices.is_empty() {
-                marked_vertices.insert(vertex_id);
+                record.marked_vertices.insert(vertex_id);
             }
 
-            result.added_vertices.extend(cleanup.added_vertices.clone());
-            marked_vertices.extend(cleanup.added_vertices);
+            record.marked_vertices.extend(&cleanup.added_vertices);
+            record.result.added_vertices.extend(cleanup.added_vertices);
 
-            for removed_v_id in cleanup.removed_vertices {
-                if result.added_vertices.contains(&removed_v_id) {
-                    result.added_vertices.retain(|&v_id| v_id != removed_v_id);
-                } else {
-                    result.removed_vertices.push(removed_v_id);
-                }
-
-                marked_vertices.remove(&removed_v_id);
+            for v_id in cleanup.removed_vertices {
+                record.vertex_removed(v_id);
             }
-
-            for removed_he_id in cleanup.removed_halfedges {
-                if result.added_halfedges.contains(&removed_he_id) {
-                    result
-                        .added_halfedges
-                        .retain(|&he_id| he_id != removed_he_id);
-                } else {
-                    result.removed_halfedges.push(removed_he_id);
-                }
-
-                marked_halfedges.remove(&removed_he_id);
+            for he_id in cleanup.removed_halfedges {
+                record.halfedge_removed(he_id);
             }
-
-            for removed_face_id in cleanup.removed_faces {
-                if result.added_faces.contains(&removed_face_id) {
-                    result
-                        .added_faces
-                        .retain(|&face_id| face_id != removed_face_id);
-                } else {
-                    result.removed_faces.push(removed_face_id);
-                }
+            for face_id in cleanup.removed_faces {
+                record.face_removed(face_id);
             }
         }
     }
@@ -1185,26 +1206,18 @@ impl MeshGraph {
         planned_faces: Vec<PlannedFace>,
         one_ring_set1: &HashSet<VertexId>,
         one_ring_set2: &HashSet<VertexId>,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
-        marked_vertices: &mut HashSet<VertexId>,
-        result: &mut MergeVerticesOneRing,
+        record: &mut MergeRecord,
     ) {
         let mut prev_he = None;
 
         for planned_face in planned_faces {
             let inserted = if let Some(prev_he) = prev_he {
-                planned_face.add_to_mesh_graph_and_he(
-                    self,
-                    prev_he,
-                    marked_halfedges,
-                    marked_vertices,
-                    result,
-                )
+                planned_face.add_to_mesh_graph_and_he(self, prev_he, record)
             } else {
-                planned_face.add_to_mesh_graph(self, marked_halfedges, marked_vertices, result)
+                planned_face.add_to_mesh_graph(self, record)
             };
 
-            let Some(inserted) = inserted else {
+            let Some((next_prev_he, inserted)) = inserted else {
                 // Depending on the topology inserting a face can fail sometimes.
                 // This is fine: the insertion transaction rolled back whatever it
                 // had created, so the mesh is exactly as it was before this face.
@@ -1217,8 +1230,7 @@ impl MeshGraph {
                 continue;
             };
 
-            prev_he = inserted.0;
-            let inserted = inserted.1;
+            prev_he = next_prev_he;
 
             for he_id in inserted.halfedge_ids.iter().copied() {
                 // just inserted => must exist
@@ -1230,12 +1242,12 @@ impl MeshGraph {
                 if one_ring_set1.contains(&start_v_id) && one_ring_set2.contains(&end_v_id)
                     || one_ring_set2.contains(&start_v_id) && one_ring_set1.contains(&end_v_id)
                 {
-                    marked_halfedges.insert(he_id);
+                    record.marked_halfedges.insert(he_id);
                 }
             }
 
-            result.added_halfedges.extend(inserted.halfedge_ids);
-            result.added_faces.push(inserted.face_id);
+            record.result.added_halfedges.extend(inserted.halfedge_ids);
+            record.result.added_faces.push(inserted.face_id);
         }
     }
 
@@ -1259,8 +1271,7 @@ impl MeshGraph {
     fn weld_parallel_edges(
         &mut self,
         region_v_ids: impl IntoIterator<Item = VertexId>,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
-        result: &mut MergeVerticesOneRing,
+        record: &mut MergeRecord,
     ) {
         let mut seen = HashSet::<VertexId>::default();
 
@@ -1327,12 +1338,7 @@ impl MeshGraph {
                     {
                         // An orphan is often the free half a planned face just added.
                         self.remove_only_halfedge(he_id);
-                        record_marked_removal(
-                            &mut result.added_halfedges,
-                            &mut result.removed_halfedges,
-                            marked_halfedges,
-                            he_id,
-                        );
+                        record.halfedge_removed(he_id);
                     }
                 }
 
@@ -1363,16 +1369,13 @@ impl MeshGraph {
     ///
     /// A three-halfedge loop around a lone triangle is emptied rather than closed: the
     /// triangle is removed (see [`MeshGraph::lone_face_behind`]).
-    #[allow(clippy::too_many_arguments)]
     fn close_merge_opened_holes(
         &mut self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
         boundary_at_entry: &rim::RegionBoundary,
         renames: &VertexRenames,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
-        marked_vertices: &mut HashSet<VertexId>,
-        result: &mut MergeVerticesOneRing,
+        record: &mut MergeRecord,
     ) {
         let boundary_at_entry = &boundary_at_entry.resolve(renames);
 
@@ -1385,12 +1388,11 @@ impl MeshGraph {
             "the merge opened boundary past its region"
         );
 
-        let mut closer_region = one_ring_v_ids1
-            .iter()
-            .chain(one_ring_v_ids2)
-            .chain(&result.added_vertices)
-            .copied()
-            .collect_vec();
+        let mut closer_region = ring_region(
+            one_ring_v_ids1,
+            one_ring_v_ids2,
+            &record.result.added_vertices,
+        );
         let mut in_region: HashSet<VertexId> = closer_region.iter().copied().collect();
 
         for v_id in vertices_of_pairs(opened) {
@@ -1414,31 +1416,15 @@ impl MeshGraph {
                 };
 
                 if let Some(face_id) = self.lone_face_behind(&loop_hes) {
-                    let (removed_vertices, removed_halfedges) = self.remove_face(face_id);
-                    record_removal(&mut result.added_faces, &mut result.removed_faces, face_id);
-                    for he_id in removed_halfedges {
-                        record_marked_removal(
-                            &mut result.added_halfedges,
-                            &mut result.removed_halfedges,
-                            marked_halfedges,
-                            he_id,
-                        );
-                    }
-                    for v_id in removed_vertices {
-                        record_marked_removal(
-                            &mut result.added_vertices,
-                            &mut result.removed_vertices,
-                            marked_vertices,
-                            v_id,
-                        );
-                    }
+                    let removed = self.remove_face(face_id);
+                    record.face_removed_with(face_id, removed);
                     progressed = true;
                     continue;
                 }
 
                 if let Some(added) = self.close_loop_with_fan(&loop_hes) {
-                    result.added_faces.push(added.face_id);
-                    result.added_halfedges.extend(added.halfedge_ids);
+                    record.result.added_faces.push(added.face_id);
+                    record.result.added_halfedges.extend(added.halfedge_ids);
                     progressed = true;
                 }
             }
@@ -1506,13 +1492,7 @@ impl MeshGraph {
             }
         }
 
-        for face_id in face_ids {
-            let (del_v, del_he) = self.remove_face(face_id);
-
-            result.removed_faces.push(face_id);
-            result.removed_vertices.extend(del_v);
-            result.removed_halfedges.extend(del_he);
-        }
+        self.remove_faces(&face_ids, result);
 
         // The star must be gone in full: no live outgoing halfedge of the
         // vertex may still claim a face. A survivor means the enumeration
@@ -1537,36 +1517,14 @@ impl MeshGraph {
     /// the same region, never by an outside surface.
     ///
     /// The face can be one this op's band inserted a moment earlier, so the removal goes
-    /// through [`record_removal`].
-    fn dismantle_faced_member(
-        &mut self,
-        he_id: HalfedgeId,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
-        marked_vertices: &mut HashSet<VertexId>,
-        result: &mut MergeVerticesOneRing,
-    ) {
+    /// through [`MergeRecord::face_removed_with`].
+    fn dismantle_faced_member(&mut self, he_id: HalfedgeId, record: &mut MergeRecord) {
         if let Some(he) = self.halfedges.get(he_id)
             && let Some(face_id) = he.face
             && self.faces.contains_key(face_id)
         {
-            let (del_v, del_he) = self.remove_face(face_id);
-            record_removal(&mut result.added_faces, &mut result.removed_faces, face_id);
-            for he_id in del_he {
-                record_marked_removal(
-                    &mut result.added_halfedges,
-                    &mut result.removed_halfedges,
-                    marked_halfedges,
-                    he_id,
-                );
-            }
-            for v_id in del_v {
-                record_marked_removal(
-                    &mut result.added_vertices,
-                    &mut result.removed_vertices,
-                    marked_vertices,
-                    v_id,
-                );
-            }
+            let removed = self.remove_face(face_id);
+            record.face_removed_with(face_id, removed);
         }
     }
 
@@ -1673,40 +1631,40 @@ impl MeshGraph {
         let pos1 = *unwrap_or_return!(self.positions.get(other_v_id1), "Position not found", false);
         let pos2 = *unwrap_or_return!(self.positions.get(other_v_id2), "Position not found", false);
 
-        if pos1.distance_squared(pos2) <= flip_threshold_sqr {
-            tracing::debug!("Flipping edge {single_shared_he_id:?}");
-
-            self.flip_edge(single_shared_he_id);
-
-            // `collapse_edge` absorbs the edge's end vertex into its start vertex and cleans
-            // up the start vertex's neighborhood, so every vertex it adds descends from it.
-            let flipped_ends = self.halfedge_endpoints(single_shared_he_id);
-
-            let CollapseEdge {
-                removed_vertices,
-                removed_halfedges,
-                removed_faces,
-                added_vertices,
-            } = self.collapse_edge(single_shared_he_id);
-
-            if let Some((start_v_id, end_v_id)) = flipped_ends {
-                if removed_vertices.contains(&end_v_id) && !removed_vertices.contains(&start_v_id) {
-                    renames.absorb(end_v_id, start_v_id);
-                }
-                for &added_v_id in &added_vertices {
-                    renames.split(start_v_id, added_v_id);
-                }
-            }
-
-            result.added_vertices.extend(added_vertices);
-            result.removed_vertices.extend(removed_vertices);
-            result.removed_halfedges.extend(removed_halfedges);
-            result.removed_faces.extend(removed_faces);
-
-            true
-        } else {
-            false
+        if pos1.distance_squared(pos2) > flip_threshold_sqr {
+            return false;
         }
+
+        tracing::debug!("Flipping edge {single_shared_he_id:?}");
+
+        self.flip_edge(single_shared_he_id);
+
+        // `collapse_edge` absorbs the edge's end vertex into its start vertex and cleans
+        // up the start vertex's neighborhood, so every vertex it adds descends from it.
+        let flipped_ends = self.halfedge_endpoints(single_shared_he_id);
+
+        let CollapseEdge {
+            removed_vertices,
+            removed_halfedges,
+            removed_faces,
+            added_vertices,
+        } = self.collapse_edge(single_shared_he_id);
+
+        if let Some((start_v_id, end_v_id)) = flipped_ends {
+            if removed_vertices.contains(&end_v_id) && !removed_vertices.contains(&start_v_id) {
+                renames.absorb(end_v_id, start_v_id);
+            }
+            for &added_v_id in &added_vertices {
+                renames.split(start_v_id, added_v_id);
+            }
+        }
+
+        result.added_vertices.extend(added_vertices);
+        result.removed_vertices.extend(removed_vertices);
+        result.removed_halfedges.extend(removed_halfedges);
+        result.removed_faces.extend(removed_faces);
+
+        true
     }
 
     fn plan_new_faces(
@@ -1736,108 +1694,92 @@ impl MeshGraph {
         range_pair_to_connect: &ConnectPair,
         rings: [&[VertexId]; 2],
     ) -> Vec<PlannedFace> {
-        let [one_ring_v_ids1, one_ring_v_ids2] = rings;
         let mut planned_faces = Vec::new();
 
-        {
-            let pairings = range_pair_to_connect.compute_pairings();
+        let pairings = range_pair_to_connect.compute_pairings();
 
-            tracing::debug!("Pairings: {:#?}", pairings);
+        tracing::debug!("Pairings: {:#?}", pairings);
 
-            if pairings.is_empty() {
-                return planned_faces;
-            }
+        let Some(last_pairing) = pairings.last() else {
+            return planned_faces;
+        };
 
-            let mut prev_single_v_id = None;
-            let mut prev_other_v_id = None;
+        // The previous pairing's last (single, other) pair.
+        let mut prev = matches!(range_pair_to_connect.start_cap, ConnectPairCap::Open)
+            .then(|| last_pairing.last_pair(rings));
 
-            if matches!(range_pair_to_connect.start_cap, ConnectPairCap::Open) {
-                let last_pairing = pairings.last().unwrap();
+        for pairing in &pairings {
+            if let Some((prev_single_v_id, prev_other_v_id)) = prev {
+                // add the quad between the previous and current pairings
+                let (single_v_id, other_v_id) = pairing.first_pair(rings);
 
-                let (s, o) = last_pairing.last_pair([one_ring_v_ids1, one_ring_v_ids2]);
+                let face_order = if prev_single_v_id == prev_other_v_id {
+                    PlannedFaceOrder::Start
+                } else if single_v_id == other_v_id {
+                    PlannedFaceOrder::End
+                } else {
+                    PlannedFaceOrder::Middle
+                };
 
-                prev_single_v_id = Some(s);
-                prev_other_v_id = Some(o);
-            }
-
-            for pairing in pairings {
-                if let Some(prev_single_v_id) = prev_single_v_id
-                    && let Some(prev_other_v_id) = prev_other_v_id
-                {
-                    // add the quad between the previous and current pairings
-                    let (single_v_id, other_v_id) =
-                        pairing.first_pair([one_ring_v_ids1, one_ring_v_ids2]);
-
-                    let face_order = if prev_single_v_id == prev_other_v_id {
-                        PlannedFaceOrder::Start
-                    } else if single_v_id == other_v_id {
-                        PlannedFaceOrder::End
-                    } else {
-                        PlannedFaceOrder::Middle
-                    };
-
-                    // make sure the triangle vertices are CCW
-                    if pairing.single_range_idx == 0 {
-                        if prev_single_v_id != prev_other_v_id {
-                            planned_faces.push(PlannedFace::new(
-                                prev_single_v_id,
-                                single_v_id,
-                                prev_other_v_id,
-                                face_order,
-                            ));
-                        }
-                        if single_v_id != other_v_id {
-                            planned_faces.push(PlannedFace::new(
-                                prev_other_v_id,
-                                single_v_id,
-                                other_v_id,
-                                face_order,
-                            ));
-                        }
-                    } else {
-                        if prev_single_v_id != prev_other_v_id {
-                            planned_faces.push(PlannedFace::new(
-                                prev_single_v_id,
-                                prev_other_v_id,
-                                single_v_id,
-                                face_order,
-                            ));
-                        }
-                        if single_v_id != other_v_id {
-                            planned_faces.push(PlannedFace::new(
-                                prev_other_v_id,
-                                other_v_id,
-                                single_v_id,
-                                face_order,
-                            ));
-                        }
+                // make sure the triangle vertices are CCW
+                if pairing.single_range_idx == 0 {
+                    if prev_single_v_id != prev_other_v_id {
+                        planned_faces.push(PlannedFace::new(
+                            prev_single_v_id,
+                            single_v_id,
+                            prev_other_v_id,
+                            face_order,
+                        ));
+                    }
+                    if single_v_id != other_v_id {
+                        planned_faces.push(PlannedFace::new(
+                            prev_other_v_id,
+                            single_v_id,
+                            other_v_id,
+                            face_order,
+                        ));
+                    }
+                } else {
+                    if prev_single_v_id != prev_other_v_id {
+                        planned_faces.push(PlannedFace::new(
+                            prev_single_v_id,
+                            prev_other_v_id,
+                            single_v_id,
+                            face_order,
+                        ));
+                    }
+                    if single_v_id != other_v_id {
+                        planned_faces.push(PlannedFace::new(
+                            prev_other_v_id,
+                            other_v_id,
+                            single_v_id,
+                            face_order,
+                        ));
                     }
                 }
-
-                // add the faces of the current pairing
-                planned_faces.extend(pairing.fill_faces([one_ring_v_ids1, one_ring_v_ids2]));
-
-                let (single_v_id, other_v_id) =
-                    pairing.last_pair([one_ring_v_ids1, one_ring_v_ids2]);
-
-                prev_single_v_id = Some(single_v_id);
-                prev_other_v_id = Some(other_v_id);
             }
 
-            if planned_faces.is_empty() {
-                // This range pair produced no faces (e.g. a single shared vertex).
-                return planned_faces;
-            }
+            // add the faces of the current pairing
+            planned_faces.extend(pairing.fill_faces(rings));
 
-            if !matches!(
-                range_pair_to_connect.start_cap,
-                ConnectPairCap::AlreadyConnected
-            ) {
-                planned_faces[0].order = PlannedFaceOrder::Start;
-            }
+            prev = Some(pairing.last_pair(rings));
+        }
 
-            let len = planned_faces.len();
-            planned_faces[len - 1].order = if len == 1 {
+        if planned_faces.is_empty() {
+            // This range pair produced no faces (e.g. a single shared vertex).
+            return planned_faces;
+        }
+
+        if !matches!(
+            range_pair_to_connect.start_cap,
+            ConnectPairCap::AlreadyConnected
+        ) {
+            planned_faces[0].order = PlannedFaceOrder::Start;
+        }
+
+        let single = planned_faces.len() == 1;
+        if let Some(last) = planned_faces.last_mut() {
+            last.order = if single {
                 PlannedFaceOrder::Single
             } else {
                 PlannedFaceOrder::End
@@ -1847,7 +1789,7 @@ impl MeshGraph {
         planned_faces
     }
 
-    /// Env-gated diagnostic: dump the old planner's inputs and output so the
+    /// Env-gated diagnostic: dump the ring-range planner's inputs and output so the
     /// rim walk can be read side-by-side with it. Test-only.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
@@ -1895,21 +1837,19 @@ impl MeshGraph {
         renames: &mut VertexRenames,
         result: &mut MergeVerticesOneRing,
     ) -> bool {
-        if shared_he_ids.len() == 1 {
-            let shared_he_id = shared_he_ids.iter().copied().next().unwrap();
+        let Ok(&shared_he_id) = shared_he_ids.iter().exactly_one() else {
+            return false;
+        };
 
-            #[cfg(feature = "rerun")]
-            self.log_he_rerun("common_one_ring_he", shared_he_id);
+        #[cfg(feature = "rerun")]
+        self.log_he_rerun("common_one_ring_he", shared_he_id);
 
-            return self.flip_and_collapse_single_shared_edge_if_below_threshold(
-                shared_he_id,
-                flip_threshold_sqr,
-                renames,
-                result,
-            );
-        }
-
-        false
+        self.flip_and_collapse_single_shared_edge_if_below_threshold(
+            shared_he_id,
+            flip_threshold_sqr,
+            renames,
+            result,
+        )
     }
 
     #[instrument(skip_all)]
@@ -2118,14 +2058,12 @@ impl MeshGraph {
         }
 
         // The walk found no cap at all: cover both rings once, closed on a
-        // shared vertex and open otherwise. The old code also carried a trailing
-        // "span" push here that covered whatever the walk had left over; the
-        // rim-first planner catches that structurally now, so it is gone.
+        // shared vertex and open otherwise.
         if range_pairs_to_connect.is_empty() {
             let (end1, end2, cap) = if shared_v_ids.is_empty() {
                 (
-                    (orig_start_idx1 + len1 - 1).rem_euclid(len1),
-                    (orig_start_idx2 + len2 - 1).rem_euclid(len2),
+                    (orig_start_idx1 + len1 - 1) % len1,
+                    (orig_start_idx2 + len2 - 1) % len2,
                     ConnectPairCap::Open,
                 )
             } else {
@@ -2184,48 +2122,42 @@ impl MeshGraph {
         connected_v_ids: &mut HashSet<VertexId>,
         connected_he_ids: &mut HashSet<HalfedgeId>,
     ) {
-        let mut idx = start_idx1;
-        loop {
-            connected_v_ids.insert(one_ring_v_ids1[idx]);
-            if idx == end_idx1 {
-                break;
-            }
-            let he_id = one_ring_he_ids1[idx];
-            connected_he_ids.insert(he_id);
-
-            // could have been deleted by neighbor face deletion
-            if let Some(he) = self.halfedges.get(he_id) {
-                // halfedge existence already checked in `one_ring()`
-                if let Some(twin_id) = he.twin {
-                    connected_he_ids.insert(twin_id);
-                } else {
-                    error!("halfedge {:?} has no twin", he_id);
+        for (start_idx, end_idx, len, v_ids, he_ids) in [
+            (
+                start_idx1,
+                end_idx1,
+                len1,
+                one_ring_v_ids1,
+                one_ring_he_ids1,
+            ),
+            (
+                start_idx2,
+                end_idx2,
+                len2,
+                one_ring_v_ids2,
+                one_ring_he_ids2,
+            ),
+        ] {
+            let mut idx = start_idx;
+            loop {
+                connected_v_ids.insert(v_ids[idx]);
+                if idx == end_idx {
+                    break;
                 }
-            }
+                let he_id = he_ids[idx];
+                connected_he_ids.insert(he_id);
 
-            idx = (idx + 1) % len1;
-        }
-
-        idx = start_idx2;
-        loop {
-            connected_v_ids.insert(one_ring_v_ids2[idx]);
-            if idx == end_idx2 {
-                break;
-            }
-            let he_id = one_ring_he_ids2[idx];
-            connected_he_ids.insert(he_id);
-
-            // could have been deleted by neighbor face deletion
-            if let Some(he) = self.halfedges.get(he_id) {
-                // halfedge existence already checked in `one_ring()`
-                if let Some(twin_id) = he.twin {
-                    connected_he_ids.insert(twin_id);
-                } else {
-                    error!("halfedge {:?} has no twin", he_id);
+                // could have been deleted by neighbor face deletion
+                if let Some(he) = self.halfedges.get(he_id) {
+                    if let Some(twin_id) = he.twin {
+                        connected_he_ids.insert(twin_id);
+                    } else {
+                        error!("halfedge {:?} has no twin", he_id);
+                    }
                 }
-            }
 
-            idx = (idx + 1) % len2;
+                idx = (idx + 1) % len;
+            }
         }
     }
 
@@ -2339,22 +2271,17 @@ impl MeshGraph {
                 .get(first_v_id)
                 .or_else(error_none!("Position not found"))?;
 
-            let mut min_dist_sqr = f32::INFINITY;
-            let mut start_idx2 = 0;
+            let positions = one_ring_v_ids2
+                .iter()
+                .map(|v_id| {
+                    self.positions
+                        .get(*v_id)
+                        .copied()
+                        .or_else(error_none!("Position not found"))
+                })
+                .collect::<Option<Vec<_>>>()?;
 
-            for (idx, v_id) in one_ring_v_ids2.iter().enumerate() {
-                let pos = self
-                    .positions
-                    .get(*v_id)
-                    .or_else(error_none!("Position not found"))?;
-
-                let dist_sqr = pos.distance_squared(first_pos);
-
-                if dist_sqr < min_dist_sqr {
-                    min_dist_sqr = dist_sqr;
-                    start_idx2 = idx;
-                }
-            }
+            let start_idx2 = nearest_index(first_pos, positions.into_iter().enumerate());
 
             Some((0, start_idx2, ConnectPairCap::Open))
         }
@@ -2382,6 +2309,11 @@ struct ConnectPair {
 }
 
 impl ConnectPair {
+    /// Connects two whole arcs of `len1` and `len2` vertices, first to last.
+    fn whole(len1: usize, len2: usize, start_cap: ConnectPairCap) -> Self {
+        Self::new(0..=len1 - 1, len1, 0..=len2 - 1, len2, start_cap)
+    }
+
     fn new(
         mut range1: RangeInclusive<usize>,
         len1: usize,
@@ -2495,6 +2427,14 @@ struct Pairing {
 }
 
 impl Pairing {
+    /// `v_ids` as (the single range's ring, the other range's ring).
+    fn rings<'a>(&self, v_ids: [&'a [VertexId]; 2]) -> (&'a [VertexId], &'a [VertexId]) {
+        (
+            v_ids[self.single_range_idx],
+            v_ids[1 - self.single_range_idx],
+        )
+    }
+
     fn new_triangle(
         single_range_idx: usize,
         single_idx_in_range: usize,
@@ -2504,7 +2444,7 @@ impl Pairing {
     ) -> Self {
         let other_range = if other_idx1 == other_idx2 {
             other_idx1..=other_idx2
-        } else if (other_idx1 as i32 - other_idx2 as i32).abs() == 1 {
+        } else if other_idx1.abs_diff(other_idx2) == 1 {
             other_idx1.min(other_idx2)..=other_idx1.max(other_idx2)
         } else {
             other_idx1.max(other_idx2)..=other_idx1.min(other_idx2) + other_len
@@ -2518,8 +2458,7 @@ impl Pairing {
     }
 
     fn all_vertex_ids(&self, v_ids: [&[VertexId]; 2]) -> Vec<VertexId> {
-        let single_ids = &v_ids[self.single_range_idx];
-        let other_ids = &v_ids[1 - self.single_range_idx];
+        let (single_ids, other_ids) = self.rings(v_ids);
 
         let mut all_ids = vec![];
 
@@ -2537,8 +2476,7 @@ impl Pairing {
     }
 
     fn first_pair(&self, v_ids: [&[VertexId]; 2]) -> (VertexId, VertexId) {
-        let single_ids = &v_ids[self.single_range_idx];
-        let other_ids = &v_ids[1 - self.single_range_idx];
+        let (single_ids, other_ids) = self.rings(v_ids);
 
         let single_v_id = single_ids[self.single_idx_in_range % single_ids.len()];
         let other_v_id = other_ids[*self.other_range.start() % other_ids.len()];
@@ -2547,8 +2485,7 @@ impl Pairing {
     }
 
     fn last_pair(&self, v_ids: [&[VertexId]; 2]) -> (VertexId, VertexId) {
-        let single_ids = &v_ids[self.single_range_idx];
-        let other_ids = &v_ids[1 - self.single_range_idx];
+        let (single_ids, other_ids) = self.rings(v_ids);
 
         let single_v_id = single_ids[self.single_idx_in_range % single_ids.len()];
         let other_v_id = other_ids[*self.other_range.end() % other_ids.len()];
@@ -2557,8 +2494,7 @@ impl Pairing {
     }
 
     fn fill_faces(&self, v_ids: [&[VertexId]; 2]) -> Vec<PlannedFace> {
-        let single_ids = v_ids[self.single_range_idx];
-        let other_ids = v_ids[1 - self.single_range_idx];
+        let (single_ids, other_ids) = self.rings(v_ids);
 
         let single_v_id = single_ids[self.single_idx_in_range % single_ids.len()];
         let mut faces = Vec::<PlannedFace>::new();
@@ -2630,8 +2566,7 @@ impl Pairing {
     ) -> Option<()> {
         use crate::utils::vec3_array;
 
-        let single_v_ids = v_ids[self.single_range_idx];
-        let other_v_ids = v_ids[1 - self.single_range_idx];
+        let (single_v_ids, other_v_ids) = self.rings(v_ids);
 
         let single_v_id = single_v_ids[self.single_idx_in_range];
         let single_pos = vec3_array(mesh_graph.positions.get(single_v_id)?);
@@ -2711,6 +2646,11 @@ impl PlannedFace {
         }
     }
 
+    /// Whether two of the face's vertices are the same.
+    fn is_degenerate(&self) -> bool {
+        self.v1 == self.new_he_v1 || self.new_he_v1 == self.new_he_v2 || self.v1 == self.new_he_v2
+    }
+
     /// The face's three directed edges, in its winding.
     fn directed_edges(&self) -> [(VertexId, VertexId); 3] {
         [
@@ -2725,7 +2665,7 @@ impl PlannedFace {
     /// starts.
     fn validate_planned_face(&self, mesh_graph: &MeshGraph) -> Option<()> {
         let v_ids = [self.v1, self.new_he_v1, self.new_he_v2];
-        if v_ids[0] == v_ids[1] || v_ids[1] == v_ids[2] || v_ids[0] == v_ids[2] {
+        if self.is_degenerate() {
             error!("Skipping degenerate planned face with repeated vertices: {v_ids:?}");
             return None;
         }
@@ -2738,13 +2678,11 @@ impl PlannedFace {
         Some(())
     }
 
-    #[instrument(skip(mesh_graph, marked_halfedges, marked_vertices, result))]
+    #[instrument(skip(mesh_graph, record))]
     fn add_to_mesh_graph(
         &self,
         mesh_graph: &mut MeshGraph,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
-        marked_vertices: &mut HashSet<VertexId>,
-        result: &mut MergeVerticesOneRing,
+        record: &mut MergeRecord,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph", mesh_graph);
@@ -2756,27 +2694,23 @@ impl PlannedFace {
 
         let mut created: Vec<HalfedgeId> = Vec::new();
 
-        let add_or_get_edge1 = match mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1) {
-            Some(edge) => edge,
-            None => {
-                // Unreachable after `validate_planned_face`.
-                debug_assert!(false, "edge 1 acquisition failed after validation");
-                return None;
-            }
+        let Some(add_or_get_edge1) = mesh_graph.add_or_get_boundary_edge(self.v1, self.new_he_v1)
+        else {
+            // Unreachable after `validate_planned_face`.
+            debug_assert!(false, "edge 1 acquisition failed after validation");
+            return None;
         };
         if add_or_get_edge1.new_start_to_end {
             created.push(add_or_get_edge1.start_to_end_he_id);
         }
-        let add_or_get_edge2 =
-            match mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2) {
-                Some(edge) => edge,
-                None => {
-                    // Unreachable after `validate_planned_face`.
-                    debug_assert!(false, "edge 2 acquisition failed after validation");
-                    mesh_graph.rollback_created_edges(&mut created);
-                    return None;
-                }
-            };
+        let Some(add_or_get_edge2) =
+            mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)
+        else {
+            // Unreachable after `validate_planned_face`.
+            debug_assert!(false, "edge 2 acquisition failed after validation");
+            mesh_graph.rollback_created_edges(&mut created);
+            return None;
+        };
         if add_or_get_edge2.new_start_to_end {
             created.push(add_or_get_edge2.start_to_end_he_id);
         }
@@ -2790,7 +2724,7 @@ impl PlannedFace {
             add_or_get_edge1.start_to_end_he_id,
             add_or_get_edge2.start_to_end_he_id,
         ] {
-            mesh_graph.dismantle_faced_member(he_id, marked_halfedges, marked_vertices, result);
+            mesh_graph.dismantle_faced_member(he_id, record);
         }
 
         #[cfg(test)]
@@ -2799,65 +2733,44 @@ impl PlannedFace {
             add_or_get_edge2.start_to_end_he_id,
         );
 
-        let mut add_face = match mesh_graph.add_face_from_halfedges(
+        let Some(mut add_face) = mesh_graph.add_face_from_halfedges(
             add_or_get_edge1.start_to_end_he_id,
             add_or_get_edge2.start_to_end_he_id,
-        ) {
-            Some(face) => face,
-            None => {
-                // Unreachable after the validation and readiness checks above;
-                // fail loudly in tests instead of silently losing the face.
-                debug_assert!(
-                    false,
-                    "planned face {self:?} failed after a clean transaction"
-                );
-                mesh_graph.rollback_created_edges(&mut created);
-                return None;
-            }
+        ) else {
+            // Unreachable after the validation and readiness checks above;
+            // fail loudly in tests instead of silently losing the face.
+            debug_assert!(
+                false,
+                "planned face {self:?} failed after a clean transaction"
+            );
+            mesh_graph.rollback_created_edges(&mut created);
+            return None;
         };
 
-        if add_or_get_edge1.new_start_to_end {
-            add_face
-                .halfedge_ids
-                .push(add_or_get_edge1.start_to_end_he_id);
-        }
-        if add_or_get_edge1.new_twin {
-            add_face.halfedge_ids.push(add_or_get_edge1.twin_he_id);
-        }
-        if add_or_get_edge2.new_start_to_end {
-            add_face
-                .halfedge_ids
-                .push(add_or_get_edge2.start_to_end_he_id);
-        }
-        if add_or_get_edge2.new_twin {
-            add_face.halfedge_ids.push(add_or_get_edge2.twin_he_id);
-        }
+        add_face
+            .halfedge_ids
+            .extend(add_or_get_edge1.created_he_ids());
+        add_face
+            .halfedge_ids
+            .extend(add_or_get_edge2.created_he_ids());
 
         #[cfg(test)]
         mesh_graph.debug_assert_created_edges_claimed(&created);
 
-        Some((
-            if matches!(
-                self.order,
-                PlannedFaceOrder::Start | PlannedFaceOrder::Middle
-            ) && mesh_graph.halfedges[add_or_get_edge2.twin_he_id].is_boundary()
-            {
-                Some(add_or_get_edge2.twin_he_id)
-            } else {
-                None
-            },
-            add_face,
-        ))
+        let continues = matches!(
+            self.order,
+            PlannedFaceOrder::Start | PlannedFaceOrder::Middle
+        ) && mesh_graph.halfedges[add_or_get_edge2.twin_he_id].is_boundary();
+
+        Some((continues.then_some(add_or_get_edge2.twin_he_id), add_face))
     }
 
-    #[instrument(skip(mesh_graph, marked_halfedges, marked_vertices, result))]
+    #[instrument(skip(mesh_graph, record))]
     fn add_to_mesh_graph_and_he(
         &self,
         mesh_graph: &mut MeshGraph,
         existing_he_id: HalfedgeId,
-        marked_halfedges: &mut HashSet<HalfedgeId>,
-        marked_vertices: &mut HashSet<VertexId>,
-        result: &mut MergeVerticesOneRing,
+        record: &mut MergeRecord,
     ) -> Option<(Option<HalfedgeId>, AddFace)> {
         #[cfg(feature = "rerun")]
         self.log_rerun("add_to_mesh_graph_and_he", mesh_graph);
@@ -2879,30 +2792,23 @@ impl PlannedFace {
         // and twin) when the other side was boundary, so an id resolved here can
         // be dead afterwards. The edge is re-resolved - or re-created - by its
         // vertex pair after the dismantle.
-        let existing_edge = mesh_graph.halfedge_endpoints(existing_he_id)?;
+        let (existing_start, existing_end) = mesh_graph.halfedge_endpoints(existing_he_id)?;
 
         let mut created: Vec<HalfedgeId> = Vec::new();
 
-        // The edge may already exist (created by the previous planned face
-        // of this merge or an overlapping earlier merge). Take that one
-        // instead of adding a second edge between the same two vertices:
-        // `add_edge` here used to leave a *parallel* halfedge pair, whose
-        // two free halves stay face-less forever - the mesh reports them
-        // as boundary and the weld looks like it left a hole, while the
-        // two triangles that should have shared the edge each sit on their
-        // own copy of it. (`End` below has always done it this way.)
-        let add_or_get_edge =
-            match mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2) {
-                Some(edge) => edge,
-                None => {
-                    debug_assert!(
-                        false,
-                        "edge acquisition failed after `validate_planned_face`"
-                    );
-                    mesh_graph.rollback_created_edges(&mut created);
-                    return None;
-                }
-            };
+        // The edge may already exist (created by the previous planned face of this merge
+        // or an overlapping earlier merge). Take that one instead of adding a second edge
+        // between the same two vertices, which would leave a *parallel* halfedge pair
+        // whose two free halves stay face-less forever.
+        let Some(add_or_get_edge) =
+            mesh_graph.add_or_get_boundary_edge(self.new_he_v1, self.new_he_v2)
+        else {
+            debug_assert!(
+                false,
+                "edge acquisition failed after `validate_planned_face`"
+            );
+            return None;
+        };
         if add_or_get_edge.new_start_to_end {
             created.push(add_or_get_edge.start_to_end_he_id);
         }
@@ -2911,44 +2817,31 @@ impl PlannedFace {
         // Dismantle the claiming face before re-filing, and the existing
         // edge (the other side of the shared border) likewise, so no live
         // chain keeps referencing a re-filed halfedge.
-        mesh_graph.dismantle_faced_member(
-            existing_he_id,
-            marked_halfedges,
-            marked_vertices,
-            result,
-        );
-        mesh_graph.dismantle_faced_member(
-            add_or_get_edge.start_to_end_he_id,
-            marked_halfedges,
-            marked_vertices,
-            result,
-        );
+        mesh_graph.dismantle_faced_member(existing_he_id, record);
+        mesh_graph.dismantle_faced_member(add_or_get_edge.start_to_end_he_id, record);
 
         // Re-resolve the shared edge after the dismantle.
         let existing_he_id = match mesh_graph
-            .boundary_half_from_to(existing_edge.0, existing_edge.1)
-            .or_else(|| mesh_graph.boundary_half_from_to(existing_edge.1, existing_edge.0))
+            .boundary_half_from_to(existing_start, existing_end)
+            .or_else(|| mesh_graph.boundary_half_from_to(existing_end, existing_start))
         {
             Some(he_id) => he_id,
             None => {
                 // Both halves went with the dismantled face: re-create the edge.
-                match mesh_graph.add_or_get_boundary_edge(existing_edge.0, existing_edge.1) {
-                    Some(edge) => {
-                        if edge.new_start_to_end {
-                            created.push(edge.start_to_end_he_id);
-                        }
-                        edge.start_to_end_he_id
-                    }
-                    None => {
-                        // Unreachable after `validate_planned_face`.
-                        debug_assert!(
-                            false,
-                            "re-creating the shared edge failed after a clean transaction"
-                        );
-                        mesh_graph.rollback_created_edges(&mut created);
-                        return None;
-                    }
+                let Some(edge) = mesh_graph.add_or_get_boundary_edge(existing_start, existing_end)
+                else {
+                    // Unreachable after `validate_planned_face`.
+                    debug_assert!(
+                        false,
+                        "re-creating the shared edge failed after a clean transaction"
+                    );
+                    mesh_graph.rollback_created_edges(&mut created);
+                    return None;
+                };
+                if edge.new_start_to_end {
+                    created.push(edge.start_to_end_he_id);
                 }
+                edge.start_to_end_he_id
             }
         };
 
@@ -2956,40 +2849,29 @@ impl PlannedFace {
         mesh_graph
             .debug_assert_face_inputs_ready(existing_he_id, add_or_get_edge.start_to_end_he_id);
 
-        let mut add_face = match mesh_graph
-            .add_face_from_halfedges(existing_he_id, add_or_get_edge.start_to_end_he_id)
-        {
-            Some(face) => face,
-            None => {
-                // Unreachable after the dismantle + re-resolution + readiness
-                // checks above; the dismantled faces cannot be restored, so
-                // fail loudly in tests rather than silently losing the face.
-                debug_assert!(
-                    false,
-                    "planned face {self:?} failed after irreversible dismantles"
-                );
-                mesh_graph.rollback_created_edges(&mut created);
-                return None;
-            }
+        let Some(mut add_face) =
+            mesh_graph.add_face_from_halfedges(existing_he_id, add_or_get_edge.start_to_end_he_id)
+        else {
+            // Unreachable after the dismantle + re-resolution + readiness
+            // checks above; the dismantled faces cannot be restored, so
+            // fail loudly in tests rather than silently losing the face.
+            debug_assert!(
+                false,
+                "planned face {self:?} failed after irreversible dismantles"
+            );
+            mesh_graph.rollback_created_edges(&mut created);
+            return None;
         };
 
-        if add_or_get_edge.new_start_to_end {
-            add_face
-                .halfedge_ids
-                .push(add_or_get_edge.start_to_end_he_id);
-        }
-        if add_or_get_edge.new_twin {
-            add_face.halfedge_ids.push(add_or_get_edge.twin_he_id);
-        }
+        add_face
+            .halfedge_ids
+            .extend(add_or_get_edge.created_he_ids());
 
         #[cfg(test)]
         mesh_graph.debug_assert_created_edges_claimed(&created);
 
-        if matches!(self.order, PlannedFaceOrder::Middle) {
-            Some((Some(add_or_get_edge.twin_he_id), add_face))
-        } else {
-            Some((None, add_face))
-        }
+        let continues = self.order == PlannedFaceOrder::Middle;
+        Some((continues.then_some(add_or_get_edge.twin_he_id), add_face))
     }
 
     #[cfg(feature = "rerun")]
