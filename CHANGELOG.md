@@ -23,8 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with private fields and no accessors, so `subdivide_edge` told external callers nothing
   about what it had created
 - `merge_vertices_one_rings` plans its band from the boundary the star removals actually
-  open (the rim) and uses that plan whenever it consumes the whole rim, falling back to
-  the ring-range planner otherwise. It closes the extracted weld cases that used to leave
+  open (the rim), measured from the boundary it found at entry, and builds that plan when
+  it consumes the whole rim. The old planner, which paired the pre-removal one-rings, is
+  gone: where the rim plan applied it was rarely complete, and the cleanup already
+  repairs the rest. It closes the extracted weld cases that used to leave
   holes, closes whatever hole its own removals open on every exit path (including the
   flip-and-collapse and failed-pairing exits), and welds the parallel edges a band can
   leave. Its boundary bookkeeping covers only the region within three edges of the two

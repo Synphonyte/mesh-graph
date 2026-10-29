@@ -9,7 +9,6 @@ use std::hash::Hash;
 use std::ops::RangeInclusive;
 
 use crate::hash::{HashMap, HashSet};
-use glam::Vec3;
 use itertools::Itertools;
 use tracing::{error, instrument};
 
@@ -164,21 +163,6 @@ impl<'a> MergeRecord<'a> {
     }
 }
 
-/// The index of the position nearest to `target`, the lowest on a tie, or `0` when there
-/// is none.
-fn nearest_index(target: Vec3, positions: impl IntoIterator<Item = (usize, Vec3)>) -> usize {
-    let mut nearest = 0;
-    let mut min_dist_sqr = f32::INFINITY;
-    for (idx, pos) in positions {
-        let dist_sqr = pos.distance_squared(target);
-        if dist_sqr < min_dist_sqr {
-            min_dist_sqr = dist_sqr;
-            nearest = idx;
-        }
-    }
-    nearest
-}
-
 /// The vertices of both rings and the ones the op added, where its repair passes look.
 fn ring_region(
     one_ring_v_ids1: &[VertexId],
@@ -288,10 +272,6 @@ impl MeshGraph {
         // is exactly that case. Nothing between the top of this function and this line
         // touches the mesh.
         //
-        // The closers compare against this one rather than against `boundary_before` further
-        // down: that one is snapshotted after the fusion, deliberately, so the band's `H`
-        // describes the stars' doing rather than the fusion's.
-        //
         // Both snapshots, and the deltas taken against them, cover only the region within
         // three edges of the two vertices, which holds everything the op touches: the stars
         // and the strip are one ring out, the fusion's and the cleanup's face removals around
@@ -303,6 +283,17 @@ impl MeshGraph {
         // the whole-mesh scans.
         let region = self.vertices_around(&[vertex_id1, vertex_id2], 3);
         let boundary_at_entry = rim::RegionBoundary::new(self, &region);
+
+        // The same boundary by halfedge, for the band's rim `H = boundary(after) \
+        // boundary(before)`: `remove_face` detaches most rim members in place instead of
+        // freeing them, so the twins of the removed halfedges are *not* the rim the op has to
+        // close (see `rim::opened_rim`). Like the closers' snapshot it is taken before the
+        // fusion, so whatever boundary the fusion opens is part of the rim the band closes: a
+        // snapshot after it can cut a closed rim into an open chain that no band can consume.
+        let boundary_before = rim::boundary_halves_around(self, &region);
+        #[cfg(test)]
+        let whole_mesh_boundary_before = rim::boundary_halves(self);
+
         // The vertex merges and splits this op makes, so the snapshot can be carried to the
         // closers (see `VertexRenames`).
         let mut renames = VertexRenames::default();
@@ -410,15 +401,6 @@ impl MeshGraph {
             return self.finish_merge(record);
         }
 
-        // The boundary the removals open. `H = boundary(after) \ boundary(before)`:
-        // `remove_face` detaches most rim members in place instead of freeing
-        // them, so the twins of the removed halfedges are *not* the rim the op
-        // has to close (see `rim::opened_rim`). Snapshot after the coincident
-        // fusion so the delta is exactly the stars' doing.
-        let boundary_before = rim::boundary_halves_around(self, &region);
-        #[cfg(test)]
-        let whole_mesh_boundary_before = rim::boundary_halves(self);
-
         self.remove_vertex_faces(vertex_id1, &mut record.result);
 
         #[cfg(test)]
@@ -451,12 +433,14 @@ impl MeshGraph {
         #[cfg(feature = "rerun")]
         self.log_rerun();
 
-        let (already_connected_face_ids, connected_v_ids, connected_he_ids) = match self
-            .find_already_connected_pairings(&one_ring_v_ids1, &one_ring_v_ids2, &shared_v_ids)
-        {
-            Some(pairings) => pairings,
+        let strip_faces = match self.find_already_connected_strip(
+            &one_ring_v_ids1,
+            &one_ring_v_ids2,
+            &shared_v_ids,
+        ) {
+            Some(strip_faces) => strip_faces,
             None => {
-                tracing::error!("Error in find_already_connected_pairings");
+                tracing::error!("Error in find_already_connected_strip");
 
                 // The stars are already out by this point, so returning here leaves their rim
                 // open: the op tears the mesh and does not put it back. No band can be
@@ -476,60 +460,10 @@ impl MeshGraph {
         };
 
         #[cfg(feature = "rerun")]
-        {
-            self.log_faces_rerun("already_connected", &already_connected_face_ids);
-            self.log_hes_rerun("already_connected", &connected_he_ids);
-        }
+        self.log_faces_rerun("already_connected", &strip_faces);
 
-        let range_pairs_to_connect = self.compute_range_pairs_to_connect(
-            &one_ring_v_ids1,
-            &one_ring_v_ids2,
-            &one_ring_he_ids1,
-            &one_ring_he_ids2,
-            &shared_v_ids,
-            &shared_he_ids,
-            connected_v_ids,
-            connected_he_ids,
-        );
-
-        // No band to build. That is a legitimate outcome - it means every ring
-        // vertex is either shared with the other ring or already joined to it by
-        // a face, so there is nothing left to span - but it must NOT end the op:
-        // `remove_neighbor_faces` has already taken both stars out, and bailing
-        // here leaves that hole with nothing to close it (two of the extracted
-        // weld cases are exactly this). Fall through with nothing planned and let
-        // the cleanup and the remaining-unconnected merge repair the region.
-        if range_pairs_to_connect.is_empty() {
-            tracing::debug!("No range pairs to connect; repairing the freed region instead");
-        }
-
-        tracing::debug!("Range pairs to connect: {range_pairs_to_connect:?}");
-
-        let old_planned_faces =
-            self.plan_new_faces(&range_pairs_to_connect, &one_ring_v_ids1, &one_ring_v_ids2);
-        let mut planned_faces = old_planned_faces.clone();
-
-        #[cfg(test)]
-        if std::env::var("MESH_GRAPH_RIM_TAXONOMY").is_ok() {
-            self.dump_plan_debug(
-                &one_ring_v_ids1,
-                &one_ring_v_ids2,
-                &shared_v_ids,
-                &already_connected_face_ids,
-                &range_pairs_to_connect,
-                &old_planned_faces,
-            );
-        }
-
-        // The ring-range planner above walks the pre-removal one-rings, which cannot
-        // describe the hole the removals actually opened: a pinched star opens more rim
-        // than `one_ring()` sees, and a chain can end on the cut. Plan the band from the
-        // live rim too (`rim_planner`), and use that plan when it consumes the whole rim;
-        // otherwise keep the ring-range faces.
-        let strip_faces = already_connected_face_ids;
-
-        // The strip faces lie inside the rim the band has to consume, so they go first,
-        // whichever plan is used.
+        // Plan the band from the rim the removals opened. The strip faces lie inside that
+        // rim, so they go first.
         self.remove_faces(&strip_faces, &mut record.result);
         let (rim, h1, h2) = self.strip_first_rim(&region, &boundary_before, &star_h1);
         #[cfg(test)]
@@ -542,9 +476,14 @@ impl MeshGraph {
         for note in &plan.unhandled {
             tracing::debug!("rim-first planner unhandled: {note}");
         }
-        if plan.is_complete(self, &rim) {
-            planned_faces = plan.faces;
-        }
+        // Only a plan that closes exactly the rim is built. Without one - in practice an
+        // open chain, a rim that runs into a pre-existing border - nothing is planned, and
+        // the cleanup and the remaining-unconnected merge below repair the region.
+        let planned_faces = if plan.is_complete(self, &rim) {
+            plan.faces
+        } else {
+            Vec::new()
+        };
 
         for pf in &planned_faces {
             tracing::debug!(
@@ -724,22 +663,19 @@ impl MeshGraph {
         }
     }
 
-    fn find_already_connected_pairings(
+    /// The faces that already join the two rings: the first contiguous strip of them, which
+    /// the band replaces. `None` when the connectivity around the rings is broken.
+    fn find_already_connected_strip(
         &mut self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
         shared_v_ids: &HashSet<VertexId>,
-    ) -> Option<(Vec<FaceId>, HashSet<VertexId>, HashSet<HalfedgeId>)> {
+    ) -> Option<Vec<FaceId>> {
         let mut connected_v_ids = HashSet::default();
-        let mut connected_he_ids = HashSet::default();
         let mut already_connected_face_ids = vec![];
 
-        // Only the first strip of already existing faces is taken. A second one
-        // that isn't contiguous with it would mark its ring vertices as connected
-        // too, and the ranges to connect are the complement of that: the region
-        // between the two strips ends up in neither. Since the faces of both
-        // strips are removed to make room for the new faces, that region is then
-        // left as a hole. See `strip_found` below.
+        // Only the first strip of already existing faces is taken; a second one stays, and
+        // the band spans it (`is_complete` refuses a plan that would duplicate its edges).
         let mut strip_found = false;
 
         for ((idx1, &v_id1), (idx2, &v_id2)) in one_ring_v_ids1
@@ -775,7 +711,6 @@ impl MeshGraph {
                     idx2,
                     one_ring_v_ids1,
                     one_ring_v_ids2,
-                    &mut connected_he_ids,
                     &mut already_connected_face_ids,
                 ) {
                     TriangleFan::Spanning(pairing) => pairing,
@@ -797,7 +732,6 @@ impl MeshGraph {
                     one_ring_v_ids2,
                     &pairing,
                     -1,
-                    &mut connected_he_ids,
                     &mut already_connected_face_ids,
                 );
 
@@ -808,7 +742,6 @@ impl MeshGraph {
                     one_ring_v_ids2,
                     &pairing,
                     1,
-                    &mut connected_he_ids,
                     &mut already_connected_face_ids,
                 ));
 
@@ -822,11 +755,7 @@ impl MeshGraph {
             }
         }
 
-        Some((
-            already_connected_face_ids,
-            connected_v_ids,
-            connected_he_ids,
-        ))
+        Some(already_connected_face_ids)
     }
 
     fn find_connected_triangle_fans(
@@ -835,7 +764,6 @@ impl MeshGraph {
         one_ring_v_ids2: &[VertexId],
         pairing: &Pairing,
         idx_step: isize,
-        connected_he_ids: &mut HashSet<HalfedgeId>,
         connected_face_ids: &mut Vec<FaceId>,
     ) -> Vec<Pairing> {
         let (single_v_ids, other_v_ids) = pairing.rings([one_ring_v_ids1, one_ring_v_ids2]);
@@ -873,7 +801,6 @@ impl MeshGraph {
                 one_ring_v_ids1,
                 one_ring_v_ids2,
                 &mut current_pairing,
-                connected_he_ids,
                 connected_face_ids,
             );
 
@@ -889,7 +816,6 @@ impl MeshGraph {
                 one_ring_v_ids2,
                 &current_pairing,
                 idx_step,
-                connected_he_ids,
                 connected_face_ids,
             );
 
@@ -911,7 +837,6 @@ impl MeshGraph {
         idx2: usize,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
-        connected_he_ids: &mut HashSet<HalfedgeId>,
         connected_face_ids: &mut Vec<FaceId>,
     ) -> TriangleFan {
         let he = unwrap_or_return!(
@@ -969,36 +894,10 @@ impl MeshGraph {
             one_ring_v_ids1,
             one_ring_v_ids2,
             &mut current_pairing,
-            connected_he_ids,
             connected_face_ids,
         );
 
         TriangleFan::Spanning(current_pairing)
-    }
-
-    fn add_face_to_connected_he_ids(
-        &self,
-        face_id: FaceId,
-        connected_he_ids: &mut HashSet<HalfedgeId>,
-    ) {
-        let face = unwrap_or_return!(
-            self.faces.get(face_id),
-            "failed to get start face for pairing fan"
-        );
-        connected_he_ids.extend(
-            face.halfedges(self)
-                .filter_map(|he_id| {
-                    let he = self
-                        .halfedges
-                        .get(he_id)
-                        .or_else(error_none!("Halfedge not found"))?;
-                    Some([
-                        he_id,
-                        he.twin.or_else(error_none!("Twin halfedge not found"))?,
-                    ])
-                })
-                .flatten(),
-        );
     }
 
     fn extend_triangle_pairing_fan(
@@ -1006,7 +905,6 @@ impl MeshGraph {
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
         current_pairing: &mut Pairing,
-        connected_he_ids: &mut HashSet<HalfedgeId>,
         connected_face_ids: &mut Vec<FaceId>,
     ) {
         let (single_ids, other_ids) = current_pairing.rings([one_ring_v_ids1, one_ring_v_ids2]);
@@ -1025,7 +923,6 @@ impl MeshGraph {
             ),
             "failed to find start face for pairing fan"
         );
-        self.add_face_to_connected_he_ids(start_face_id, connected_he_ids);
         connected_face_ids.push(start_face_id);
 
         // Cap the number of steps so a complete face fan around the single vertex
@@ -1046,8 +943,6 @@ impl MeshGraph {
                     range_start -= 1;
                 }
                 current_pairing.other_range = range_start..=*current_pairing.other_range.end();
-
-                self.add_face_to_connected_he_ids(face_id, connected_he_ids);
                 connected_face_ids.push(face_id);
 
                 steps += 1;
@@ -1073,8 +968,6 @@ impl MeshGraph {
             if let Some(face_id) = self.face_with_vertices(single_v_id, boundary_v_id, next_v_id) {
                 range_end += 1;
                 current_pairing.other_range = *current_pairing.other_range.start()..=range_end;
-
-                self.add_face_to_connected_he_ids(face_id, connected_he_ids);
                 connected_face_ids.push(face_id);
 
                 steps += 1;
@@ -1667,36 +1560,80 @@ impl MeshGraph {
         true
     }
 
-    fn plan_new_faces(
-        &self,
-        range_pairs_to_connect: &[ConnectPair],
-        one_ring_v_ids1: &[VertexId],
-        one_ring_v_ids2: &[VertexId],
-    ) -> Vec<PlannedFace> {
-        let mut planned_faces = Vec::with_capacity(one_ring_v_ids1.len());
+    #[instrument(skip_all)]
+    fn check_and_flip_single_shared_he(
+        &mut self,
+        shared_he_ids: &HashSet<HalfedgeId>,
+        flip_threshold_sqr: f32,
+        renames: &mut VertexRenames,
+        result: &mut MergeVerticesOneRing,
+    ) -> bool {
+        let Ok(&shared_he_id) = shared_he_ids.iter().exactly_one() else {
+            return false;
+        };
 
-        for range_pair_to_connect in range_pairs_to_connect {
-            planned_faces.extend(
-                self.plan_connect_pair(range_pair_to_connect, [one_ring_v_ids1, one_ring_v_ids2]),
-            );
-        }
+        #[cfg(feature = "rerun")]
+        self.log_he_rerun("common_one_ring_he", shared_he_id);
 
-        planned_faces
+        self.flip_and_collapse_single_shared_edge_if_below_threshold(
+            shared_he_id,
+            flip_threshold_sqr,
+            renames,
+            result,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectPairCap {
+    /// Indices reference the same vertex, thus forming a closed polygon.
+    Closed,
+    /// Indices reference different vertices, thus forming an open polygon.
+    Open,
+}
+
+/// Two ranges of elements that need to be connected by faces.
+#[derive(Debug)]
+struct ConnectPair {
+    /// Whether the first indices in the two ranges reference the same vertex, thus forming a closed polygon.
+    start_cap: ConnectPairCap,
+
+    /// The pair of ranges of vertex indices that need to be connected.
+    ranges: [RangeInclusive<usize>; 2],
+}
+
+impl ConnectPair {
+    /// Connects two whole arcs of `len1` and `len2` vertices, first to last.
+    fn whole(len1: usize, len2: usize, start_cap: ConnectPairCap) -> Self {
+        Self::new(0..=len1 - 1, len1, 0..=len2 - 1, len2, start_cap)
     }
 
-    /// Plan the faces of a single range pair over two vertex rings.
-    ///
-    /// Extracted from [`Self::plan_new_faces`] so the rim-first planner can
-    /// reuse the identical Bresenham pairing and face-order machinery on
-    /// rim-derived arcs instead of the pre-removal one-rings.
-    fn plan_connect_pair(
-        &self,
-        range_pair_to_connect: &ConnectPair,
-        rings: [&[VertexId]; 2],
-    ) -> Vec<PlannedFace> {
+    fn new(
+        mut range1: RangeInclusive<usize>,
+        len1: usize,
+        mut range2: RangeInclusive<usize>,
+        len2: usize,
+        start_cap: ConnectPairCap,
+    ) -> Self {
+        if range1.end() <= range1.start() {
+            range1 = (*range1.start())..=(*range1.end() + len1);
+        }
+        if range2.end() <= range2.start() {
+            range2 = (*range2.start())..=(*range2.end() + len2);
+        }
+
+        ConnectPair {
+            start_cap,
+            ranges: [range1, range2],
+        }
+    }
+
+    /// The faces that connect the two ranges over two vertex rings: the Bresenham pairing
+    /// ([`Self::compute_pairings`]), each pairing's fan and the quads between them.
+    fn plan_faces(&self, rings: [&[VertexId]; 2]) -> Vec<PlannedFace> {
         let mut planned_faces = Vec::new();
 
-        let pairings = range_pair_to_connect.compute_pairings();
+        let pairings = self.compute_pairings();
 
         tracing::debug!("Pairings: {:#?}", pairings);
 
@@ -1705,8 +1642,8 @@ impl MeshGraph {
         };
 
         // The previous pairing's last (single, other) pair.
-        let mut prev = matches!(range_pair_to_connect.start_cap, ConnectPairCap::Open)
-            .then(|| last_pairing.last_pair(rings));
+        let mut prev =
+            (self.start_cap == ConnectPairCap::Open).then(|| last_pairing.last_pair(rings));
 
         for pairing in &pairings {
             if let Some((prev_single_v_id, prev_other_v_id)) = prev {
@@ -1770,12 +1707,7 @@ impl MeshGraph {
             return planned_faces;
         }
 
-        if !matches!(
-            range_pair_to_connect.start_cap,
-            ConnectPairCap::AlreadyConnected
-        ) {
-            planned_faces[0].order = PlannedFaceOrder::Start;
-        }
+        planned_faces[0].order = PlannedFaceOrder::Start;
 
         let single = planned_faces.len() == 1;
         if let Some(last) = planned_faces.last_mut() {
@@ -1787,551 +1719,6 @@ impl MeshGraph {
         }
 
         planned_faces
-    }
-
-    /// Env-gated diagnostic: dump the ring-range planner's inputs and output so the
-    /// rim walk can be read side-by-side with it. Test-only.
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    fn dump_plan_debug(
-        &self,
-        one_ring_v_ids1: &[VertexId],
-        one_ring_v_ids2: &[VertexId],
-        shared_v_ids: &HashSet<VertexId>,
-        already_connected_face_ids: &[FaceId],
-        range_pairs_to_connect: &[ConnectPair],
-        planned_faces: &[PlannedFace],
-    ) {
-        println!("PLAN ring1 {one_ring_v_ids1:?}");
-        println!("PLAN ring2 {one_ring_v_ids2:?}");
-        println!("PLAN shared_v {shared_v_ids:?}");
-        for face_id in already_connected_face_ids {
-            if let Some(face) = self.faces.get(*face_id) {
-                let mut vs: Vec<VertexId> = Vec::new();
-                for he_id in face.halfedges(self) {
-                    if let Some(he) = self.halfedges.get(he_id) {
-                        vs.push(he.end_vertex);
-                    }
-                }
-                println!("PLAN strip_face {face_id:?} vs {vs:?}");
-            } else {
-                println!("PLAN strip_face {face_id:?} (dead)");
-            }
-        }
-        for cp in range_pairs_to_connect {
-            println!("PLAN range_pair {:?} cap {:?}", cp.ranges, cp.start_cap);
-        }
-        for pf in planned_faces {
-            println!(
-                "PLAN face {:?} v1={:?} a={:?} b={:?}",
-                pf.order, pf.v1, pf.new_he_v1, pf.new_he_v2
-            );
-        }
-    }
-
-    #[instrument(skip_all)]
-    fn check_and_flip_single_shared_he(
-        &mut self,
-        shared_he_ids: &HashSet<HalfedgeId>,
-        flip_threshold_sqr: f32,
-        renames: &mut VertexRenames,
-        result: &mut MergeVerticesOneRing,
-    ) -> bool {
-        let Ok(&shared_he_id) = shared_he_ids.iter().exactly_one() else {
-            return false;
-        };
-
-        #[cfg(feature = "rerun")]
-        self.log_he_rerun("common_one_ring_he", shared_he_id);
-
-        self.flip_and_collapse_single_shared_edge_if_below_threshold(
-            shared_he_id,
-            flip_threshold_sqr,
-            renames,
-            result,
-        )
-    }
-
-    #[instrument(skip_all)]
-    #[allow(clippy::too_many_arguments)]
-    fn compute_range_pairs_to_connect(
-        &mut self,
-        one_ring_v_ids1: &[VertexId],
-        one_ring_v_ids2: &[VertexId],
-        one_ring_he_ids1: &[HalfedgeId],
-        one_ring_he_ids2: &[HalfedgeId],
-        shared_v_ids: &HashSet<VertexId>,
-        shared_he_ids: &HashSet<HalfedgeId>,
-        mut connected_v_ids: HashSet<VertexId>,
-        mut connected_he_ids: HashSet<HalfedgeId>,
-    ) -> Vec<ConnectPair> {
-        let mut range_pairs_to_connect = vec![];
-
-        let (orig_start_idx1, orig_start_idx2, orig_start_cap) = unwrap_or_return!(
-            self.find_start_indices(
-                one_ring_v_ids1,
-                one_ring_v_ids2,
-                one_ring_he_ids1,
-                one_ring_he_ids2,
-                shared_v_ids,
-                shared_he_ids,
-                &connected_v_ids,
-                &connected_he_ids,
-            ),
-            "Couldn't find start indices",
-            range_pairs_to_connect
-        );
-
-        tracing::debug!(
-            "start idx1: {}, start idx2: {}",
-            orig_start_idx1,
-            orig_start_idx2
-        );
-
-        let len1 = one_ring_v_ids1.len();
-        let len2 = one_ring_v_ids2.len();
-
-        let mut start_idx1 = orig_start_idx1;
-        let mut start_idx2 = orig_start_idx2;
-        let mut start_cap = orig_start_cap;
-
-        let mut end_idx1 = (start_idx1 + 1) % len1;
-        let mut end_idx2 = (start_idx2 + 1) % len2;
-
-        #[cfg(feature = "rerun")]
-        {
-            self.log_verts_w_labels_rerun(
-                "pairs_start_idx",
-                &[one_ring_v_ids1[start_idx1], one_ring_v_ids2[start_idx2]],
-                &["1", "2"],
-            );
-            self.log_vert_rerun("pairs_end_idx1", one_ring_v_ids1[end_idx1]);
-            self.log_vert_rerun("pairs_end_idx2", one_ring_v_ids2[end_idx2]);
-        }
-        let mut v_id1;
-        let mut v_id2;
-
-        while end_idx1 != orig_start_idx1 {
-            v_id1 = one_ring_v_ids1[end_idx1];
-            v_id2 = one_ring_v_ids2[end_idx2];
-
-            if !self.vertices.contains_key(v_id1) || !self.vertices.contains_key(v_id2) {
-                break;
-            }
-
-            let mut end_cap = ConnectPairCap::Open;
-
-            if shared_v_ids.contains(&v_id1) {
-                let start_end_idx2 = end_idx2;
-                while v_id2 != v_id1 {
-                    end_idx2 = (end_idx2 + 1) % len2;
-                    v_id2 = one_ring_v_ids2[end_idx2];
-
-                    #[cfg(feature = "rerun")]
-                    self.log_vert_rerun("pairs_end_idx2", v_id2);
-
-                    if end_idx2 == start_end_idx2 {
-                        error!("Full cycle without finding shared vertex in one ring 2");
-                        return range_pairs_to_connect;
-                    }
-                }
-
-                end_cap = ConnectPairCap::Closed;
-            } else if shared_v_ids.contains(&v_id2) {
-                let start_end_idx1 = end_idx1;
-                while v_id1 != v_id2 {
-                    end_idx1 = (end_idx1 + 1) % len1;
-                    v_id1 = one_ring_v_ids1[end_idx1];
-
-                    #[cfg(feature = "rerun")]
-                    self.log_vert_rerun("pairs_end_idx1", v_id1);
-
-                    if end_idx1 == start_end_idx1 {
-                        error!("Full cycle without finding shared vertex in one ring 1");
-                        return range_pairs_to_connect;
-                    }
-                }
-
-                end_cap = ConnectPairCap::Closed;
-            } else if connected_v_ids.contains(&v_id1) {
-                let start_end_idx2 = end_idx2;
-                while !connected_v_ids.contains(&v_id2) {
-                    end_idx2 = (end_idx2 + 1) % len2;
-                    v_id2 = one_ring_v_ids2[end_idx2];
-
-                    #[cfg(feature = "rerun")]
-                    self.log_vert_rerun("pairs_end_idx2", v_id2);
-
-                    if end_idx2 == start_end_idx2 {
-                        error!("Full cycle without finding connected vertex in one ring 2");
-                        return range_pairs_to_connect;
-                    }
-                }
-
-                end_cap = ConnectPairCap::AlreadyConnected;
-            } else if connected_v_ids.contains(&v_id2) {
-                let start_end_idx1 = end_idx1;
-                while !connected_v_ids.contains(&v_id1) {
-                    end_idx1 = (end_idx1 + 1) % len1;
-                    v_id1 = one_ring_v_ids1[end_idx1];
-
-                    #[cfg(feature = "rerun")]
-                    self.log_vert_rerun("pairs_end_idx1", v_id1);
-
-                    if end_idx1 == start_end_idx1 {
-                        error!("Full cycle without finding connected vertex in one ring 1");
-                        return range_pairs_to_connect;
-                    }
-                }
-
-                end_cap = ConnectPairCap::AlreadyConnected;
-            }
-
-            if !matches!(end_cap, ConnectPairCap::Open) {
-                range_pairs_to_connect.push(ConnectPair::new(
-                    start_idx1..=end_idx1,
-                    len1,
-                    start_idx2..=end_idx2,
-                    len2,
-                    start_cap,
-                ));
-
-                self.remember_range_pair_connections(
-                    start_idx1,
-                    end_idx1,
-                    start_idx2,
-                    end_idx2,
-                    len1,
-                    len2,
-                    one_ring_v_ids1,
-                    one_ring_v_ids2,
-                    one_ring_he_ids1,
-                    one_ring_he_ids2,
-                    &mut connected_v_ids,
-                    &mut connected_he_ids,
-                );
-
-                if let Some((idx1, idx2, start)) = self.find_start_indices(
-                    one_ring_v_ids1,
-                    one_ring_v_ids2,
-                    one_ring_he_ids1,
-                    one_ring_he_ids2,
-                    shared_v_ids,
-                    shared_he_ids,
-                    &connected_v_ids,
-                    &connected_he_ids,
-                ) {
-                    start_idx1 = idx1;
-                    start_idx2 = idx2;
-                    start_cap = start;
-                } else {
-                    return range_pairs_to_connect;
-                }
-
-                end_idx1 = (start_idx1 + 1) % len1;
-                end_idx2 = (start_idx2 + 1) % len2;
-
-                #[cfg(feature = "rerun")]
-                {
-                    self.log_verts_w_labels_rerun(
-                        "pairs_start_idx",
-                        &[one_ring_v_ids1[start_idx1], one_ring_v_ids2[start_idx2]],
-                        &["1", "2"],
-                    );
-                    self.log_vert_rerun("pairs_end_idx1", one_ring_v_ids1[end_idx1]);
-                    self.log_vert_rerun("pairs_end_idx2", one_ring_v_ids2[end_idx2]);
-                }
-
-                if start_idx1 == orig_start_idx1 {
-                    break;
-                }
-            } else {
-                end_idx1 = (end_idx1 + 1) % len1;
-                end_idx2 = (end_idx2 + 1) % len2;
-
-                #[cfg(feature = "rerun")]
-                {
-                    self.log_vert_rerun("pairs_end_idx1", one_ring_v_ids1[end_idx1]);
-                    self.log_vert_rerun("pairs_end_idx2", one_ring_v_ids2[end_idx2]);
-                }
-            }
-        }
-
-        // The walk found no cap at all: cover both rings once, closed on a
-        // shared vertex and open otherwise.
-        if range_pairs_to_connect.is_empty() {
-            let (end1, end2, cap) = if shared_v_ids.is_empty() {
-                (
-                    (orig_start_idx1 + len1 - 1) % len1,
-                    (orig_start_idx2 + len2 - 1) % len2,
-                    ConnectPairCap::Open,
-                )
-            } else {
-                (orig_start_idx1, orig_start_idx2, ConnectPairCap::Closed)
-            };
-            range_pairs_to_connect.push(ConnectPair::new(
-                orig_start_idx1..=end1,
-                len1,
-                orig_start_idx2..=end2,
-                len2,
-                cap,
-            ));
-        }
-
-        #[cfg(feature = "rerun")]
-        {
-            for range_pair in &range_pairs_to_connect {
-                let mut v1s = vec![];
-                let mut v2s = vec![];
-                let mut l1s = vec![];
-                let mut l2s = vec![];
-
-                for i in range_pair.ranges[0].clone() {
-                    let v_id = one_ring_v_ids1[i % len1];
-                    v1s.push(v_id);
-                    l1s.push(format!("{i} - {v_id:?}"));
-                }
-                for i in range_pair.ranges[1].clone() {
-                    let v_id = one_ring_v_ids2[i % len2];
-                    v2s.push(v_id);
-                    l2s.push(format!("{i} - {v_id:?}"));
-                }
-
-                self.log_verts_w_labels_rerun("range_pair_1", &v1s, &l1s);
-                self.log_verts_w_labels_rerun("range_pair_2", &v2s, &l2s);
-            }
-        }
-
-        range_pairs_to_connect
-    }
-
-    #[instrument(skip(self))]
-    #[allow(clippy::too_many_arguments)]
-    fn remember_range_pair_connections(
-        &mut self,
-        start_idx1: usize,
-        end_idx1: usize,
-        start_idx2: usize,
-        end_idx2: usize,
-        len1: usize,
-        len2: usize,
-        one_ring_v_ids1: &[VertexId],
-        one_ring_v_ids2: &[VertexId],
-        one_ring_he_ids1: &[HalfedgeId],
-        one_ring_he_ids2: &[HalfedgeId],
-        connected_v_ids: &mut HashSet<VertexId>,
-        connected_he_ids: &mut HashSet<HalfedgeId>,
-    ) {
-        for (start_idx, end_idx, len, v_ids, he_ids) in [
-            (
-                start_idx1,
-                end_idx1,
-                len1,
-                one_ring_v_ids1,
-                one_ring_he_ids1,
-            ),
-            (
-                start_idx2,
-                end_idx2,
-                len2,
-                one_ring_v_ids2,
-                one_ring_he_ids2,
-            ),
-        ] {
-            let mut idx = start_idx;
-            loop {
-                connected_v_ids.insert(v_ids[idx]);
-                if idx == end_idx {
-                    break;
-                }
-                let he_id = he_ids[idx];
-                connected_he_ids.insert(he_id);
-
-                // could have been deleted by neighbor face deletion
-                if let Some(he) = self.halfedges.get(he_id) {
-                    if let Some(twin_id) = he.twin {
-                        connected_he_ids.insert(twin_id);
-                    } else {
-                        error!("halfedge {:?} has no twin", he_id);
-                    }
-                }
-
-                idx = (idx + 1) % len;
-            }
-        }
-    }
-
-    #[instrument(skip(self))]
-    #[allow(clippy::too_many_arguments)]
-    fn find_shared_start_indices_from_ring(
-        &self,
-        one_ring_v_ids: &[VertexId],
-        other_one_ring_v_ids: &[VertexId],
-        one_ring_he_ids: &[HalfedgeId],
-        other_one_ring_he_ids: &[HalfedgeId],
-        shared_v_ids: &HashSet<VertexId>,
-        shared_he_ids: &HashSet<HalfedgeId>,
-        connected_v_ids: &HashSet<VertexId>,
-        connected_he_ids: &HashSet<HalfedgeId>,
-    ) -> Option<(usize, usize, ConnectPairCap)> {
-        let len = one_ring_v_ids.len();
-        let other_len = other_one_ring_v_ids.len();
-
-        debug_assert_eq!(len, one_ring_he_ids.len());
-        debug_assert_eq!(other_len, other_one_ring_he_ids.len());
-
-        for (he_idx, &he_id1) in one_ring_he_ids.iter().enumerate() {
-            // A *dead* ring halfedge is not a reason to skip the position: it
-            // means `remove_neighbor_faces` consumed that edge with the merged
-            // vertices' stars, which is precisely a position that still needs
-            // connecting. Requiring it to be alive made the scan give up on
-            // exactly the ring stretches the band has to span, and the op then
-            // returned "nothing to connect" having already torn both stars out.
-            if !shared_he_ids.contains(&he_id1) && !connected_he_ids.contains(&he_id1) {
-                // walk backwards until we find a connection between the two one-rings
-
-                let mut start_idx = he_idx;
-                let mut start_he_id = &one_ring_he_ids[start_idx];
-
-                let mut start_v_id = &one_ring_v_ids[start_idx];
-
-                while self.halfedges.contains_key(*start_he_id)
-                    && !shared_he_ids.contains(start_he_id)
-                    && !connected_he_ids.contains(start_he_id)
-                    && self.vertices.contains_key(*start_v_id)
-                    && !shared_v_ids.contains(start_v_id)
-                    && !connected_v_ids.contains(start_v_id)
-                {
-                    start_idx = (start_idx + len - 1) % len;
-                    start_he_id = &one_ring_he_ids[start_idx];
-                    start_v_id = &one_ring_v_ids[start_idx];
-
-                    if start_idx == he_idx {
-                        return None;
-                    }
-                }
-
-                // find the corresponding vertex in the other one-ring
-
-                // either it's the same vertex ...
-                if let Some(other_idx) = other_one_ring_v_ids
-                    .iter()
-                    .position(|v_id| start_v_id == v_id)
-                {
-                    return Some((start_idx, other_idx, ConnectPairCap::Closed));
-                }
-
-                // ... or it's a different vertex that is connected by a halfedge
-                for (other_idx, &other_v_id) in other_one_ring_v_ids.iter().enumerate() {
-                    if self.halfedge_from_to(*start_v_id, other_v_id).is_some() {
-                        let other_he_id = &other_one_ring_he_ids[other_idx];
-
-                        if self.halfedges.contains_key(*other_he_id)
-                            && !shared_he_ids.contains(other_he_id)
-                            && !connected_he_ids.contains(other_he_id)
-                        {
-                            return Some((start_idx, other_idx, ConnectPairCap::AlreadyConnected));
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[instrument(skip(self))]
-    fn find_start_indices(
-        &self,
-        one_ring_v_ids1: &[VertexId],
-        one_ring_v_ids2: &[VertexId],
-        one_ring_he_ids1: &[HalfedgeId],
-        one_ring_he_ids2: &[HalfedgeId],
-        shared_v_ids: &HashSet<VertexId>,
-        shared_he_ids: &HashSet<HalfedgeId>,
-        connected_v_ids: &HashSet<VertexId>,
-        connected_he_ids: &HashSet<HalfedgeId>,
-    ) -> Option<(usize, usize, ConnectPairCap)> {
-        if !shared_v_ids.is_empty() || !connected_v_ids.is_empty() {
-            self.find_shared_start_indices_from_ring(
-                one_ring_v_ids1,
-                one_ring_v_ids2,
-                one_ring_he_ids1,
-                one_ring_he_ids2,
-                shared_v_ids,
-                shared_he_ids,
-                connected_v_ids,
-                connected_he_ids,
-            )
-        } else {
-            let first_v_id = one_ring_v_ids1[0];
-            let first_pos = *self
-                .positions
-                .get(first_v_id)
-                .or_else(error_none!("Position not found"))?;
-
-            let positions = one_ring_v_ids2
-                .iter()
-                .map(|v_id| {
-                    self.positions
-                        .get(*v_id)
-                        .copied()
-                        .or_else(error_none!("Position not found"))
-                })
-                .collect::<Option<Vec<_>>>()?;
-
-            let start_idx2 = nearest_index(first_pos, positions.into_iter().enumerate());
-
-            Some((0, start_idx2, ConnectPairCap::Open))
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConnectPairCap {
-    /// Indices reference the same vertex, thus forming a closed polygon.
-    Closed,
-    /// Indices reference different vertices, thus forming an open polygon.
-    Open,
-    /// Indices are already connected by neighboring faces, so no need to connect them again.
-    AlreadyConnected,
-}
-
-/// Two ranges of elements that need to be connected by faces.
-#[derive(Debug)]
-struct ConnectPair {
-    /// Wether the first indices in the two ranges reference the same vertex, thus forming a closed polygon.
-    start_cap: ConnectPairCap,
-
-    /// The pair of ranges of vertex indices that need to be connected.
-    ranges: [RangeInclusive<usize>; 2],
-}
-
-impl ConnectPair {
-    /// Connects two whole arcs of `len1` and `len2` vertices, first to last.
-    fn whole(len1: usize, len2: usize, start_cap: ConnectPairCap) -> Self {
-        Self::new(0..=len1 - 1, len1, 0..=len2 - 1, len2, start_cap)
-    }
-
-    fn new(
-        mut range1: RangeInclusive<usize>,
-        len1: usize,
-        mut range2: RangeInclusive<usize>,
-        len2: usize,
-        start_cap: ConnectPairCap,
-    ) -> Self {
-        if range1.end() <= range1.start() {
-            range1 = (*range1.start())..=(*range1.end() + len1);
-        }
-        if range2.end() <= range2.start() {
-            range2 = (*range2.start())..=(*range2.end() + len2);
-        }
-
-        ConnectPair {
-            start_cap,
-            ranges: [range1, range2],
-        }
     }
 
     // This is a modified Bresenham algorithm usually used for drawing lines on a grid.

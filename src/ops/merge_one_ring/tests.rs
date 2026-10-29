@@ -644,10 +644,9 @@ fn test_vertex_merge_common_double_flap() {
         RR.flush_blocking().unwrap();
     }
 
-    // Note: `find_already_connected_pairings` only takes the first strip of
-    // existing faces (a second strip would otherwise leave the region between
-    // the strips uncovered), so this fixture seams one edge differently than it
-    // used to. The invariants above still hold for it.
+    // Note: `find_already_connected_strip` only takes the first strip of
+    // existing faces, so this fixture seams one edge differently than a
+    // two-strip teardown would. The invariants above still hold for it.
     assert_eq!(marked_halfedges.len(), result.added_halfedges.len());
     assert_eq!(marked_vertices.len(), result.added_vertices.len());
     assert_merge_invariants(
@@ -2210,14 +2209,10 @@ fn merge_lens_region_into(mesh: MeshGraph, reconstruct_seam: bool) -> (MeshGraph
 
 /// A lens merge must not open a hole.
 ///
-/// The band between two one-rings is planned as a sequence of ranges, and the
-/// walk that emits them ends by pushing whatever is left over between the last
-/// range and where it started. That leftover push used to require a span of two
-/// or more vertices on one of the rings - which is exactly what the short
-/// segment of a lens is not: one step on each ring (here 358 -> 1217 against
-/// 347 -> 1217). So the segment was dropped, and since the faces that used to
-/// cover it were torn out with the merged vertices' stars, nothing re-filled
-/// it: the merge ended with a triangular hole at 347/358/1217.
+/// The short segment of the lens is one step on each ring (here 358 -> 1217
+/// against 347 -> 1217). The faces that covered it are torn out with the merged
+/// vertices' stars, so a band that drops the segment leaves a triangular hole at
+/// 347/358/1217.
 #[test]
 fn test_merge_one_ring_lens_stays_watertight() {
     get_tracing_subscriber();
@@ -2438,16 +2433,12 @@ fn test_merge_one_ring_parallel_edge_leftover_stays_watertight() {
     );
 }
 
-/// The leftover band range must reach its cap on *both* rings.
+/// The band must reach the shared vertex on *both* rings.
 ///
 /// Another lens - the one-rings share vertices 19 and 17 - but an asymmetric
 /// one: the two shared vertices are adjacent on ring 1 and four steps apart on
-/// ring 2. `compute_range_pairs_to_connect` walks both rings in lockstep and
-/// only lets one catch up when the loop body sees a shared vertex, and the walk
-/// ends as soon as ring 1 is back at its start - so the final cap never got that
-/// treatment. The leftover range covered one step of ring 2's arc instead of all
-/// four, and the faces over the rest were never planned: the merge left an open
-/// quad at 17/22/30/26.
+/// ring 2. A band that pairs the rings in lockstep covers one step of ring 2's
+/// arc instead of all four and leaves an open quad at 17/22/30/26.
 #[test]
 fn test_merge_one_ring_asymmetric_lens_stays_watertight() {
     get_tracing_subscriber();
@@ -3847,7 +3838,7 @@ fn test_rim_taxonomy_baseline() {
     // The coincident fusion now maps a ring-2 vertex to the ring-1 vertex it was actually
     // fused into (it used to take the last coincident one), so the rings the planner sees are
     // the real ones and the pre-net rim is smaller still.
-    assert_case("lens(reconstruct=false)", [4, 0, 0, 1, 0, 0, 4, 3, 0, 0, 0]);
+    assert_case("lens(reconstruct=false)", [0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0]);
 
     let _ = merge_lens_region(true);
     assert_case("lens(reconstruct=true)", [0; 11]);
@@ -3882,15 +3873,14 @@ fn test_rim_taxonomy_baseline() {
 
     for case in CUT_TRUNCATED_CASES {
         // Cut-truncated (see `test_open_weld_chain_cases_are_cut_truncated`):
-        // the old planner leaves them open and the rim-first planner refuses
-        // because their rim is an open chain. The pins are the old planner's
-        // behavior, unchanged.
+        // the planner refuses because their rim is an open chain, so no band is
+        // built and the whole rim is open before the repair passes.
         let expected = match case.what {
             "reversed weld order, radius 2, +4 boundary halfedges" => {
-                [2, 1, 0, 0, 0, 0, 2, 1, 0, 0, 0]
+                [9, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0]
             }
             "reversed weld order, radius 2, +4 boundary halfedges (mirror)" => {
-                [2, 1, 0, 0, 0, 0, 2, 1, 0, 0, 0]
+                [9, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0]
             }
             other => panic!("no pinned rim taxonomy for open weld case {other:?}"),
         };
@@ -3979,7 +3969,7 @@ fn test_rim_planner_corpus_measurement() {
         let expected = match case.what {
             // The chain ends at a pre-existing border of the cut region: only
             // the pinched single-side loop can be filled from rim data alone, so
-            // the planner refuses and the old planner's faces stand.
+            // the planner refuses and no band is built.
             "reversed weld order, radius 2, +4 boundary halfedges" => [2, 4, 9, 1],
             "reversed weld order, radius 2, +4 boundary halfedges (mirror)" => [2, 4, 9, 1],
             other => panic!("no pinned rim-plan measurement for open weld case {other:?}"),
@@ -4337,7 +4327,7 @@ fn test_vertex_renames() {
     assert!(resolved.contains(&key(a, e)) && resolved.contains(&key(b, e)));
 }
 
-/// `RimPlan::is_complete` is the gate between the rim plan and the old planner, so each of
+/// `RimPlan::is_complete` decides whether the op builds the rim plan, so each of
 /// its refusals is pinned on a rim it can be checked by hand: the three face-less halves
 /// around a lone triangle `abc`.
 #[test]

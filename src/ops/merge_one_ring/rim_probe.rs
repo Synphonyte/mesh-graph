@@ -41,10 +41,9 @@ pub(crate) struct RimProbe {
     pub proto_unhandled: Vec<String>,
     /// Per-structure run composition of the rim, for diagnostics.
     pub proto_structure_detail: Vec<String>,
-    /// Lengths of the ordered ring each star's rim forms. The ring-range planner
-    /// runs on the pre-removal one-rings, which include vertices that are *not* on
-    /// the rim (strip-connected and hole-interior ones); these lengths are what the
-    /// rim-first planner consumes.
+    /// Lengths of the ordered ring each star's rim forms. Unlike the pre-removal
+    /// one-rings, these hold only vertices on the rim (no strip-connected or
+    /// hole-interior ones), which is what the rim-first planner consumes.
     pub h1_ring_len: usize,
     pub h2_ring_len: usize,
 
