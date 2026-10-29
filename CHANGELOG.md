@@ -6,8 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Added `zip_coincident_patches`, which finds places where two sheets lie exactly face to
-  face (or one sheet folds back over itself) and zips them: both layers are removed and the
-  sheets are joined along the patch's edge, with coincident vertices fused. Meant as the
+  face and zips them: both layers are removed and the sheets are joined along the patch's
+  edge, with coincident vertices fused. Meant as the
   first step of a weld, before any `merge_vertices_one_rings`: merging into such a patch
   left flaps that the neighbourhood cleanup deleted, tearing holes nothing could close. A
   patch whose two sides don't meet edge for edge is left alone, so the op never opens

@@ -18,11 +18,6 @@ use itertools::Itertools;
 use crate::hash::{HashMap, HashSet};
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId};
 
-/// The most face pairs one patch may have. A contact larger than this is left alone rather
-/// than half-zipped: zipping part of a patch makes the rest of it edge-adjacent to the seam,
-/// which turns those pairs into exactly the flaps this op exists to remove.
-const MAX_PATCH_PAIRS: usize = 256;
-
 /// What [`MeshGraph::zip_coincident_patches`] did.
 #[derive(Debug, Default)]
 pub struct ZipCoincident {
@@ -103,14 +98,15 @@ impl MeshGraph {
     /// `scope`. Matching is exact on positions, like the flap test in the neighbourhood
     /// cleanup ([`MeshGraph::faces_share_all_vertices`]).
     ///
-    /// A fold - one sheet doubling back over itself, so that the two layers already share
-    /// an edge - is zipped the same way; the shared edge goes with the two faces.
+    /// A patch is zipped whole or not at all. Zipping part of one would make the rest of it
+    /// edge-adjacent to the seam, which turns those pairs into exactly the flaps this op
+    /// exists to remove; the growth stops by itself where the faces stop coinciding.
     ///
     /// The op never opens boundary. A patch is left alone (`refused_patches`) when its
-    /// two sides don't meet edge for edge (the layers touch somewhere other than along a
-    /// shared edge, a vertex would fuse into two different ones, or fusing would create a
-    /// parallel edge), or when it has more than [`MAX_PATCH_PAIRS`] pairs. Two sheets
-    /// tessellated differently share no coincident face, so there is nothing to find.
+    /// two sides don't meet edge for edge: the two layers touch each other (this includes a
+    /// fold, one sheet doubling back over itself), a vertex would fuse into two different
+    /// ones, or fusing would create a parallel edge. Two sheets tessellated differently
+    /// share no coincident face, so there is nothing to find.
     ///
     /// Where both sheets had boundary along the patch's edge, the two boundary edges vanish
     /// together: the zip joins the two borders. On a closed mesh the boundary is unchanged.
@@ -143,8 +139,7 @@ impl MeshGraph {
     }
 
     /// The face-to-face patches touching a coincident vertex of `scope`, each grown to its
-    /// full extent, in a deterministic order. Patches larger than [`MAX_PATCH_PAIRS`] are
-    /// returned truncated; [`Self::plan_zip`] refuses them.
+    /// full extent, in a deterministic order.
     fn find_coincident_patches(&self, scope: &[VertexId]) -> Vec<Vec<FacePair>> {
         let mut by_position: HashMap<PosKey, Vec<VertexId>> = HashMap::default();
         let mut position_order: Vec<PosKey> = Vec::new();
@@ -215,9 +210,6 @@ impl MeshGraph {
             let mut next = 0;
             while let Some(pair) = patch.get(next).copied() {
                 next += 1;
-                if patch.len() > MAX_PATCH_PAIRS {
-                    break;
-                }
                 for i in 0..3 {
                     let (Some(beyond_a), Some(beyond_b)) = (
                         self.face_beyond(pair.a.halfedges[i]),
@@ -243,10 +235,6 @@ impl MeshGraph {
 
     /// Checks that `patch` can be zipped cleanly and works out how. `None` refuses it.
     fn plan_zip(&self, patch: &[FacePair]) -> Option<ZipPlan> {
-        if patch.len() > MAX_PATCH_PAIRS {
-            return None;
-        }
-
         let a_faces: HashSet<FaceId> = patch.iter().map(|pair| pair.a.face).collect();
         let b_faces: HashSet<FaceId> = patch.iter().map(|pair| pair.b.face).collect();
         if a_faces.len() != patch.len()
@@ -292,16 +280,11 @@ impl MeshGraph {
 
                 let a_out = self.halfedges.get(a_he)?.twin?;
                 let b_out = self.halfedges.get(b_he)?.twin?;
-                // A fold: the sheet doubles back over itself, so the two layers already
-                // share this edge. It goes together with both faces.
-                if a_out == b_he {
-                    continue;
-                }
-
                 let a_beyond = self.halfedges.get(a_out)?.face;
                 let b_beyond = self.halfedges.get(b_out)?.face;
 
-                // Anywhere else, the two layers must not touch each other inside the patch.
+                // The two layers must not touch each other. A fold, where they share this
+                // very edge, is left alone too.
                 if a_beyond.is_some_and(|f| b_faces.contains(&f))
                     || b_beyond.is_some_and(|f| a_faces.contains(&f))
                 {
@@ -563,13 +546,37 @@ mod tests {
         (mesh, v_ids)
     }
 
-    /// Every halfedge is faced and properly twinned, every outgoing list is right and has
-    /// no parallel edges, and every vertex has faces.
+    /// Undirected boundary edges, as vertex pairs.
+    fn boundary_edges(mesh: &MeshGraph) -> std::collections::BTreeSet<(VertexId, VertexId)> {
+        mesh.halfedges
+            .values()
+            .filter(|he| he.face.is_none())
+            .filter_map(|he| {
+                let start = he.start_vertex(mesh)?;
+                Some((start.min(he.end_vertex), start.max(he.end_vertex)))
+            })
+            .collect()
+    }
+
+    /// Every halfedge is faced and the mesh is manifold ([`assert_manifold`]).
     fn assert_closed_manifold(mesh: &MeshGraph) {
         for (he_id, he) in mesh.halfedges.iter() {
             assert!(he.face.is_some(), "boundary halfedge {he_id:?}");
+        }
+        assert_manifold(mesh);
+    }
+
+    /// Every halfedge is properly twinned and no edge is a wire (faceless on both sides),
+    /// every outgoing list is right, has a live seed and no parallel edges, and no vertex
+    /// is isolated.
+    fn assert_manifold(mesh: &MeshGraph) {
+        for (he_id, he) in mesh.halfedges.iter() {
             let twin = he.twin.expect("twin");
             assert_eq!(mesh.halfedges[twin].twin, Some(he_id), "twins disagree");
+            assert!(
+                he.face.is_some() || mesh.halfedges[twin].face.is_some(),
+                "wire edge at {he_id:?}"
+            );
         }
         for (v_id, out) in mesh.outgoing_halfedges.iter() {
             assert!(!out.is_empty(), "isolated vertex {v_id:?}");
@@ -678,8 +685,10 @@ mod tests {
     }
 
     /// A sheet doubling back over itself: faces `(s0, v, s1)` and `(s0, s1, w)` share the
-    /// fold edge `s0-s1` and `v` sits on `w`.
-    fn fold(close_with: &[[usize; 3]]) -> (MeshGraph, Vec<VertexId>) {
+    /// fold edge `s0-s1`, and `v` sits on `w`. That is one sheet, not two touching, and is
+    /// left alone.
+    #[test]
+    fn test_leaves_a_fold_alone() {
         // s0, s1, v, w, p, q
         let points = [
             vec3(0., 0., 0.),
@@ -689,71 +698,15 @@ mod tests {
             vec3(0.5, 0.5, 1.),
             vec3(0.5, 0.5, -1.),
         ];
-        let mut faces = vec![[0, 2, 1], [0, 1, 3]];
-        faces.extend_from_slice(close_with);
-        build(&points, &faces, &[], &[])
-    }
-
-    #[test]
-    fn test_zips_a_fold() {
-        let (mut mesh, v_ids) = fold(&[
+        let faces = [
+            [0, 2, 1],
+            [0, 1, 3],
             [2, 0, 4],
             [1, 2, 4],
             [3, 1, 5],
             [0, 3, 5],
             [4, 0, 5],
             [5, 1, 4],
-        ]);
-
-        let zip = mesh.zip_coincident_patches(v_ids.iter().copied());
-
-        assert_eq!((zip.zipped_patches, zip.refused_patches), (1, 0));
-        assert_eq!(zip.removed_faces.len(), 2);
-        assert_eq!(zip.fused, vec![(v_ids[3], v_ids[2])]);
-        assert_eq!((mesh.vertices.len(), mesh.faces.len()), (5, 6));
-        assert_closed_manifold(&mesh);
-    }
-
-    /// Closed by one apex on both sides, the fold is a zero-volume pillow: every face pairs
-    /// up, and the zip removes all of it.
-    #[test]
-    fn test_zips_away_a_zero_volume_pillow() {
-        let (mut mesh, v_ids) = fold(&[[2, 0, 4], [1, 2, 4], [3, 1, 4], [0, 3, 4]]);
-
-        let zip = mesh.zip_coincident_patches(v_ids.iter().copied());
-
-        assert_eq!((zip.zipped_patches, zip.refused_patches), (1, 0));
-        assert_eq!(zip.removed_faces.len(), 6);
-        // Only `q` is left, which the pillow never used.
-        assert!(mesh.faces.is_empty() && mesh.halfedges.is_empty());
-        assert_eq!(mesh.vertices.keys().collect_vec(), vec![v_ids[5]]);
-    }
-
-    /// The fold's two vertices both reach `x` outside the patch, so fusing them would join
-    /// it to `x` twice. The patch is refused and the mesh left as it was.
-    #[test]
-    fn test_refuses_a_zip_that_would_make_a_parallel_edge() {
-        // s0, s1, v, w, p, q, x
-        let points = [
-            vec3(0., 0., 0.),
-            vec3(1., 0., 0.),
-            vec3(0.5, 1., 0.),
-            vec3(0.5, 1., 0.),
-            vec3(1., 1., 1.),
-            vec3(0., 1., -1.),
-            vec3(0.5, 1.5, 0.5),
-        ];
-        let faces = [
-            [0, 2, 1],
-            [0, 1, 3],
-            [1, 2, 4],
-            [4, 2, 6],
-            [6, 2, 0],
-            [3, 1, 6],
-            [3, 6, 5],
-            [3, 5, 0],
-            [1, 4, 6],
-            [5, 6, 0],
         ];
         let (mut mesh, v_ids) = build(&points, &faces, &[], &[]);
         assert_closed_manifold(&mesh);
@@ -764,6 +717,78 @@ mod tests {
         assert_eq!((zip.zipped_patches, zip.refused_patches), (0, 1));
         assert_eq!((mesh.vertices.len(), mesh.faces.len()), (vertices, faces));
         assert_closed_manifold(&mesh);
+    }
+
+    /// Two open sheets, each a coincident triangle plus one face of its own on edge `0-1`.
+    /// `x` belongs to both: sheet `a` reaches it from corner 0, sheet `b` from its corner 0
+    /// through `y`. Fusing the two corners would join them to `x` twice, so the patch is
+    /// refused and the mesh left as it was.
+    #[test]
+    fn test_refuses_a_zip_that_would_make_a_parallel_edge() {
+        // a0, a1, a2, b0, b1, b2, x, y
+        let points = [
+            vec3(0., 0., 0.),
+            vec3(1., 0., 0.),
+            vec3(0., 1., 0.),
+            vec3(0., 0., 0.),
+            vec3(1., 0., 0.),
+            vec3(0., 1., 0.),
+            vec3(0.5, -1., 0.5),
+            vec3(0.5, -1., -0.5),
+        ];
+        let faces = [[0, 1, 2], [1, 0, 6], [3, 5, 4], [3, 4, 7], [3, 7, 6]];
+        let (mut mesh, v_ids) = build(&points, &faces, &[], &[]);
+        let (vertices, faces, boundary) =
+            (mesh.vertices.len(), mesh.faces.len(), boundary_edges(&mesh));
+
+        let zip = mesh.zip_coincident_patches(v_ids.iter().copied());
+
+        assert_eq!((zip.zipped_patches, zip.refused_patches), (0, 1));
+        assert_eq!((mesh.vertices.len(), mesh.faces.len()), (vertices, faces));
+        assert_eq!(boundary_edges(&mesh), boundary);
+    }
+
+    /// Two open sheets whose coincident triangles reach their borders: each is the triangle
+    /// plus one face of its own on edge `0-1`. Along `1-2` and `2-0` both sheets had
+    /// boundary on the same line, and those borders join and drop out; along `0-1` the
+    /// sheets' own faces are twinned. What is left is the two own faces, meeting at `0-1`,
+    /// with the outer boundary of both and no boundary edge the zip opened.
+    #[test]
+    fn test_coincident_borders_join_and_drop_out() {
+        let base = [vec3(0., 0., 0.), vec3(1., 0., 0.), vec3(0., 1., 0.)];
+        let mut a = base.to_vec();
+        a.push(vec3(0.5, -1., 0.5));
+        let mut b = base.to_vec();
+        b.push(vec3(0.5, -1., -0.5));
+        let (mut mesh, v_ids) = build(&a, &[[0, 1, 2], [1, 0, 3]], &b, &[[0, 2, 1], [0, 1, 3]]);
+        assert_eq!(boundary_edges(&mesh).len(), 8);
+
+        let zip = mesh.zip_coincident_patches(v_ids.iter().copied());
+
+        assert_eq!((zip.zipped_patches, zip.refused_patches), (1, 0));
+        assert_eq!(zip.removed_faces.len(), 2);
+        let mut fused = zip.fused.clone();
+        fused.sort();
+        assert_eq!(
+            fused,
+            vec![
+                (v_ids[4], v_ids[0]),
+                (v_ids[5], v_ids[1]),
+                (v_ids[6], v_ids[2])
+            ]
+        );
+        // Corner 2 had nothing but the patch and its borders.
+        assert!(!mesh.vertices.contains_key(v_ids[2]));
+
+        let edge = |i: usize, j: usize| (v_ids[i].min(v_ids[j]), v_ids[i].max(v_ids[j]));
+        assert_eq!(
+            boundary_edges(&mesh),
+            [edge(0, 3), edge(1, 3), edge(0, 7), edge(1, 7)]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!((mesh.vertices.len(), mesh.faces.len()), (4, 2));
+        assert_manifold(&mesh);
     }
 
     #[test]

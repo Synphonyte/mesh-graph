@@ -3384,6 +3384,14 @@ const CUT_TRUNCATED_CASES: &[WeldCase] = &[
 /// It matters beyond itself: every later boundary the weld leaves at this gap is an
 /// extension of these four halfedges, so nothing downstream can close them without
 /// sealing boundary it did not open.
+///
+/// The two sheets lie face to face on three triangles (10/11/14/15 on 28/29/30/31). In the
+/// capture that patch ran into the cut along 10-14-15 and 28-30-31, so the cut's borders
+/// were part of what went wrong, and `replay` skips edges at cut vertices. Vertices 34 and
+/// 35 extend the two sheets past those edges, fanning around every patch vertex that was
+/// on the cut, and bend away from each other so nothing new coincides: the patch ends
+/// inside the region, and whatever the merge opens around it is measured. 36 vertices /
+/// 53 faces.
 const WELD_GAP005_MERGE: WeldCase = WeldCase {
     what: "gap=0.05 weld: two shared ring vertices, band leaves the region open",
     verts: &[
@@ -3421,6 +3429,9 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
         (1.025, 0.75, 0.25),
         (1.0268306, 0.87941945, 0.21875),
         (1.2200837, 0.7131472, -0.010251031),
+        // Not captured: 34 extends sheet `a` past 10-14-15, 35 sheet `b` past 28-30-31.
+        (1.075, 0.625, 0.35),
+        (0.975, 0.625, 0.35),
     ],
     faces: &[
         (21, 19, 33),
@@ -3468,6 +3479,14 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
         (18, 13, 17),
         (13, 18, 1),
         (13, 16, 12),
+        (9, 10, 34),
+        (10, 14, 34),
+        (14, 15, 34),
+        (15, 16, 34),
+        (35, 28, 26),
+        (30, 28, 35),
+        (31, 30, 35),
+        (32, 31, 35),
     ],
     outgoing: &[
         (3, &[1, 0, 2, 18, 5, 6], 5),
@@ -3521,8 +3540,8 @@ fn test_gap005_zip_then_merge_stays_closed() {
     expected.sort();
     assert_eq!(fused, expected);
 
-    // The zip opens nothing: every boundary edge after it was a boundary edge before, up
-    // to the fusions. (The cut's two coincident borders along 10-14-15 / 28-30-31 cancel.)
+    // The patch ends inside the region, so the zip leaves the boundary exactly as it was, up
+    // to the fusions.
     let survivor = |v: VertexId| {
         zip.fused
             .iter()
@@ -3537,13 +3556,7 @@ fn test_gap005_zip_then_merge_stays_closed() {
             (a.min(b), a.max(b))
         })
         .collect();
-    assert!(
-        boundary_zipped.is_subset(&before_renamed),
-        "the zip opened {:?}",
-        boundary_zipped
-            .difference(&before_renamed)
-            .collect::<Vec<_>>()
-    );
+    assert_eq!(boundary_zipped, before_renamed);
     assert_manifold_region(&mesh_graph);
 
     let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
