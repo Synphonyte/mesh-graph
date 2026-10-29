@@ -3489,6 +3489,92 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
 
 const OPEN_WELD_CASES: &[WeldCase] = &[MERGE_GAP01_TRIANGLE];
 
+/// [`WELD_GAP005_MERGE`] with the coincident-sheet zip run first, as a weld would.
+///
+/// The fixture's two sheets lie face to face on three triangles (captures 10/11/14/15 on
+/// 28/29/30/31), which is what makes the merge alone open the region: its coincident fusion
+/// joins 11 and 29, the triangles at 12 become a flap, and whichever path the merge takes
+/// one of them goes and 15/31 are left apart. Zipped first, the merge gets two sheets that
+/// already meet along the patch's edge and has to close only what its own removals open -
+/// without the nets too.
+#[test]
+fn test_gap005_zip_then_merge_stays_closed() {
+    get_tracing_subscriber();
+
+    let case = &WELD_GAP005_MERGE;
+    let (mut mesh_graph, vertex_ids) = case.build();
+    let capture = |i: usize| vertex_ids[i];
+    let boundary_before = boundary_edges(&mesh_graph);
+
+    let zip = mesh_graph.zip_coincident_patches(vertex_ids.iter().copied());
+
+    assert_eq!((zip.zipped_patches, zip.refused_patches), (1, 0));
+    assert_eq!(zip.removed_faces.len(), 6);
+    let mut fused = zip.fused.clone();
+    fused.sort();
+    let mut expected = vec![
+        (capture(28), capture(10)),
+        (capture(29), capture(11)),
+        (capture(30), capture(14)),
+        (capture(31), capture(15)),
+    ];
+    expected.sort();
+    assert_eq!(fused, expected);
+
+    // The zip opens nothing: every boundary edge after it was a boundary edge before, up
+    // to the fusions. (The cut's two coincident borders along 10-14-15 / 28-30-31 cancel.)
+    let survivor = |v: VertexId| {
+        zip.fused
+            .iter()
+            .find(|(absorbed, _)| *absorbed == v)
+            .map_or(v, |(_, s)| *s)
+    };
+    let boundary_zipped = boundary_edges(&mesh_graph);
+    let before_renamed: std::collections::BTreeSet<_> = boundary_before
+        .iter()
+        .map(|&(a, b)| {
+            let (a, b) = (survivor(a), survivor(b));
+            (a.min(b), a.max(b))
+        })
+        .collect();
+    assert!(
+        boundary_zipped.is_subset(&before_renamed),
+        "the zip opened {:?}",
+        boundary_zipped
+            .difference(&before_renamed)
+            .collect::<Vec<_>>()
+    );
+    assert_manifold_region(&mesh_graph);
+
+    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
+    let mut marked_vertices: HashSet<VertexId> = HashSet::default();
+    for idx in case.protected {
+        marked_vertices.insert(vertex_ids[*idx]);
+    }
+    mesh_graph.merge_vertices_one_rings(
+        vertex_ids[case.merge.0],
+        vertex_ids[case.merge.1],
+        0.0096,
+        &mut marked_halfedges,
+        &mut marked_vertices,
+    );
+    drain_rim_taxonomy();
+
+    let boundary_merged = boundary_edges(&mesh_graph);
+    assert_eq!(
+        boundary_merged,
+        boundary_zipped,
+        "the merge changed the boundary: opened {:?}, closed {:?}",
+        boundary_merged
+            .difference(&boundary_zipped)
+            .collect::<Vec<_>>(),
+        boundary_zipped
+            .difference(&boundary_merged)
+            .collect::<Vec<_>>(),
+    );
+    assert_manifold_region(&mesh_graph);
+}
+
 /// The extracted cases reproduce identically on every run - that is what makes
 /// them usable as tests while the weld that produced them is still
 /// nondeterministic. This guards the extraction, not the defect, so it passes
