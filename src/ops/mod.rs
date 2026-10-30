@@ -9,12 +9,14 @@ mod remove;
 mod selection_scoped_tests;
 mod subdivide;
 mod transform;
+mod zip_coincident;
 
 use std::{cmp::Reverse, collections::BinaryHeap};
 
 use crate::hash::{HashMap, HashSet};
 pub use add::*;
 pub use merge_one_ring::*;
+pub use zip_coincident::ZipCoincident;
 
 use ordered_float::OrderedFloat;
 

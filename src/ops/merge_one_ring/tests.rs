@@ -3384,6 +3384,10 @@ const CUT_TRUNCATED_CASES: &[WeldCase] = &[
 /// It matters beyond itself: every later boundary the weld leaves at this gap is an
 /// extension of these four halfedges, so nothing downstream can close them without
 /// sealing boundary it did not open.
+///
+/// The sheets lie face to face on 10/11/14/15 and 28/29/30/31. Vertices 34 and 35 (not
+/// captured) extend each sheet around the patch vertices that were on the cut, so `replay`,
+/// which skips cut vertices, sees everything the merge opens.
 const WELD_GAP005_MERGE: WeldCase = WeldCase {
     what: "gap=0.05 weld: two shared ring vertices, band leaves the region open",
     verts: &[
@@ -3421,6 +3425,9 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
         (1.025, 0.75, 0.25),
         (1.0268306, 0.87941945, 0.21875),
         (1.2200837, 0.7131472, -0.010251031),
+        // Not captured; see the doc above.
+        (1.075, 0.625, 0.35),
+        (0.975, 0.625, 0.35),
     ],
     faces: &[
         (21, 19, 33),
@@ -3468,6 +3475,14 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
         (18, 13, 17),
         (13, 18, 1),
         (13, 16, 12),
+        (9, 10, 34),
+        (10, 14, 34),
+        (14, 15, 34),
+        (15, 16, 34),
+        (35, 28, 26),
+        (30, 28, 35),
+        (31, 30, 35),
+        (32, 31, 35),
     ],
     outgoing: &[
         (3, &[1, 0, 2, 18, 5, 6], 5),
@@ -3488,6 +3503,79 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
 };
 
 const OPEN_WELD_CASES: &[WeldCase] = &[MERGE_GAP01_TRIANGLE];
+
+/// [`WELD_GAP005_MERGE`] zipped first, as the weld does: the merge then closes what it
+/// opens, nets or not.
+#[test]
+fn test_gap005_zip_then_merge_stays_closed() {
+    get_tracing_subscriber();
+
+    let case = &WELD_GAP005_MERGE;
+    let (mut mesh_graph, vertex_ids) = case.build();
+    let capture = |i: usize| vertex_ids[i];
+    let boundary_before = boundary_edges(&mesh_graph);
+
+    let zip = mesh_graph.zip_coincident_patches(vertex_ids.iter().copied());
+
+    assert_eq!((zip.zipped_patches, zip.refused_patches), (1, 0));
+    assert_eq!(zip.removed_faces.len(), 6);
+    let mut fused = zip.fused.clone();
+    fused.sort();
+    let mut expected = vec![
+        (capture(28), capture(10)),
+        (capture(29), capture(11)),
+        (capture(30), capture(14)),
+        (capture(31), capture(15)),
+    ];
+    expected.sort();
+    assert_eq!(fused, expected);
+
+    // Boundary unchanged up to the fusions.
+    let survivor = |v: VertexId| {
+        zip.fused
+            .iter()
+            .find(|(absorbed, _)| *absorbed == v)
+            .map_or(v, |(_, s)| *s)
+    };
+    let boundary_zipped = boundary_edges(&mesh_graph);
+    let before_renamed: std::collections::BTreeSet<_> = boundary_before
+        .iter()
+        .map(|&(a, b)| {
+            let (a, b) = (survivor(a), survivor(b));
+            (a.min(b), a.max(b))
+        })
+        .collect();
+    assert_eq!(boundary_zipped, before_renamed);
+    assert_manifold_region(&mesh_graph);
+
+    let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
+    let mut marked_vertices: HashSet<VertexId> = HashSet::default();
+    for idx in case.protected {
+        marked_vertices.insert(vertex_ids[*idx]);
+    }
+    mesh_graph.merge_vertices_one_rings(
+        vertex_ids[case.merge.0],
+        vertex_ids[case.merge.1],
+        0.0096,
+        &mut marked_halfedges,
+        &mut marked_vertices,
+    );
+    drain_rim_taxonomy();
+
+    let boundary_merged = boundary_edges(&mesh_graph);
+    assert_eq!(
+        boundary_merged,
+        boundary_zipped,
+        "the merge changed the boundary: opened {:?}, closed {:?}",
+        boundary_merged
+            .difference(&boundary_zipped)
+            .collect::<Vec<_>>(),
+        boundary_zipped
+            .difference(&boundary_merged)
+            .collect::<Vec<_>>(),
+    );
+    assert_manifold_region(&mesh_graph);
+}
 
 /// The extracted cases reproduce identically on every run - that is what makes
 /// them usable as tests while the weld that produced them is still

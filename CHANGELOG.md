@@ -5,6 +5,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added `zip_coincident_patches`: zips sheets that lie exactly face to face (both layers
+  removed, coincident vertices fused). For welds, before merging. Never opens boundary
 - Added `collapse_selected_until_edges_above_min_length` and
   `subdivide_selected_until_edges_below_max_length`, which restrict the edge-length
   cleanups to a `Selection` and keep that selection in step with the mesh they reshape:
