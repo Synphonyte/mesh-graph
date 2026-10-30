@@ -3385,13 +3385,9 @@ const CUT_TRUNCATED_CASES: &[WeldCase] = &[
 /// extension of these four halfedges, so nothing downstream can close them without
 /// sealing boundary it did not open.
 ///
-/// The two sheets lie face to face on three triangles (10/11/14/15 on 28/29/30/31). In the
-/// capture that patch ran into the cut along 10-14-15 and 28-30-31, so the cut's borders
-/// were part of what went wrong, and `replay` skips edges at cut vertices. Vertices 34 and
-/// 35 extend the two sheets past those edges, fanning around every patch vertex that was
-/// on the cut, and bend away from each other so nothing new coincides: the patch ends
-/// inside the region, and whatever the merge opens around it is measured. 36 vertices /
-/// 53 faces.
+/// The sheets lie face to face on 10/11/14/15 and 28/29/30/31. Vertices 34 and 35 (not
+/// captured) extend each sheet around the patch vertices that were on the cut, so `replay`,
+/// which skips cut vertices, sees everything the merge opens.
 const WELD_GAP005_MERGE: WeldCase = WeldCase {
     what: "gap=0.05 weld: two shared ring vertices, band leaves the region open",
     verts: &[
@@ -3429,7 +3425,7 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
         (1.025, 0.75, 0.25),
         (1.0268306, 0.87941945, 0.21875),
         (1.2200837, 0.7131472, -0.010251031),
-        // Not captured: 34 extends sheet `a` past 10-14-15, 35 sheet `b` past 28-30-31.
+        // Not captured; see the doc above.
         (1.075, 0.625, 0.35),
         (0.975, 0.625, 0.35),
     ],
@@ -3508,14 +3504,8 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
 
 const OPEN_WELD_CASES: &[WeldCase] = &[MERGE_GAP01_TRIANGLE];
 
-/// [`WELD_GAP005_MERGE`] with the coincident-sheet zip run first, as a weld would.
-///
-/// The fixture's two sheets lie face to face on three triangles (captures 10/11/14/15 on
-/// 28/29/30/31), which is what makes the merge alone open the region: its coincident fusion
-/// joins 11 and 29, the triangles at 12 become a flap, and whichever path the merge takes
-/// one of them goes and 15/31 are left apart. Zipped first, the merge gets two sheets that
-/// already meet along the patch's edge and has to close only what its own removals open -
-/// without the nets too.
+/// [`WELD_GAP005_MERGE`] zipped first, as the weld does: the merge then closes what it
+/// opens, nets or not.
 #[test]
 fn test_gap005_zip_then_merge_stays_closed() {
     get_tracing_subscriber();
@@ -3540,8 +3530,7 @@ fn test_gap005_zip_then_merge_stays_closed() {
     expected.sort();
     assert_eq!(fused, expected);
 
-    // The patch ends inside the region, so the zip leaves the boundary exactly as it was, up
-    // to the fusions.
+    // Boundary unchanged up to the fusions.
     let survivor = |v: VertexId| {
         zip.fused
             .iter()

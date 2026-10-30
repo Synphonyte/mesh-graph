@@ -5,13 +5,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Added `zip_coincident_patches`, which finds places where two sheets lie exactly face to
-  face and zips them: both layers are removed and the sheets are joined along the patch's
-  edge, with coincident vertices fused. Meant as the
-  first step of a weld, before any `merge_vertices_one_rings`: merging into such a patch
-  left flaps that the neighbourhood cleanup deleted, tearing holes nothing could close. A
-  patch whose two sides don't meet edge for edge is left alone, so the op never opens
-  boundary. Returns a `ZipCoincident` with the removed ids and the fusions
+- Added `zip_coincident_patches`: zips sheets that lie exactly face to face (both layers
+  removed, coincident vertices fused). For welds, before merging. Never opens boundary
 - Added `collapse_selected_until_edges_above_min_length` and
   `subdivide_selected_until_edges_below_max_length`, which restrict the edge-length
   cleanups to a `Selection` and keep that selection in step with the mesh they reshape:
