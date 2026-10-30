@@ -61,6 +61,21 @@ fn merge_nets_enabled() -> bool {
     true
 }
 
+// How many coincident cross-ring pairs `merge_vertices_one_rings` fused on this thread.
+// Tells whether contacts still reach the merge now that `zip_coincident_patches` runs
+// first; if this stays 0, the fusion block can go.
+#[cfg(any(test, feature = "instrumentation"))]
+thread_local! {
+    static COINCIDENT_FUSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of coincident cross-ring pairs `merge_vertices_one_rings` has fused on this
+/// thread so far.
+#[cfg(any(test, feature = "instrumentation"))]
+pub fn coincident_fusion_count() -> usize {
+    COINCIDENT_FUSIONS.with(|count| count.get())
+}
+
 /// Records that `id` was removed: an element this op added is simply no longer added, one
 /// that was there before is removed.
 fn record_removal<T: PartialEq>(added: &mut Vec<T>, removed: &mut Vec<T>, id: T) {
@@ -338,6 +353,8 @@ impl MeshGraph {
             }
 
             tracing::debug!("fusing coincident ring vertices {v1_id:?} and {v2_id:?}");
+            #[cfg(any(test, feature = "instrumentation"))]
+            COINCIDENT_FUSIONS.with(|count| count.set(count.get() + 1));
             // Survivor is the ring-1 vertex, so the fused id stays on both rings
             // and shows up in `shared_v_ids` below.
             let fused = self.merge_vertices([*v1_id, *v2_id]);
