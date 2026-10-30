@@ -4,6 +4,7 @@ use itertools::Itertools;
 use slotmap::SparseSecondaryMap;
 use tracing::{error, instrument};
 
+use super::remove::push_unique;
 use crate::{FaceId, HalfedgeId, MeshGraph, VertexId, error_none, utils::unwrap_or_return};
 
 pub struct MergeVertices {
@@ -210,7 +211,7 @@ impl MeshGraph {
         }
 
         let mut removed_halfedges: Vec<HalfedgeId> = halfedges_to_remove;
-        let removed_faces: Vec<FaceId> = faces_to_remove;
+        let mut removed_faces: Vec<FaceId> = faces_to_remove;
 
         // Check if survivor still exists (could have been removed if all faces were removed)
         if !self.vertices.contains_key(survivor_id) {
@@ -318,8 +319,7 @@ impl MeshGraph {
                 let mut duplicate_ids: Vec<HalfedgeId> = Vec::new();
                 for &he_id in &group {
                     if he_id != best_fwd && Some(he_id) != best_rev {
-                        duplicate_ids.push(he_id);
-                        removed_halfedges.push(he_id);
+                        push_unique(&mut duplicate_ids, he_id);
                         if let Some(he) = self.halfedges.get(he_id)
                             && let Some(face_id) = he.face
                             && !faces_to_drop.contains(&face_id)
@@ -332,8 +332,7 @@ impl MeshGraph {
                 // Remove duplicate reverse halfedges
                 for &twin_id in &twins {
                     if Some(twin_id) != best_rev && twin_id != best_fwd {
-                        duplicate_ids.push(twin_id);
-                        removed_halfedges.push(twin_id);
+                        push_unique(&mut duplicate_ids, twin_id);
                         if let Some(he) = self.halfedges.get(twin_id)
                             && let Some(face_id) = he.face
                             && !faces_to_drop.contains(&face_id)
@@ -344,8 +343,12 @@ impl MeshGraph {
                 }
 
                 for face_id in faces_to_drop {
-                    let (_v_ids, he_ids) = self.remove_face(face_id);
-                    removed_halfedges.extend(he_ids);
+                    let (v_ids, he_ids) = self.remove_face(face_id);
+                    removed_faces.push(face_id);
+                    removed_vertices.extend(v_ids);
+                    for he_id in he_ids {
+                        push_unique(&mut removed_halfedges, he_id);
+                    }
                 }
 
                 // Drop any duplicates that survived the face removals (e.g. halfedges a
@@ -363,6 +366,7 @@ impl MeshGraph {
                     self.probe_live_face_removal(&remaining, "merge_remaining");
                     for he_id in remaining {
                         self.halfedges.remove(he_id);
+                        push_unique(&mut removed_halfedges, he_id);
                     }
                 }
 
@@ -717,6 +721,89 @@ mod tests {
              {GENERATIONS} key generations produced {} different results",
             fingerprints.len(),
         );
+    }
+
+    /// Merges `to_merge` and checks that the result lists exactly the vertices, halfedges
+    /// and faces that are gone, each once.
+    fn assert_merge_reports_its_removals(mg: &mut MeshGraph, to_merge: &[VertexId]) {
+        let vertices_before: Vec<VertexId> = mg.vertices.keys().collect();
+        let halfedges_before: Vec<HalfedgeId> = mg.halfedges.keys().collect();
+        let faces_before: Vec<FaceId> = mg.faces.keys().collect();
+
+        let removed = mg.merge_vertices(to_merge.iter().copied());
+
+        fn check<K: slotmap::Key + std::fmt::Debug>(
+            what: &str,
+            reported: &[K],
+            before: &[K],
+            alive: impl Fn(K) -> bool,
+        ) {
+            let gone: HashSet<K> = before.iter().copied().filter(|&k| !alive(k)).collect();
+            let reported_set: HashSet<K> = reported.iter().copied().collect();
+            assert_eq!(
+                reported.len(),
+                reported_set.len(),
+                "removed_{what} lists an id twice: {reported:?}"
+            );
+            assert_eq!(
+                reported_set, gone,
+                "removed_{what} doesn't match the {what} that are gone"
+            );
+        }
+
+        check(
+            "vertices",
+            &removed.removed_vertices,
+            &vertices_before,
+            |v| mg.vertices.contains_key(v),
+        );
+        check(
+            "halfedges",
+            &removed.removed_halfedges,
+            &halfedges_before,
+            |he| mg.halfedges.contains_key(he),
+        );
+        check("faces", &removed.removed_faces, &faces_before, |f| {
+            mg.faces.contains_key(f)
+        });
+    }
+
+    fn vertex_at(mg: &MeshGraph, target: Vec3) -> VertexId {
+        mg.positions
+            .iter()
+            .find(|(_, pos)| **pos == target)
+            .map(|(v_id, _)| v_id)
+            .expect("vertex at position")
+    }
+
+    /// Two grid vertices that share a neighbour but no face: after the merge, the survivor
+    /// has two edges to that neighbour, and the duplicate-halfedge pass removes the faces
+    /// on the dropped copies. Those must be reported like the degenerate ones.
+    #[test]
+    fn test_merge_vertices_reports_duplicate_edge_faces() {
+        let mut mg = crate::utils::build_grid(4);
+        let u = vertex_at(&mg, Vec3::new(1.0, 1.0, 0.0));
+        let w = vertex_at(&mg, Vec3::new(1.0, 3.0, 0.0));
+
+        assert_merge_reports_its_removals(&mut mg, &[u, w]);
+    }
+
+    /// Two triangles meeting only at `x`: merging their other corners `u` and `w` makes
+    /// `u -> x` and `w -> x` duplicates, and dropping the second triangle leaves its third
+    /// corner without an edge. That vertex is gone and must be reported.
+    #[test]
+    fn test_merge_vertices_reports_vertices_isolated_by_duplicate_removal() {
+        let mut mg = MeshGraph::new();
+        let x = mg.add_vertex(Vec3::new(0.0, 0.0, 0.0));
+        let u = mg.add_vertex(Vec3::new(1.0, 0.0, 0.0));
+        let p = mg.add_vertex(Vec3::new(1.0, 1.0, 0.0));
+        let w = mg.add_vertex(Vec3::new(-1.0, 0.0, 0.0));
+        let q = mg.add_vertex(Vec3::new(-1.0, -1.0, 0.0));
+        mg.add_face_from_vertices(u, p, x).unwrap();
+        mg.add_face_from_vertices(w, q, x).unwrap();
+
+        assert_merge_reports_its_removals(&mut mg, &[u, w]);
+        assert_eq!(mg.faces.len(), 1);
     }
 
     #[cfg(feature = "gltf")]

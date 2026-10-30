@@ -6,7 +6,7 @@ use crate::{FaceId, HalfedgeId, MeshGraph, VertexId};
 /// Append `id` unless it is already in `list`. Used where a small collection has
 /// to stay free of duplicates *and* keep a deterministic order (a `HashSet`
 /// would give the first but not the second).
-fn push_unique<T: PartialEq>(list: &mut Vec<T>, id: T) {
+pub(crate) fn push_unique<T: PartialEq>(list: &mut Vec<T>, id: T) {
     if !list.contains(&id) {
         list.push(id);
     }
