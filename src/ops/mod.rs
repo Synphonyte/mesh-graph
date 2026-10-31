@@ -53,7 +53,7 @@ impl EdgeLengthCleanup {
 }
 
 /// The outcome of a selection-scoped remesh, plus the bookkeeping needed to keep the
-/// caller's [`Selection`](crate::Selection) in step with the mesh.
+/// caller's [`Selection`] in step with the mesh.
 ///
 /// Applying `removed` and then `added` to the selection the operation started from
 /// reproduces the selection it ended with, so a caller mirroring the selection into

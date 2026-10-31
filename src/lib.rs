@@ -261,7 +261,7 @@ pub(crate) fn report_dead_halfedge_in_collapse_check(mesh_graph: &MeshGraph, dea
 //
 // The replay position is a *step index*: the host reports one step per mesh-graph
 // topology op call (collapse / subdivide / individual merge_one_ring) via
-// [`MeshGraph::set_replay_position`], so ring snapshots map 1:1 to the host's
+// [`set_replay_position`], so ring snapshots map 1:1 to the host's
 // operation journal and a run can be resumed from any dumped state by replaying
 // the remaining journal steps (freestyle-sculpt: `MESH_GRAPH_RESUME_STATE` +
 // `MESH_GRAPH_RESUME_INDEX`).
@@ -312,13 +312,13 @@ pub(crate) fn record_op_trace_impl(event: String) {
 }
 
 /// The replay position (input-log entry index) reported by the host application
-/// through [`MeshGraph::set_replay_position`]. Stored with every state snapshot so
+/// through [`set_replay_position`]. Stored with every state snapshot so
 /// a dumped state can be resumed at the exact spot it was captured.
 #[cfg(feature = "instrumentation")]
 static REPLAY_POSITION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Reports the host's current replay position (input-log entry index). The host
-/// calls [`MeshGraph::set_replay_position`] for every consumed entry; state
+/// calls [`set_replay_position`] for every consumed entry; state
 /// snapshots record it so a dumped state can be resumed at the exact spot it was
 /// captured.
 #[cfg(feature = "instrumentation")]
@@ -418,7 +418,7 @@ fn state_ring_cap() -> usize {
 
 /// Sets the state-history ring capacity for the current thread, overriding
 /// `MESH_GRAPH_STATE_HISTORY_LEN`. `0` disables the ring (the default), so a host
-/// that wants resumable snapshots has to ask for them — see [`state_ring_cap`].
+/// that wants resumable snapshots has to ask for them.
 #[cfg(feature = "instrumentation")]
 pub fn set_state_history_len(len: usize) {
     STATE_RING_CAP.with(|cap| cap.set(Some(len)));

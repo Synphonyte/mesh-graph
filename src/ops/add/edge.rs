@@ -7,7 +7,7 @@ impl MeshGraph {
     /// If the edge already exists or partially exists,
     /// it returns the existing edge while creating any missing halfedges.
     ///
-    /// See also [`add_edge`].
+    /// See also [`Self::add_edge`].
     #[instrument(skip(self))]
     pub fn add_or_get_edge(
         &mut self,
@@ -143,7 +143,7 @@ impl MeshGraph {
     /// Inserts a pair of halfedges and connects them to the given vertices (from and to the halfedge) and each other as twins.
     /// This creates two halfedges wether the vertices already have an edge between them or not.
     ///
-    /// If you don't want this, consider using [`add_or_get_edge`] instead.
+    /// If you don't want this, consider using [`Self::add_or_get_edge`] instead.
     pub fn add_edge(&mut self, start_vertex: VertexId, end_vertex: VertexId) -> Option<AddEdge> {
         // `add_halfedge` only validates the start vertex, so a stale `end_vertex` (e.g. from
         // merge planning after a previous step removed the vertex) would panic on the direct
@@ -176,7 +176,7 @@ impl MeshGraph {
     ///
     /// It does insert into `self.outgoing_halfedges`.
     ///
-    /// Use [`insert_or_get_edge`] instead of this when you can to lower the chance of creating an invalid graph.
+    /// Use [`Self::add_or_get_edge`] instead of this when you can to lower the chance of creating an invalid graph.
     #[instrument(skip(self))]
     pub fn add_halfedge(
         &mut self,

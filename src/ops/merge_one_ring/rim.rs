@@ -5,7 +5,7 @@
 //! walks it with [`next_rim_half`]. One definition here is load-bearing and was
 //! wrong in the obvious formulation:
 //!
-//! - [`opened_rim`] is `boundary(after) \ boundary(before)`, **not** the twins
+//! - `opened_rim` is `boundary(after) \ boundary(before)`, **not** the twins
 //!   of the removed halfedges. `remove_face` (remove.rs, the `else` branch)
 //!   detaches the dominant rim members in place (`face = None`, `next = None`,
 //!   id kept) and only *returns* the halves it actually frees. The removal
@@ -54,7 +54,7 @@ pub(crate) fn opened_rim(
 /// A removed face's members all start at one of its vertices, so as long as the
 /// region holds the vertices of every face a removal batch takes out, this sees
 /// the whole rim that batch opens - at the cost of the region's edges rather than
-/// a scan of the mesh. The test build checks it against [`boundary_halves`].
+/// a scan of the mesh. The test build checks it against `boundary_halves`.
 pub(crate) fn boundary_halves_around(mesh: &MeshGraph, region: &[VertexId]) -> HashSet<HalfedgeId> {
     region_halfedges(mesh, region)
         .filter_map(|(_, he_id, he)| he.is_boundary().then_some(he_id))
@@ -75,7 +75,7 @@ fn region_halfedges<'a>(
     })
 }
 
-/// [`opened_rim`] over `region` only: `boundary_halves_around(after) \ before`,
+/// `opened_rim` over `region` only: `boundary_halves_around(after) \ before`,
 /// with `before` taken by [`boundary_halves_around`] over the same region.
 pub(crate) fn opened_rim_around(
     mesh: &MeshGraph,

@@ -4,9 +4,9 @@ use crate::{MeshGraph, VertexId, error_none};
 
 impl MeshGraph {
     /// Ensure that if one of the outgoing halfedges of this vertex is a boundary halfedge,
-    /// then it will be the one in [`Vertex::outgoing_halfedge`].
+    /// then it will be the one in [`Vertex::outgoing_halfedge`](crate::Vertex::outgoing_halfedge).
     ///
-    /// The method [`Vertex::is_boundary`] relies on this.
+    /// The method [`Vertex::is_boundary`](crate::Vertex::is_boundary) relies on this.
     #[instrument(skip(self))]
     pub fn make_outgoing_halfedge_boundary_if_possible(&mut self, vertex_id: VertexId) {
         if !self.vertices.contains_key(vertex_id) {
@@ -30,9 +30,9 @@ impl MeshGraph {
     }
 
     /// Ensure that if one of the outgoing halfedges of any vertex is a boundary halfedge,
-    /// then it will be the one in [`Vertex::outgoing_halfedge`].
+    /// then it will be the one in [`Vertex::outgoing_halfedge`](crate::Vertex::outgoing_halfedge).
     ///
-    /// The method [`Vertex::is_boundary`] relies on this.
+    /// The method [`Vertex::is_boundary`](crate::Vertex::is_boundary) relies on this.
     #[instrument(skip(self))]
     pub fn make_all_outgoing_halfedges_boundary_if_possible(&mut self) {
         let boundary_pairs = self
