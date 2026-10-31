@@ -286,12 +286,22 @@ impl RimPlan {
         self.edges.contains(&(start, end))
     }
 
-    /// Whether every edge of `faces` fits ([`RimFit::edge`]) and none is already planned.
+    /// Whether `faces` can join the plan as they are: no degenerate face, every
+    /// directed edge fits ([`RimFit::edge`]), none is already planned, and none
+    /// appears twice within `faces` itself.
+    ///
+    /// The degenerate and duplicate checks are the same contract
+    /// [`Self::incompleteness`] enforces, applied to the candidate so a generator
+    /// that reuses an edge cannot produce a plan that is only refused at the end.
     fn fits(&self, fit: RimFit, faces: &[PlannedFace]) -> bool {
+        let mut planned = HashSet::default();
         faces.iter().all(|face| {
-            face.directed_edges()
-                .into_iter()
-                .all(|(start, end)| fit.edge(start, end) && !self.has_planned(start, end))
+            !face.is_degenerate()
+                && face.directed_edges().into_iter().all(|(start, end)| {
+                    planned.insert((start, end))
+                        && fit.edge(start, end)
+                        && !self.has_planned(start, end)
+                })
         })
     }
 
@@ -811,6 +821,7 @@ fn plan_structure(fit: RimFit, structure: &RimStructure, plan: &mut RimPlan) {
     if structure.runs.len() == 2
         && structure.runs[0].side != RimSide::Strip
         && structure.runs[1].side != RimSide::Strip
+        && !is_pinched(structure)
     {
         // The bigon's rungs are fixed by its two junctions. When one of them already
         // joins its two vertices outside the hole, zip it as a lobe instead, which can
@@ -992,6 +1003,20 @@ fn zip_lobe(cycle: &[VertexId]) -> Vec<PlannedFace> {
     let range = ConnectPair::whole(arc_a.len(), arc_b.len(), ConnectPairCap::Closed);
 
     range.plan_faces([arc_a, &arc_b])
+}
+
+/// Whether the structure's closed boundary walk visits a vertex more than once.
+///
+/// A two-run walk with a repeat is not a bigon: the repeated vertex is a pinch,
+/// and one of the runs is really a lobe attached there. Zipping the whole walk
+/// would fan across the pinch - the same rung twice - so such a walk must go
+/// through [`plan_lobe`], which decomposes it at the repeat.
+fn is_pinched(structure: &RimStructure) -> bool {
+    let Ok(seq) = closed_boundary_vertices(structure) else {
+        return true;
+    };
+    let mut seen = HashSet::default();
+    seq.iter().any(|v_id| !seen.insert(*v_id))
 }
 
 /// The closed boundary vertex cycle of a cyclic structure, with any repeated

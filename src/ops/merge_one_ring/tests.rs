@@ -2786,6 +2786,110 @@ const MERGE_GAP01_TRIANGLE: WeldCase = WeldCase {
     protected: &[17, 27, 28],
 };
 
+/// A pinched "bigon": both rim runs are single-sided, but the side-2 run visits
+/// vertex 6 twice (a sub-lobe attached at 6). Zipping the whole walk fanned the
+/// side-1 arc across the pinch and planned the rung `2 -> 6` twice, so the plan
+/// was refused and the merge left the stars' rim open (+8 boundary halfedges at
+/// radius 1). Captured from the seed-12 weld at n=9, gap=0.25.
+const MERGE_SEED12_GAP025_PINCH: WeldCase = WeldCase {
+    what: "pinched bigon fans across its own rung",
+    verts: &[
+        (0.7777778, 1.0441942, -0.04419417),
+        (0.7777778, 0.8888889, -0.0625),
+        (0.8795448, 1.00928, -0.041762576),
+        (0.9626236, 0.9045375, -0.034467798),
+        (1.1740179, 0.92979884, -0.017519003),
+        (0.8888889, 0.7777778, -0.062499996),
+        (1.0842859, 0.8267454, -0.015030533),
+        (1.0794647, 0.6444859, -0.01624212),
+        (0.8740288, 1.0407691, 0.0093241185),
+        (0.9699364, 1.0551951, 0.20343593),
+        (1.1157697, 1.0551951, 0.21732481),
+        (1.184843, 0.6986535, -0.029604528),
+        (0.8738571, 1.0588475, 0.15727352),
+        (1.2675645, 0.98699653, -0.030856587),
+        (1.0694485, 1.0410936, 0.15652184),
+        (1.2827638, 0.89703286, -0.049998883),
+        (1.0696203, 1.0321681, 0.08622508),
+        (1.1689606, 1.0269921, 0.10960775),
+        (1.3611112, 1.0625, 0.11111111),
+        (1.2616031, 1.0551951, 0.23121369),
+        (0.9798721, 1.0031303, -0.034568366),
+        (0.8740288, 1.049922, 0.08697676),
+        (1.1419289, 0.8514681, -0.0012454093),
+        (0.9853821, 0.7566967, -0.039068162),
+        (1.0708554, 0.9620664, -0.02494256),
+        (0.9702799, 1.0373441, 0.06284241),
+        (1.0981228, 0.96933377, 0.06027975),
+        (1.1328719, 0.92873573, 0.04776406),
+        (1.241715, 0.78076875, -0.028587975),
+        (1.2951388, 1.0520833, 0.034722224),
+    ],
+    faces: &[
+        (2, 1, 0),
+        (20, 3, 2),
+        (3, 5, 1),
+        (16, 14, 17),
+        (23, 3, 6),
+        (23, 6, 7),
+        (6, 27, 4),
+        (2, 25, 20),
+        (3, 1, 2),
+        (8, 2, 0),
+        (21, 12, 25),
+        (20, 25, 24),
+        (4, 22, 24),
+        (19, 17, 10),
+        (24, 3, 20),
+        (7, 6, 11),
+        (9, 25, 12),
+        (25, 8, 21),
+        (13, 15, 4),
+        (27, 3, 22),
+        (28, 11, 22),
+        (22, 15, 28),
+        (29, 17, 18),
+        (14, 25, 9),
+        (19, 18, 17),
+        (14, 10, 17),
+        (24, 22, 3),
+        (22, 6, 26),
+        (11, 6, 22),
+        (25, 14, 16),
+        (3, 27, 6),
+        (25, 2, 8),
+        (16, 26, 25),
+        (26, 17, 27),
+        (4, 29, 13),
+        (26, 4, 24),
+        (26, 24, 25),
+        (26, 27, 22),
+        (17, 4, 27),
+        (15, 22, 4),
+        (17, 26, 16),
+        (4, 17, 29),
+        (5, 3, 23),
+        (4, 26, 6),
+    ],
+    outgoing: &[
+        (2, &[3, 0, 25, 20, 1, 8], 20),
+        (3, &[1, 5, 6, 2, 20, 23, 27, 22, 24], 2),
+        (4, &[26, 24, 22, 13, 15, 17, 27, 29, 6], 22),
+        (6, &[3, 4, 26, 11, 23, 7, 22, 27], 22),
+        (14, &[9, 10, 17, 25, 16], 9),
+        (16, &[25, 14, 17, 26], 25),
+        (17, &[26, 4, 18, 19, 14, 16, 27, 29, 10], 16),
+        (20, &[24, 2, 25, 3], 2),
+        (22, &[11, 4, 28, 3, 15, 26, 6, 27, 24], 27),
+        (24, &[4, 20, 26, 22, 3, 25], 26),
+        (25, &[21, 8, 9, 2, 20, 26, 16, 24, 14, 12], 26),
+        (26, &[17, 6, 4, 27, 25, 24, 22, 16], 24),
+        (27, &[26, 3, 22, 6, 17, 4], 22),
+    ],
+    merge: (20, 26),
+    protected: &[4, 10, 14, 16],
+};
+
 /// Weld merges that used to open a watertight region, kept as regression cases.
 ///
 /// Each was extracted from a failing `weld_flake_loop_until_failure` run with
@@ -2805,6 +2909,7 @@ const MERGE_GAP01_TRIANGLE: WeldCase = WeldCase {
 /// started comparing vertex ids.
 const WELD_CASES: &[WeldCase] = &[
     MERGE_GAP01_TRIANGLE,
+    MERGE_SEED12_GAP025_PINCH,
     WeldCase {
         what: "band wraps the full ring and leaves one seam triangle",
         verts: &[
@@ -3937,6 +4042,8 @@ fn test_rim_taxonomy_baseline() {
             // Opened a triangle hole while the flap test compared positions: the cleanup
             // took two coincident faces of opposite sheets for a flap and deleted both.
             "gap=0.1 weld: coincident faces of opposite sheets taken for a flap" => [0; 11],
+            // Closed after the pinched bigon was decomposed into its two lobes.
+            "pinched bigon fans across its own rung" => [0; 11],
             other => panic!("no pinned rim taxonomy for weld case {other:?}"),
         };
         let _ = case.replay();
@@ -4007,7 +4114,11 @@ fn test_rim_planner_corpus_measurement() {
     };
 
     let _ = merge_lens_region(false);
-    assert_case("lens(reconstruct=false)", [6, 8, 8, 0]);
+    // Vertex 4 repeats in the six-vertex first run, so the rim is a pinched bigon:
+    // its two 4-vertex lobes are planned separately (2 + 2 faces) instead of one
+    // 8-vertex zip across the pinch (6 combinatorially valid, geometrically
+    // overlapping faces).
+    assert_case("lens(reconstruct=false)", [4, 8, 8, 0]);
 
     let _ = merge_lens_region(true);
     assert_case("lens(reconstruct=true)", [7, 11, 11, 0]);
@@ -4024,6 +4135,8 @@ fn test_rim_planner_corpus_measurement() {
             "re-extracted reversed weld order, radius 1, +4 boundary halfedges" => [5, 9, 9, 0],
             // Two loops, one per star; each a simple lobe.
             "gap=0.1 weld: coincident faces of opposite sheets taken for a flap" => [7, 7, 7, 0],
+            // Decomposed at the pinch into a 4-vertex and a 7-vertex lobe.
+            "pinched bigon fans across its own rung" => [7, 11, 11, 0],
             other => panic!("no pinned rim-plan measurement for weld case {other:?}"),
         };
         let _ = case.replay();
