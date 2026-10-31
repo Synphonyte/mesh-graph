@@ -39,6 +39,13 @@ pub(crate) struct RimProbe {
     pub proto_faces: usize,
     pub proto_consumed: usize,
     pub proto_unhandled: Vec<String>,
+    /// Why the op refused the plan it built (see `RimPlan::incompleteness`), if it did.
+    pub plan_refused: Option<String>,
+    /// Faces `cleanup_bookkeeping` removed, and the boundary halves (not there before the
+    /// op) after it and after `merge_remaining_unconnected`.
+    pub cleanup_removed_faces: usize,
+    pub after_cleanup_opened: usize,
+    pub after_remaining_opened: usize,
     /// Per-structure run composition of the rim, for diagnostics.
     pub proto_structure_detail: Vec<String>,
     /// Lengths of the ordered ring each star's rim forms. Unlike the pre-removal
@@ -75,7 +82,7 @@ pub(crate) struct RimProbe {
     pub parallel_before: usize,
 
     /// End-of-op numbers, after `cleanup_bookkeeping`, the remaining-unconnected
-    /// merge and the repair passes. The pre-net sample above is where the
+    /// merge and the smoothing. The post-band sample above is where the
     /// planner's own behavior is visible; this is where the op's exit state is.
     pub end_unconsumed: usize,
     pub end_new_boundary: usize,
@@ -365,7 +372,7 @@ impl RimProbe {
             .collect();
 
         let plan = super::rim_planner::plan(mesh, &self.rim, &self.h1, &self.h2);
-        self.proto_faces = plan.faces.len();
+        self.proto_faces = plan.face_count();
         self.proto_consumed = plan.consumed_halves(mesh, &self.rim).len();
         self.proto_unhandled = plan.unhandled;
     }
@@ -479,6 +486,13 @@ impl RimProbe {
                 format!(" unhandled {:?}", self.proto_unhandled)
             }
         ));
+        summary.push_str(&format!(
+            " cleanup (removed {} faces, opened {}) remaining (opened {})",
+            self.cleanup_removed_faces, self.after_cleanup_opened, self.after_remaining_opened
+        ));
+        if let Some(reason) = &self.plan_refused {
+            summary.push_str(&format!(" REFUSED ({reason})"));
+        }
         if !self.proto_structure_detail.is_empty() {
             summary.push_str(&format!(" structs {:?}", self.proto_structure_detail));
         }

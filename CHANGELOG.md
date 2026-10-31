@@ -29,10 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it consumes the whole rim. The old planner, which paired the pre-removal one-rings, is
   gone: where the rim plan applied it was rarely complete, and the cleanup already
   repairs the rest. It closes the extracted weld cases that used to leave
-  holes, closes whatever hole its own removals open on every exit path (including the
-  flip-and-collapse and failed-pairing exits), and welds the parallel edges a band can
-  leave. Its boundary bookkeeping covers only the region within three edges of the two
+  holes. Its boundary bookkeeping covers only the region within three edges of the two
   vertices, so it adds no cost that grows with the mesh
+- `merge_vertices_one_rings` no longer runs repair passes after the band (the hole
+  closer and the parallel-edge weld): the band now closes what the removals open on its
+  own. Where a lobe's zig-zag split would duplicate an existing edge, the planner falls
+  back to a shortest-diagonal triangulation that avoids it, and failing that to a fan
+  from a new vertex at the lobe's centroid; two disjoint rings whose seeded band clashes
+  with existing edges get the shortest band that doesn't. Across 1,440 small-gap welds
+  (40 merge orders) every one stays watertight and manifold, and a merge is slightly
+  cheaper
 - `remove_face` finds the face's halfedges from the face itself instead of scanning
   every halfedge in the mesh, so its cost no longer grows with mesh size. Faces with
   broken `next` chains are still removed completely, and the removal order is
@@ -44,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed
 - `collapse_until_edges_above_min_length` (and its selection-scoped variant) skips edges
   whose collapse would break the link condition, boundary edges included, and closes
-  the holes its own removals open with the same closer as the merge
+  the holes its own removals open
 - Every map and set in the crate uses a fixed-seed hasher, so the same input produces
   the same ids and the same mesh on every run. New dependency: `foldhash`
 - Updated `bevy` to `0.20`, `parry3d` to `0.31` and `rerun` to `0.40`. The Bevy 0.20
@@ -57,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- `faces_share_all_vertices` compares vertex ids instead of positions. Two faces of
+  touching sheets over the same triangle, with distinct coincident vertices, are no
+  longer a flap, so the neighborhood cleanup no longer deletes them (which opened a hole
+  in both sheets)
 - Every public `HashMap`/`HashSet` is now `mesh_graph::hash::HashMap`/`HashSet`
   (hashbrown with `foldhash::fast::FixedState`) instead of hashbrown's default-hasher
   types: the marked sets of `merge_vertices_one_rings`,

@@ -20,7 +20,6 @@
 
 use crate::hash::HashSet;
 
-use crate::ops::collapse::{BoundaryAtEntry, VertexRenames, edge_key};
 use crate::{Halfedge, HalfedgeId, MeshGraph, VertexId};
 
 /// All live halfedges without a face: the current boundary.
@@ -87,61 +86,6 @@ pub(crate) fn opened_rim_around(
         .into_iter()
         .filter(|he_id| !boundary_before.contains(he_id))
         .collect()
-}
-
-/// The border as the merge found it, keyed by vertex pair, for its hole closer -
-/// taken over the region around the merge instead of the whole mesh.
-///
-/// It knows every edge at a vertex of `region`. An edge with neither end in the
-/// region counts as an old border ([`BoundaryAtEntry`]), so a region that turned
-/// out too small could only make the closer leave a hole open, never seal a
-/// border it knows nothing about. The test build checks, merge by merge, that the
-/// closer sees exactly what a whole-mesh snapshot would.
-pub(crate) struct RegionBoundary {
-    pairs: HashSet<(VertexId, VertexId)>,
-    region: HashSet<VertexId>,
-    /// The whole-mesh snapshot, for that check.
-    #[cfg(test)]
-    pub(crate) whole_mesh: HashSet<(VertexId, VertexId)>,
-}
-
-impl RegionBoundary {
-    pub(crate) fn new(mesh: &MeshGraph, region: &[VertexId]) -> Self {
-        let pairs = region_halfedges(mesh, region)
-            .filter(|(_, _, he)| he.is_border_edge(mesh))
-            .map(|(v_id, _, he)| edge_key(v_id, he.end_vertex))
-            .collect();
-
-        Self {
-            pairs,
-            region: region.iter().copied().collect(),
-            #[cfg(test)]
-            whole_mesh: mesh.boundary_edge_pairs(),
-        }
-    }
-
-    /// The snapshot carried through the vertex merges and splits the op made, like
-    /// [`VertexRenames::resolve`].
-    pub(crate) fn resolve(&self, renames: &VertexRenames) -> Self {
-        Self {
-            pairs: renames.resolve(&self.pairs),
-            region: renames.resolve_region(&self.region),
-            #[cfg(test)]
-            whole_mesh: renames.resolve(&self.whole_mesh),
-        }
-    }
-
-    /// The live region vertices, where the closer looks for opened boundary.
-    pub(crate) fn region(&self) -> impl Iterator<Item = VertexId> + '_ {
-        self.region.iter().copied()
-    }
-}
-
-impl BoundaryAtEntry for RegionBoundary {
-    fn was_boundary(&self, a: VertexId, b: VertexId) -> bool {
-        self.pairs.contains(&edge_key(a, b))
-            || (!self.region.contains(&a) && !self.region.contains(&b))
-    }
 }
 
 /// One step of a rim walk.

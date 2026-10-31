@@ -76,8 +76,7 @@ impl MeshGraph {
     /// coincident vertices along the patch's edge and twins the sheets' halfedges there.
     ///
     /// Seeds from coincident vertices in `scope`; patches grow past it, since a partly
-    /// zipped patch leaves flaps at the seam. Matching is exact, like
-    /// [`MeshGraph::faces_share_all_vertices`].
+    /// zipped patch leaves flaps at the seam. Matching is by exact position.
     ///
     /// Never opens boundary: a patch is refused if its layers touch (folds included), a
     /// vertex would fuse two ways, or a fusion would make a parallel edge. Coincident

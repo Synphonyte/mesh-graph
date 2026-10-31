@@ -1,4 +1,3 @@
-use super::MergeRecord;
 use crate::hash::HashSet;
 use crate::{
     utils::{extend_with, get_tracing_subscriber},
@@ -1811,7 +1810,7 @@ fn assert_merge_invariants(
 
     // Phase 0/1 rim taxonomy: drain this test's probe records (thread-local).
     // The end-of-op sample is the wire gate: whatever the planner samples
-    // pre-net, the op must not leave wire edges behind. Printed only on demand.
+    // right after the band, the op must not leave wire edges behind. Printed only on demand.
     let probes = super::rim_probe::drain();
     for probe in &probes {
         assert!(
@@ -2313,8 +2312,8 @@ fn test_merge_one_ring_lens_is_order_independent() {
 /// between the same two vertices, and here nothing ever claimed its two free
 /// halves: they stayed face-less, so the mesh reported them as boundary - a hole
 /// with no face missing from it - while the two triangles that should share the
-/// edge each sat on their own copy. The merge now fuses such leftovers
-/// (`weld_parallel_edges`).
+/// edge each sat on their own copy. The band planner no longer leaves such
+/// leftovers.
 #[test]
 fn test_merge_one_ring_parallel_edge_leftover_stays_watertight() {
     get_tracing_subscriber();
@@ -2700,26 +2699,11 @@ impl WeldCase {
     }
 }
 
-/// Weld merges that used to open a watertight region, kept as regression cases.
-///
-/// Each was extracted from a failing `weld_flake_loop_until_failure` run with
-/// `WELD_CAPTURE=1` (freestyle-sculpt): the capture cuts the neighborhood of the
-/// merge that first opened the mesh, widens the cut until the merge reproduces
-/// on it standalone *with both merged vertices still interior*, then drops faces
-/// for as long as it keeps reproducing - never a face of the merge pair's or
-/// their one-rings' stars, since those are the op's actual input.
-///
-/// They are deterministic even though the weld that produced them is not: a
-/// region rebuilt in index order gets its ids from the rebuild, the outgoing
-/// order is restored from the capture, and the ops are order-independent.
-///
-/// `radius 1, +5` and `radius 1, +6` moved here from [`OPEN_WELD_CASES`] when the
-/// rim-first planner closed them; see the module docs of
-/// [`super::rim_planner`] for how.
-/// The gap=0.1 weld's residual hole: a merge opens six boundary halfedges, its own
-/// closer now takes three of them, and the last three survive. Captured at radius 1.
+/// The gap=0.1 weld's residual hole: the cleanup took two coincident faces of opposite
+/// sheets for a flap and deleted both, opening six boundary halfedges. The flap test
+/// compares vertex ids now, so the merge opens nothing. Captured at radius 1.
 const MERGE_GAP01_TRIANGLE: WeldCase = WeldCase {
-    what: "gap=0.1 weld: the merge leaves a triangle hole",
+    what: "gap=0.1 weld: coincident faces of opposite sheets taken for a flap",
     verts: &[
         (0.7750727, 0.61499834, -0.03464932),
         (0.8723206, 0.5960623, -0.027743543),
@@ -2802,14 +2786,25 @@ const MERGE_GAP01_TRIANGLE: WeldCase = WeldCase {
     protected: &[17, 27, 28],
 };
 
-/// The one weld case that takes the merge's fast path (the flip-plus-collapse of the single
-/// shared edge) instead of planning a band. It is a weld case because its region closes -
-/// the op now closes the four halfedges its coincident fusion opened - but the band-facing
-/// tests have no band to measure for it.
-const FAST_PATH_CASE: &str = "gap=0.05 weld: two shared ring vertices, band leaves the region open";
-
+/// Weld merges that used to open a watertight region, kept as regression cases.
+///
+/// Each was extracted from a failing `weld_flake_loop_until_failure` run with
+/// `WELD_CAPTURE=1` (freestyle-sculpt): the capture cuts the neighborhood of the
+/// merge that first opened the mesh, widens the cut until the merge reproduces
+/// on it standalone *with both merged vertices still interior*, then drops faces
+/// for as long as it keeps reproducing - never a face of the merge pair's or
+/// their one-rings' stars, since those are the op's actual input.
+///
+/// They are deterministic even though the weld that produced them is not: a
+/// region rebuilt in index order gets its ids from the rebuild, the outgoing
+/// order is restored from the capture, and the ops are order-independent.
+///
+/// `radius 1, +5` and `radius 1, +6` moved here from [`OPEN_WELD_CASES`] when the
+/// rim-first planner closed them; see the module docs of
+/// [`super::rim_planner`] for how. The gap=0.1 case moved here when the flap test
+/// started comparing vertex ids.
 const WELD_CASES: &[WeldCase] = &[
-    WELD_GAP005_MERGE,
+    MERGE_GAP01_TRIANGLE,
     WeldCase {
         what: "band wraps the full ring and leaves one seam triangle",
         verts: &[
@@ -3368,14 +3363,6 @@ const CUT_TRUNCATED_CASES: &[WeldCase] = &[
     },
 ];
 
-/// Genuinely-open weld cases: entries whose standalone fixture *reproduces* and
-/// that the band planner still fails to close.
-///
-/// Empty as of the rim-first planner: the two entries that used to be here
-/// (`radius 1, +5` and `radius 1, +6`) are closed and live in [`WELD_CASES`],
-/// the re-extracted reversed-soak case is closed too, and the only other
-/// ex-members turned out to be unfaithful fixtures ([`CUT_TRUNCATED_CASES`]).
-/// [`test_open_weld_cases_are_open`] keeps watching this list.
 /// The gap=0.05 weld's first failure: the merge of two vertices that share two ring
 /// vertices opens four boundary halfedges and breaks manifoldness (`WELD_CAPTURE=1`:
 /// `MANIFOLD BROKE at merge VertexId(36v1)+VertexId(415v1) (boundary 0 -> 4)`, one
@@ -3502,10 +3489,26 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
     protected: &[13],
 };
 
-const OPEN_WELD_CASES: &[WeldCase] = &[MERGE_GAP01_TRIANGLE];
+/// Genuinely-open weld cases: entries whose standalone fixture *reproduces* and
+/// that the merge still fails to close. [`test_open_weld_cases_are_open`] keeps
+/// watching this list.
+///
+/// The one entry is [`WELD_GAP005_MERGE`] merged on its own. The merge's coincident
+/// fusion opens its four halfedges before the flip-and-collapse fast path runs, and
+/// nothing closes them since the merge lost its hole closer. The weld zips such
+/// contacts first ([`test_gap005_zip_then_merge_stays_closed`]), so it only matters
+/// when a coincident pair reaches the merge anyway - 29 times in 1,440 small-gap welds
+/// (40 merge orders), none of which opened. Deleting the fusion closes this case, but
+/// then a band can span the zero-width seam those pairs leave.
+///
+/// The earlier entries (`radius 1, +5` and `radius 1, +6`, the re-extracted
+/// reversed-soak case) were closed by the rim-first planner and live in
+/// [`WELD_CASES`]; the only other ex-members turned out to be unfaithful fixtures
+/// ([`CUT_TRUNCATED_CASES`]).
+const OPEN_WELD_CASES: &[WeldCase] = &[WELD_GAP005_MERGE];
 
 /// [`WELD_GAP005_MERGE`] zipped first, as the weld does: the merge then closes what it
-/// opens, nets or not.
+/// opens.
 #[test]
 fn test_gap005_zip_then_merge_stays_closed() {
     get_tracing_subscriber();
@@ -3632,7 +3635,7 @@ fn test_weld_cases_are_faithful() {
 /// left one triangle of the closing seam unfilled - the last planned face and
 /// the first meet at a quad and only one of its two triangles was planned,
 /// because the start cap reads `AlreadyConnected`, which is true of the edge but
-/// not of the face. `close_triangular_holes` seals it.
+/// not of the face.
 #[test]
 fn test_weld_cases_stay_watertight() {
     get_tracing_subscriber();
@@ -3842,32 +3845,18 @@ fn diag_open_case() {
 
 /// Phase 0 baseline of the rim taxonomy, pinned so drift shows up as a test.
 ///
-/// These are pre-net numbers: measured right after `add_planned_faces`, before
-/// `weld_parallel_edges`/`close_triangular_holes` run. They are expected to
-/// move when Phase 1/2 make the rebuild consume the rim structurally; when they
-/// do, update this table - the point is that the change is explicit, not
-/// silent. `(unconsumed, new_boundary, wire)`.
+/// The first half is measured right after `add_planned_faces`, the second at the
+/// op's exit. When they move, update this table - the point is that the change is
+/// explicit, not silent.
 #[test]
 fn test_rim_taxonomy_baseline() {
     get_tracing_subscriber();
 
     // (unconsumed, new_boundary, wire, skipped, parallel_before, parallel_after,
     //  end_unconsumed, end_new_boundary, end_wire, end_parallel, rim_bad). The
-    //  pre-net half is mode-independent; the end half pins the shipping
-    //  (nets-on) exit state and is skipped when the nets are disabled on
-    //  purpose.
-    let nets_enabled = super::merge_nets_enabled();
+    //  first half is measured right after the band, the end half at the op's exit.
     let assert_case = |label: &str, expected: [usize; 11]| {
         let probes = super::rim_probe::drain();
-
-        if label == FAST_PATH_CASE {
-            assert_eq!(
-                probes.len(),
-                0,
-                "{label}: expected no band probe on the fast path"
-            );
-            return;
-        }
 
         assert_eq!(
             probes.len(),
@@ -3893,22 +3882,20 @@ fn test_rim_taxonomy_baseline() {
                 expected[4],
                 expected[5],
             ),
-            "{label}: pre-net taxonomy drifted: {}",
+            "{label}: post-band taxonomy drifted: {}",
             probe.summary()
         );
-        if nets_enabled {
-            assert_eq!(
-                (
-                    probe.end_unconsumed,
-                    probe.end_new_boundary,
-                    probe.end_wire.len(),
-                    probe.end_parallel_edges,
-                ),
-                (expected[6], expected[7], expected[8], expected[9]),
-                "{label}: end-of-op taxonomy drifted: {}",
-                probe.summary()
-            );
-        }
+        assert_eq!(
+            (
+                probe.end_unconsumed,
+                probe.end_new_boundary,
+                probe.end_wire.len(),
+                probe.end_parallel_edges,
+            ),
+            (expected[6], expected[7], expected[8], expected[9]),
+            "{label}: end-of-op taxonomy drifted: {}",
+            probe.summary()
+        );
         assert_eq!(
             probe.rim_bad,
             expected[10],
@@ -3925,20 +3912,19 @@ fn test_rim_taxonomy_baseline() {
     // smaller than before; the values below are the post-fix baseline.
     // The coincident fusion now maps a ring-2 vertex to the ring-1 vertex it was actually
     // fused into (it used to take the last coincident one), so the rings the planner sees are
-    // the real ones and the pre-net rim is smaller still.
-    assert_case("lens(reconstruct=false)", [0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0]);
+    // the real ones and the post-band rim is smaller still.
+    assert_case("lens(reconstruct=false)", [0; 11]);
 
     let _ = merge_lens_region(true);
     assert_case("lens(reconstruct=true)", [0; 11]);
 
     for case in WELD_CASES {
         let expected = match case.what {
-            // The rim-first planner closes this case's pre-net hole (unconsumed
-            // and new_boundary are 0). Its first split zipped a chord along an
-            // edge that already joins the two rings outside the hole, which left
-            // two parallel halfedges for the nets; the lobe now moves its split
-            // until no chord duplicates an existing edge, so nothing is parallel
-            // pre-net either.
+            // The rim-first planner closes this case's hole (unconsumed and
+            // new_boundary are 0). Its first split zipped a chord along an edge
+            // that already joins the two rings outside the hole, which left two
+            // parallel halfedges; the lobe now moves its split until no chord
+            // duplicates an existing edge, so nothing is parallel either.
             "band wraps the full ring and leaves one seam triangle" => [0; 11],
             // Closed by the rim-first planner: the strip removal opens a small
             // closed rim it consumes exactly.
@@ -3948,11 +3934,9 @@ fn test_rim_taxonomy_baseline() {
             // disabled and the capture radius raised: a genuine, minimised
             // reproduction that this planner closes.
             "re-extracted reversed weld order, radius 1, +4 boundary halfedges" => [0; 11],
-            // The gap=0.05 weld's first opening: a merge of two vertices sharing two ring
-            // vertices, whose coincident fusion opened four boundary halfedges before any
-            // band was planned. The op now closes them itself, so the case is a weld case
-            // rather than an open one.
-            "gap=0.05 weld: two shared ring vertices, band leaves the region open" => [0; 11],
+            // Opened a triangle hole while the flap test compared positions: the cleanup
+            // took two coincident faces of opposite sheets for a flap and deleted both.
+            "gap=0.1 weld: coincident faces of opposite sheets taken for a flap" => [0; 11],
             other => panic!("no pinned rim taxonomy for weld case {other:?}"),
         };
         let _ = case.replay();
@@ -3962,13 +3946,14 @@ fn test_rim_taxonomy_baseline() {
     for case in CUT_TRUNCATED_CASES {
         // Cut-truncated (see `test_open_weld_chain_cases_are_cut_truncated`):
         // the planner refuses because their rim is an open chain, so no band is
-        // built and the whole rim is open before the repair passes.
+        // built and the whole rim is open before the cleanup. Nothing closes the
+        // rest: the op has no hole closer.
         let expected = match case.what {
             "reversed weld order, radius 2, +4 boundary halfedges" => {
-                [9, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0]
+                [9, 0, 0, 0, 0, 0, 7, 1, 0, 0, 0]
             }
             "reversed weld order, radius 2, +4 boundary halfedges (mirror)" => {
-                [9, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0]
+                [9, 0, 0, 0, 0, 0, 6, 1, 0, 0, 0]
             }
             other => panic!("no pinned rim taxonomy for open weld case {other:?}"),
         };
@@ -3993,15 +3978,6 @@ fn test_rim_planner_corpus_measurement() {
 
     let assert_case = |label: &str, expected: [usize; 4]| {
         let probes = super::rim_probe::drain();
-
-        if label == FAST_PATH_CASE {
-            assert_eq!(
-                probes.len(),
-                0,
-                "{label}: expected no band probe on the fast path"
-            );
-            return;
-        }
 
         assert_eq!(
             probes.len(),
@@ -4046,7 +4022,8 @@ fn test_rim_planner_corpus_measurement() {
             "reversed weld order, radius 1, +5 boundary halfedges" => [2, 4, 4, 0],
             "reversed weld order, radius 1, +6 boundary halfedges" => [10, 14, 14, 0],
             "re-extracted reversed weld order, radius 1, +4 boundary halfedges" => [5, 9, 9, 0],
-            FAST_PATH_CASE => [0; 4],
+            // Two loops, one per star; each a simple lobe.
+            "gap=0.1 weld: coincident faces of opposite sheets taken for a flap" => [7, 7, 7, 0],
             other => panic!("no pinned rim-plan measurement for weld case {other:?}"),
         };
         let _ = case.replay();
@@ -4074,8 +4051,7 @@ fn test_rim_planner_corpus_measurement() {
 /// union of closed curves, so no plan that consumes only rim halves and adds
 /// only interior edges can consume an open chain. The only way to "close" these
 /// fixtures is to consume the pre-existing border halfedges the chain runs into,
-/// which would seal a genuine open border - exactly what `close_triangular_holes`
-/// is written to avoid.
+/// which would seal a genuine open border.
 ///
 /// The extraction's faithfulness check (`test_weld_cases_are_faithful`) requires
 /// both *merged* vertices to be interior; these cases satisfy that, but a vertex
@@ -4232,139 +4208,6 @@ fn test_merge_one_ring_fusion_reports_everything_it_removes() {
     }
 }
 
-/// The merge closer must not seal a border that was already open, even when the merge
-/// deleted that border's edges and re-created them under new halfedge ids. An id-keyed
-/// "opened" set takes the new ids for edges the merge opened and closes the triangle.
-#[test]
-fn test_merge_closer_keeps_a_border_recreated_under_new_ids() {
-    get_tracing_subscriber();
-
-    // A tetrahedron missing one face: a three-edge border that is meant to stay open.
-    let mut mesh = MeshGraph::new();
-    let a = mesh.add_vertex(vec3(0.0, 0.0, 0.0));
-    let b = mesh.add_vertex(vec3(1.0, 0.0, 0.0));
-    let c = mesh.add_vertex(vec3(0.0, 1.0, 0.0));
-    let d = mesh.add_vertex(vec3(0.0, 0.0, 1.0));
-    mesh.add_face_from_vertices(a, c, b).unwrap();
-    let side = mesh.add_face_from_vertices(a, b, d).unwrap().face_id;
-    mesh.add_face_from_vertices(b, c, d).unwrap();
-    // (c, a, d) is the missing face.
-
-    let pairs_at_entry = mesh.boundary_edge_pairs();
-    let boundary_at_entry = super::rim::RegionBoundary::new(&mesh, &[a, b, c, d]);
-    let ids_at_entry = super::rim::boundary_halves(&mesh);
-    assert_eq!(pairs_at_entry.len(), 3);
-
-    // Remove and re-add a neighbour: the border halfedges it shares are re-created.
-    mesh.remove_face(side);
-    mesh.add_face_from_vertices(a, b, d).unwrap();
-    assert_eq!(
-        mesh.boundary_edge_pairs(),
-        pairs_at_entry,
-        "same border, by vertex pair"
-    );
-    assert!(
-        super::rim::boundary_halves(&mesh) != ids_at_entry,
-        "precondition: the border halfedges have new ids"
-    );
-
-    let faces_before = mesh.faces.len();
-    let (mut marked_halfedges, mut marked_vertices) = (HashSet::default(), HashSet::default());
-    let mut record = MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
-    mesh.close_merge_opened_holes(
-        &[a, b, c, d],
-        &[],
-        &boundary_at_entry,
-        &crate::ops::collapse::VertexRenames::default(),
-        &mut record,
-    );
-    let result = record.result;
-
-    assert_eq!(mesh.faces.len(), faces_before, "the open border was sealed");
-    assert!(result.added_faces.is_empty());
-}
-
-/// A vertex merge renames the absorbed vertex, and with it every old border edge at that
-/// vertex. The closer's snapshot has to be carried along, or those edges have vertex pairs it
-/// never saw, look newly opened, and a border that was already open gets sealed.
-#[test]
-fn test_merge_closer_keeps_a_border_at_absorbed_vertices() {
-    get_tracing_subscriber();
-
-    // A square pyramid with no base: the four base edges are an old border. Two opposite
-    // base corners get absorbed into loose vertices, which renames all four edges.
-    let mut mesh = MeshGraph::new();
-    let a = mesh.add_vertex(vec3(0.0, 0.0, 0.0));
-    let b = mesh.add_vertex(vec3(1.0, 0.0, 0.0));
-    let c = mesh.add_vertex(vec3(1.0, 1.0, 0.0));
-    let d = mesh.add_vertex(vec3(0.0, 1.0, 0.0));
-    let apex = mesh.add_vertex(vec3(0.5, 0.5, 1.0));
-    for (x, y) in [(a, b), (b, c), (c, d), (d, a)] {
-        mesh.add_face_from_vertices(x, apex, y).unwrap();
-    }
-    let mut loose = Vec::new();
-    for i in 0..2 {
-        let o = 10.0 * (i + 1) as f32;
-        let s = mesh.add_vertex(vec3(o, 0.0, 0.0));
-        let p = mesh.add_vertex(vec3(o + 1.0, 0.0, 0.0));
-        let q = mesh.add_vertex(vec3(o, 1.0, 0.0));
-        mesh.add_face_from_vertices(s, p, q).unwrap();
-        loose.push(s);
-    }
-    assert_eq!(mesh.boundary_edge_pairs().len(), 4 + 6);
-
-    let all_vertices: Vec<VertexId> = mesh.vertices.keys().collect();
-    let boundary_at_entry = super::rim::RegionBoundary::new(&mesh, &all_vertices);
-    let mut renames = crate::ops::collapse::VertexRenames::default();
-    for (survivor, absorbed) in [(loose[0], a), (loose[1], c)] {
-        let merged = mesh.merge_vertices([survivor, absorbed]);
-        assert!(merged.removed_vertices.contains(&absorbed));
-        renames.absorb(absorbed, survivor);
-    }
-
-    let faces_before = mesh.faces.len();
-    let (mut marked_halfedges, mut marked_vertices) = (HashSet::default(), HashSet::default());
-    let mut record = MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
-    mesh.close_merge_opened_holes(
-        &[loose[0], b, loose[1], d],
-        &[],
-        &boundary_at_entry,
-        &renames,
-        &mut record,
-    );
-
-    assert_eq!(mesh.faces.len(), faces_before, "the open border was sealed");
-}
-
-/// The merge closer empties a three-halfedge hole around a lone triangle rather than closing
-/// it into a zero-volume pillow, and books the removal on the result.
-#[test]
-fn test_merge_closer_removes_a_lone_triangle() {
-    let mut mesh = MeshGraph::new();
-    let a = mesh.add_vertex(vec3(0.0, 0.0, 0.0));
-    let b = mesh.add_vertex(vec3(1.0, 0.0, 0.0));
-    let c = mesh.add_vertex(vec3(0.0, 1.0, 0.0));
-    let face_id = mesh.add_face_from_vertices(a, b, c).unwrap().face_id;
-
-    let (mut marked_halfedges, mut marked_vertices) = (HashSet::default(), HashSet::default());
-    let mut record = MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
-    mesh.close_merge_opened_holes(
-        &[a, b, c],
-        &[],
-        // Nothing was a border at entry: the snapshot of an empty mesh over these vertices.
-        &super::rim::RegionBoundary::new(&MeshGraph::new(), &[a, b, c]),
-        &crate::ops::collapse::VertexRenames::default(),
-        &mut record,
-    );
-    let result = record.result;
-
-    assert_eq!(mesh.faces.len(), 0, "the lone triangle is gone, no pillow");
-    assert!(result.added_faces.is_empty());
-    assert_eq!(result.removed_faces, vec![face_id]);
-    assert_eq!(result.removed_halfedges.len(), 6);
-    assert_eq!(result.removed_vertices.len(), 3);
-}
-
 #[test]
 fn test_vertex_renames() {
     use crate::ops::collapse::VertexRenames;
@@ -4415,7 +4258,7 @@ fn test_vertex_renames() {
     assert!(resolved.contains(&key(a, e)) && resolved.contains(&key(b, e)));
 }
 
-/// `RimPlan::is_complete` decides whether the op builds the rim plan, so each of
+/// `RimPlan::incompleteness` decides whether the op builds the rim plan, so each of
 /// its refusals is pinned on a rim it can be checked by hand: the three face-less halves
 /// around a lone triangle `abc`.
 #[test]
@@ -4434,12 +4277,14 @@ fn test_rim_plan_is_complete_refuses_what_does_not_close_the_rim() {
     let rim: HashSet<HalfedgeId> = super::rim::boundary_halves(&mesh);
     assert_eq!(rim.len(), 3);
 
-    let plan = |faces: &[(VertexId, VertexId, VertexId)]| RimPlan {
-        faces: faces
-            .iter()
-            .map(|&(v1, v2, v3)| PlannedFace::new(v1, v2, v3, Single))
-            .collect(),
-        unhandled: Vec::new(),
+    let plan = |faces: &[(VertexId, VertexId, VertexId)]| {
+        let mut plan = RimPlan::default();
+        plan.push_faces(
+            faces
+                .iter()
+                .map(|&(v1, v2, v3)| PlannedFace::new(v1, v2, v3, Single)),
+        );
+        plan
     };
 
     // A tetrahedron over the rim: every rim half consumed, every other edge paired.
@@ -4523,46 +4368,191 @@ fn test_merge_keeps_long_lived_marked_sets_live() {
     );
 }
 
-/// The parallel-edge weld drops orphan halves, and an orphan is often the free half a
-/// planned face of the same merge just added: it must leave `added_halfedges` rather than
-/// be listed as removed too, and must leave the marked set.
+/// Replays one merge from a freestyle-sculpt `WELD_DUMP` file (the exact state before the
+/// first merge of a weld that opened the mesh) and prints what it did: the boundary it
+/// opened and the rim probe. Run with `MERGE_DUMP=<path>`.
+#[cfg(feature = "serde")]
 #[test]
-fn test_weld_parallel_edges_drops_its_own_orphans_cleanly() {
-    let mut mesh = MeshGraph::new();
-    let a = mesh.add_vertex(vec3(0.0, 0.0, 0.0));
-    let b = mesh.add_vertex(vec3(1.0, 0.0, 0.0));
-    let c = mesh.add_vertex(vec3(0.5, 1.0, 0.0));
-    let d = mesh.add_vertex(vec3(0.5, -1.0, 0.0));
+#[ignore = "needs MERGE_DUMP"]
+fn replay_merge_dump() {
+    let Ok(path) = std::env::var("MERGE_DUMP") else {
+        return;
+    };
+    get_tracing_subscriber();
+    let dump: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&path).unwrap()).unwrap();
 
-    mesh.add_face_from_vertices(a, b, c).unwrap();
-    let old_orphan = mesh
-        .halfedges_from_to(b, a)
-        .into_iter()
-        .next()
-        .expect("the face's own b -> a twin");
+    // JSON has no NaN: a degenerate vertex's NaN normal was written as `null`s. Read them
+    // as zeros, then put the NaNs back.
+    let mut mesh_value = dump["mesh"].clone();
+    let mut nan_normals = Vec::new();
+    if let Some(slots) = mesh_value["vertex_normals"].as_array_mut() {
+        for (idx, slot) in slots.iter_mut().enumerate() {
+            if let Some(components) = slot["value"].as_array_mut()
+                && components.iter().any(|c| c.is_null())
+            {
+                for c in components.iter_mut() {
+                    *c = serde_json::json!(0.0);
+                }
+                nan_normals.push(idx);
+            }
+        }
+    }
+    let mut mesh: MeshGraph = serde_json::from_value(mesh_value).unwrap();
+    use slotmap::Key as _;
+    if let Some(normals) = mesh.vertex_normals.as_mut() {
+        for (v_id, normal) in normals.iter_mut() {
+            if nan_normals.contains(&(v_id.data().as_ffi() as u32 as usize)) {
+                *normal = Vec3::NAN;
+            }
+        }
+    }
+    // The live outgoing order, not the rebuilt one: the merge walks stars in it.
+    let outgoing: Vec<(VertexId, Vec<HalfedgeId>)> =
+        serde_json::from_value(dump["outgoing"].clone()).unwrap();
+    mesh.outgoing_halfedges.clear();
+    for (v_id, he_ids) in outgoing {
+        mesh.outgoing_halfedges.insert(v_id, he_ids);
+    }
+    let v1: VertexId = serde_json::from_value(dump["v1"].clone()).unwrap();
+    let v2: VertexId = serde_json::from_value(dump["v2"].clone()).unwrap();
+    let flip = dump["flip_threshold_sqr"].as_f64().unwrap() as f32;
+    let mut protected_vertices: HashSet<VertexId> =
+        serde_json::from_value(dump["protected_vertices"].clone()).unwrap();
+    let mut protected_halfedges: HashSet<HalfedgeId> =
+        serde_json::from_value(dump["protected_halfedges"].clone()).unwrap();
 
-    // A second, parallel a-b edge, whose b -> a half carries the face on the other side.
-    let parallel = mesh.add_edge(b, a).unwrap();
-    let a_d = mesh.add_edge(a, d).unwrap();
-    let d_b = mesh.add_edge(d, b).unwrap();
-    mesh.add_face(
-        parallel.start_to_end_he_id,
-        a_d.start_to_end_he_id,
-        d_b.start_to_end_he_id,
+    let before = boundary_edges(&mesh);
+    let result = mesh.merge_vertices_one_rings(
+        v1,
+        v2,
+        flip,
+        &mut protected_halfedges,
+        &mut protected_vertices,
     );
-    let new_orphan = parallel.twin_he_id;
+    let after = boundary_edges(&mesh);
 
-    let mut marked_halfedges = HashSet::from_iter([new_orphan, old_orphan]);
-    let mut marked_vertices = HashSet::default();
-    let mut record = MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
-    record.result.added_halfedges.push(new_orphan);
+    let opened: Vec<_> = after.difference(&before).collect();
+    let closed: Vec<_> = before.difference(&after).collect();
+    println!(
+        "REPLAY {v1:?}+{v2:?}: boundary {} -> {}, opened {opened:?}, closed {closed:?}",
+        before.len(),
+        after.len()
+    );
+    println!(
+        "  added {} faces, removed {} faces",
+        result.added_faces.len(),
+        result.removed_faces.len(),
+    );
+    for probe in super::rim_probe::drain() {
+        println!("  RIM {}", probe.summary());
+    }
+    if std::env::var("REPLAY_DETAIL").is_ok() {
+        for &&(a, b) in &opened {
+            let coincident = |v: VertexId| {
+                let pos = mesh.positions[v];
+                mesh.positions
+                    .iter()
+                    .filter(|&(other, p)| other != v && *p == pos)
+                    .map(|(other, _)| other)
+                    .collect::<Vec<_>>()
+            };
+            println!(
+                "  opened {a:?} {:?} (coincident {:?}) - {b:?} {:?} (coincident {:?})",
+                mesh.positions[a],
+                coincident(a),
+                mesh.positions[b],
+                coincident(b)
+            );
+        }
+    }
+    assert_manifold_region(&mesh);
+}
 
-    mesh.weld_parallel_edges([a, b], &mut record);
+/// A quad hole in a grid whose two diagonals already exist (as wire edges): the planner fans
+/// it from a new center vertex, and the op's `center_fan` + `Single`-order insertion close
+/// it with four faces around one new vertex.
+#[test]
+fn test_center_fan_closes_a_quad_hole() {
+    let mut mesh = MeshGraph::new();
+    let grid: Vec<Vec<VertexId>> = (0..4)
+        .map(|y| {
+            (0..4)
+                .map(|x| mesh.add_vertex(vec3(x as f32, y as f32, 0.0)))
+                .collect()
+        })
+        .collect();
+    let mut center_cell = Vec::new();
+    for y in 0..3 {
+        for x in 0..3 {
+            let (a, b, c, d) = (
+                grid[y][x],
+                grid[y][x + 1],
+                grid[y + 1][x + 1],
+                grid[y + 1][x],
+            );
+            let faces = [
+                mesh.add_face_from_vertices(a, b, c).unwrap().face_id,
+                mesh.add_face_from_vertices(a, c, d).unwrap().face_id,
+            ];
+            if (x, y) == (1, 1) {
+                center_cell.extend(faces);
+            }
+        }
+    }
+
+    let boundary_before = super::rim::boundary_halves(&mesh);
+    for face_id in center_cell {
+        mesh.remove_face(face_id);
+    }
+    let rim: HashSet<HalfedgeId> = super::rim::boundary_halves(&mesh)
+        .difference(&boundary_before)
+        .copied()
+        .collect();
+    assert_eq!(rim.len(), 4, "precondition: a quad hole");
+
+    let quad = [grid[1][1], grid[1][2], grid[2][2], grid[2][1]];
+    let mut blockers = Vec::new();
+    for (a, b) in [(quad[0], quad[2]), (quad[1], quad[3])] {
+        match mesh.halfedges_from_to(a, b).first() {
+            Some(he_id) => blockers.push(*he_id),
+            None => blockers.push(mesh.add_edge(a, b).unwrap().start_to_end_he_id),
+        }
+    }
+
+    let plan = super::rim_planner::plan(&mesh, &rim, &rim, &HashSet::default());
+    assert!(plan.faces.is_empty());
+    assert_eq!(plan.center_fans.len(), 1);
+    assert_eq!(plan.incompleteness(&mesh, &rim), None);
+
+    let ring: HashSet<VertexId> = quad.into_iter().collect();
+    let (mut marked_halfedges, mut marked_vertices) = (HashSet::default(), HashSet::default());
+    let mut record = super::MergeRecord::new(&mut marked_halfedges, &mut marked_vertices);
+    for fan in &plan.center_fans {
+        let faces = mesh.center_fan(fan, &mut record);
+        mesh.add_planned_faces(faces, &ring, &HashSet::default(), &mut record);
+    }
     let result = record.result;
 
-    assert!(!mesh.halfedges.contains_key(new_orphan));
-    assert!(!mesh.halfedges.contains_key(old_orphan));
-    assert!(result.added_halfedges.is_empty());
-    assert_eq!(result.removed_halfedges, vec![old_orphan]);
-    assert!(marked_halfedges.is_empty());
+    assert_eq!(result.added_vertices.len(), 1);
+    assert_eq!(result.added_faces.len(), 4);
+    let center = result.added_vertices[0];
+    assert_eq!(mesh.positions[center], vec3(1.5, 1.5, 0.0));
+    for he_id in &rim {
+        assert!(
+            mesh.halfedges[*he_id].face.is_some(),
+            "rim half {he_id:?} left open"
+        );
+    }
+    for &he_id in &mesh.outgoing_halfedges[center] {
+        let he = mesh.halfedges[he_id];
+        let twin = mesh.halfedges[he.twin.unwrap()];
+        assert!(he.face.is_some() && twin.face.is_some(), "open spoke");
+    }
+
+    // The blockers are wire edges; without them the grid is a manifold disk again.
+    for he_id in blockers {
+        mesh.remove_only_halfedge_and_twin(he_id);
+    }
+    assert_manifold_region(&mesh);
 }

@@ -48,14 +48,19 @@ ms per merge:
 | `134945e` (`remove_face` finds members locally) | 0.11 | 0.18 | 0.23 | 0.78 | 3.0 |
 | `7ccf06a` (boundary scans scoped to the merge region, old `remove_face`) | 0.23 | 0.32 | 0.69 | 2.6 | 10.1 |
 | `93eeef6` (both) | 0.15 | 0.12 | 0.08 | 0.10 | 0.09 |
+| after `9d76194` (merge nets removed) | 0.05 | 0.06 | 0.06 | 0.08 | 0.07 |
 
-The last two rows were measured side by side with a re-run of `134945e`, which
+The `7ccf06a` and `93eeef6` rows were measured side by side with a re-run of `134945e`, which
 matched its row (0.22 / 0.79 / 3.2 at levels 5–7). At `93eeef6` the
 merge is local: levels 5–7 are flat. Each of the two fixes alone still grows about
 4x per level, because the other one is a whole-mesh pass: `remove_face`'s member scan
 at `7ccf06a`, and the merge's five boundary scans (entry snapshot, rim snapshot, two
 rim deltas, the closer's opened-edge search) at `134945e`. Add a row for every
 change that moves these numbers.
+
+The nets-removed row was measured side by side with `9d76194` at `N=30` (0.11 / 0.09 /
+0.08 / 0.08 / 0.10 in the same run): dropping the closer and the parallel-edge weld makes
+a merge about 20% cheaper and keeps it flat.
 
 ## Comparing against another commit
 

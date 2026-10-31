@@ -10,15 +10,12 @@ use std::ops::RangeInclusive;
 
 use crate::hash::{HashMap, HashSet};
 use itertools::Itertools;
+use rim_planner::CenterFan;
 use tracing::{error, instrument};
 
 use crate::{
     FaceId, HalfedgeId, MeshGraph, VertexId, error_none,
-    ops::{
-        add::AddFace,
-        collapse::{CollapseEdge, VertexRenames, vertices_of_pairs},
-        edit::MergeVertices,
-    },
+    ops::{add::AddFace, collapse::CollapseEdge, edit::MergeVertices},
     utils::unwrap_or_return,
 };
 
@@ -31,34 +28,6 @@ pub struct MergeVerticesOneRing {
     pub added_vertices: Vec<VertexId>,
     pub added_halfedges: Vec<HalfedgeId>,
     pub added_faces: Vec<FaceId>,
-}
-
-/// The three post-hoc repair passes of the merge ("the nets"):
-/// `weld_parallel_edges` (before and after the neighborhood cleanup) and
-/// `close_merge_opened_holes`.
-///
-/// Always on outside tests. Test builds can turn them off with
-/// `MESH_GRAPH_MERGE_NETS=0`: with the nets off, the tests measure whether the band
-/// itself closes exactly what the removals opened, instead of whether the nets mop
-/// up afterwards.
-///
-/// With the nets off, the one failure is `weld_cases_stay_watertight`'s
-/// `gap=0.05` case: its coincident fusion opens boundary before any band is
-/// planned, and only the closer seals that.
-#[cfg(test)]
-fn merge_nets_enabled() -> bool {
-    use std::sync::OnceLock;
-
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("MESH_GRAPH_MERGE_NETS").map_or(true, |value| value != "0" && value != "off")
-    })
-}
-
-#[cfg(not(test))]
-#[inline(always)]
-fn merge_nets_enabled() -> bool {
-    true
 }
 
 // How many coincident cross-ring pairs `merge_vertices_one_rings` fused on this thread.
@@ -178,7 +147,7 @@ impl<'a> MergeRecord<'a> {
     }
 }
 
-/// The vertices of both rings and the ones the op added, where its repair passes look.
+/// The vertices of both rings and the ones the op added, where the op smooths.
 fn ring_region(
     one_ring_v_ids1: &[VertexId],
     one_ring_v_ids2: &[VertexId],
@@ -280,38 +249,25 @@ impl MeshGraph {
             test_rim_probe.parallel_before = rim_probe::count_parallel_edges(self);
         }
 
-        // The boundary as the op found it, by vertex pair, for the hole closers. It has to be
-        // taken here, before the coincident fusion below: the fusion removes faces, so a
-        // snapshot taken after it already *contains* that hole and the closers see nothing to
-        // close - `MANIFOLD BROKE at merge VertexId(36v1)+VertexId(415v1) (boundary 0 -> 4)`
-        // is exactly that case. Nothing between the top of this function and this line
-        // touches the mesh.
-        //
-        // Both snapshots, and the deltas taken against them, cover only the region within
-        // three edges of the two vertices, which holds everything the op touches: the stars
-        // and the strip are one ring out, the fusion's and the cleanup's face removals around
-        // ring vertices reach two, and merging a ring vertex with its border neighbours
-        // (`merge_remaining_unconnected`) reaches the faces one ring further. The merge runs
-        // hundreds of times per stroke, so whole-mesh scans here made it grow with the mesh.
-        // A region that turned out too small could only leave a hole open, never seal a
-        // border (see `rim::RegionBoundary`), and the test build checks every merge against
-        // the whole-mesh scans.
-        let region = self.vertices_around(&[vertex_id1, vertex_id2], 3);
-        let boundary_at_entry = rim::RegionBoundary::new(self, &region);
-
-        // The same boundary by halfedge, for the band's rim `H = boundary(after) \
+        // The boundary as the op found it, by halfedge, for the band's rim `H = boundary(after) \
         // boundary(before)`: `remove_face` detaches most rim members in place instead of
         // freeing them, so the twins of the removed halfedges are *not* the rim the op has to
-        // close (see `rim::opened_rim`). Like the closers' snapshot it is taken before the
-        // fusion, so whatever boundary the fusion opens is part of the rim the band closes: a
-        // snapshot after it can cut a closed rim into an open chain that no band can consume.
+        // close (see `rim::opened_rim`). It is taken before the coincident fusion below, so
+        // whatever boundary the fusion opens is part of the rim the band closes: a snapshot
+        // after it can cut a closed rim into an open chain that no band can consume.
+        //
+        // The snapshot, and the deltas taken against it, cover only the region within three
+        // edges of the two vertices, which holds everything the op touches: the stars and the
+        // strip are one ring out, the fusion's and the cleanup's face removals around ring
+        // vertices reach two, and merging a ring vertex with its border neighbours
+        // (`merge_remaining_unconnected`) reaches the faces one ring further. The merge runs
+        // hundreds of times per stroke, so whole-mesh scans here made it grow with the mesh.
+        // The test build checks every merge against the whole-mesh scans.
+        let region = self.vertices_around(&[vertex_id1, vertex_id2], 3);
         let boundary_before = rim::boundary_halves_around(self, &region);
         #[cfg(test)]
         let whole_mesh_boundary_before = rim::boundary_halves(self);
 
-        // The vertex merges and splits this op makes, so the snapshot can be carried to the
-        // closers (see `VertexRenames`).
-        let mut renames = VertexRenames::default();
         let mut record = MergeRecord::new(marked_halfedges, marked_vertices);
 
         // Weld position-coincident cross-ring vertices before planning the band.
@@ -320,16 +276,16 @@ impl MeshGraph {
         // ring vertex of `vertex_id1` and a ring vertex of `vertex_id2` can share
         // a position while remaining distinct ids. Both rings then pass through
         // the same point, and any band spanning that zero-width seam contains two
-        // faces over the same geometric triangle — a "flap" by the position-based
-        // `faces_share_all_vertices`. `cleanup_bookkeeping` deletes the flap,
-        // leaving a hole that nothing re-fills (the intermittent weld-hole
-        // defect, ~1 in 12 runs, boundary halfedges left open).
+        // faces over the same geometric triangle.
         //
         // Fusing each coincident pair turns the two rings into the well-tested
         // shared-vertex case: the band is split at the shared vertex and the seam
-        // is never spanned by a degenerate face. The position comparison is exact,
-        // matching `faces_share_all_vertices`, so this fires exactly where the
-        // flap deletion would have.
+        // is never spanned by a degenerate face. The position comparison is exact.
+        //
+        // `zip_coincident_patches` runs first in the weld, but pairs still get here: 29
+        // fusions in 1,440 small-gap welds. The fusion's own face removals can open
+        // boundary that nothing closes on the flip-and-collapse fast path (the test
+        // fixture `WELD_GAP005_MERGE`); none of those welds did.
         let mut coincident_pairs = Vec::new();
         for &v_id1 in &one_ring_v_ids1 {
             for &v_id2 in &one_ring_v_ids2 {
@@ -370,7 +326,6 @@ impl MeshGraph {
 
             if !self.vertices.contains_key(*v2_id) {
                 fused_into.insert(*v2_id, *v1_id);
-                renames.absorb(*v2_id, *v1_id);
             }
         }
         for v_id in &mut one_ring_v_ids2 {
@@ -400,21 +355,8 @@ impl MeshGraph {
         if self.check_and_flip_single_shared_he(
             &shared_he_ids,
             flip_threshold_sqr,
-            &mut renames,
             &mut record.result,
         ) {
-            // That flip-plus-collapse removes faces, so it leaves the same kind of hole the band
-            // does.
-            if merge_nets_enabled() {
-                self.close_merge_opened_holes(
-                    &one_ring_v_ids1,
-                    &one_ring_v_ids2,
-                    &boundary_at_entry,
-                    &renames,
-                    &mut record,
-                );
-            }
-
             return self.finish_merge(record);
         }
 
@@ -460,18 +402,7 @@ impl MeshGraph {
                 tracing::error!("Error in find_already_connected_strip");
 
                 // The stars are already out by this point, so returning here leaves their rim
-                // open: the op tears the mesh and does not put it back. No band can be
-                // planned, but the surface can stay closed.
-                if merge_nets_enabled() {
-                    self.close_merge_opened_holes(
-                        &one_ring_v_ids1,
-                        &one_ring_v_ids2,
-                        &boundary_at_entry,
-                        &renames,
-                        &mut record,
-                    );
-                }
-
+                // open: the op tears the mesh and does not put it back.
                 return self.finish_merge(record);
             }
         };
@@ -496,10 +427,15 @@ impl MeshGraph {
         // Only a plan that closes exactly the rim is built. Without one - in practice an
         // open chain, a rim that runs into a pre-existing border - nothing is planned, and
         // the cleanup and the remaining-unconnected merge below repair the region.
-        let planned_faces = if plan.is_complete(self, &rim) {
-            plan.faces
-        } else {
-            Vec::new()
+        let (planned_faces, center_fans) = match plan.incompleteness(self, &rim) {
+            None => (plan.faces, plan.center_fans),
+            Some(_reason) => {
+                #[cfg(test)]
+                {
+                    test_rim_probe.plan_refused = Some(plan.describe(_reason));
+                }
+                (Vec::new(), Vec::new())
+            }
         };
 
         for pf in &planned_faces {
@@ -527,60 +463,41 @@ impl MeshGraph {
             &one_ring_v_set2,
             &mut record,
         );
+        for fan in center_fans {
+            let fan = self.center_fan(&fan, &mut record);
+            self.add_planned_faces(fan, &one_ring_v_set1, &one_ring_v_set2, &mut record);
+        }
 
         #[cfg(test)]
         {
             test_rim_probe.finish(self);
         }
 
-        if merge_nets_enabled() {
-            self.weld_parallel_edges(
-                ring_region(
-                    &one_ring_v_ids1,
-                    &one_ring_v_ids2,
-                    &record.result.added_vertices,
-                ),
-                &mut record,
-            );
-        }
-
         #[cfg(feature = "rerun")]
         self.log_rerun();
 
-        self.cleanup_bookkeeping(
-            &one_ring_v_ids1,
-            &one_ring_v_ids2,
-            &mut renames,
-            &mut record,
-        );
+        #[cfg(test)]
+        let removed_faces_before_cleanup = record.result.removed_faces.len();
+        self.cleanup_bookkeeping(&one_ring_v_ids1, &one_ring_v_ids2, &mut record);
+        #[cfg(test)]
+        {
+            test_rim_probe.cleanup_removed_faces =
+                record.result.removed_faces.len() - removed_faces_before_cleanup;
+            test_rim_probe.after_cleanup_opened = rim::boundary_halves(self)
+                .difference(&test_rim_probe.before)
+                .count();
+        }
 
         self.merge_remaining_unconnected(
             one_ring_v_ids1.clone(),
             one_ring_v_ids2.clone(),
-            &mut renames,
             &mut record,
         );
-
-        // Again after the cleanup: a pair can still be parallel here that was not
-        // weldable above, because the two faces hung off the *same* side of the
-        // edge until the cleanup rebuilt one of them.
-        if merge_nets_enabled() {
-            self.weld_parallel_edges(
-                ring_region(
-                    &one_ring_v_ids1,
-                    &one_ring_v_ids2,
-                    &record.result.added_vertices,
-                ),
-                &mut record,
-            );
-
-            self.close_merge_opened_holes(
-                &one_ring_v_ids1,
-                &one_ring_v_ids2,
-                &boundary_at_entry,
-                &renames,
-                &mut record,
-            );
+        #[cfg(test)]
+        {
+            test_rim_probe.after_remaining_opened = rim::boundary_halves(self)
+                .difference(&test_rim_probe.before)
+                .count();
         }
 
         self.smooth_vertices(ring_region(
@@ -618,7 +535,6 @@ impl MeshGraph {
         &mut self,
         mut one_ring_v_ids1: Vec<VertexId>,
         mut one_ring_v_ids2: Vec<VertexId>,
-        renames: &mut VertexRenames,
         record: &mut MergeRecord,
     ) {
         while let Some(v_id) = one_ring_v_ids1.pop() {
@@ -641,29 +557,11 @@ impl MeshGraph {
                 one_ring_v_ids1.retain(|v_id| !vertices.contains(v_id));
                 one_ring_v_ids2.retain(|v_id| !vertices.contains(v_id));
 
-                // `merge_vertices` keeps the first live vertex and absorbs the other live ones.
-                // Only those are renames: `removed_vertices` also lists vertices the face
-                // removal left isolated, whose edges are gone rather than moved.
-                let members = vertices
-                    .iter()
-                    .copied()
-                    .unique()
-                    .filter(|v_id| self.vertices.contains_key(*v_id))
-                    .collect_vec();
-
                 let MergeVertices {
                     removed_vertices,
                     removed_halfedges,
                     removed_faces,
                 } = self.merge_vertices(vertices);
-
-                if let Some((&survivor, absorbed)) = members.split_first() {
-                    for &absorbed in absorbed {
-                        if !self.vertices.contains_key(absorbed) {
-                            renames.absorb(absorbed, survivor);
-                        }
-                    }
-                }
 
                 // The cleanup ran before this, so a merged vertex or a removed edge can be
                 // one it split off or the band added.
@@ -692,7 +590,7 @@ impl MeshGraph {
         let mut already_connected_face_ids = vec![];
 
         // Only the first strip of already existing faces is taken; a second one stays, and
-        // the band spans it (`is_complete` refuses a plan that would duplicate its edges).
+        // the band spans it (`RimPlan::incompleteness` refuses a plan that would duplicate its edges).
         let mut strip_found = false;
 
         for ((idx1, &v_id1), (idx2, &v_id2)) in one_ring_v_ids1
@@ -1039,7 +937,6 @@ impl MeshGraph {
         &mut self,
         one_ring_v_ids1: &[VertexId],
         one_ring_v_ids2: &[VertexId],
-        renames: &mut VertexRenames,
         record: &mut MergeRecord,
     ) {
         for vertex_id in one_ring_v_ids1.iter().chain(one_ring_v_ids2).copied() {
@@ -1048,12 +945,6 @@ impl MeshGraph {
             }
 
             let cleanup = self.make_vertex_neighborhood_manifold(vertex_id);
-
-            // The cleanup only ever splits `vertex_id` and the vertices it split off, so every
-            // added vertex descends from it.
-            for &added_v_id in &cleanup.added_vertices {
-                renames.split(vertex_id, added_v_id);
-            }
 
             if !cleanup.added_vertices.is_empty() {
                 record.marked_vertices.insert(vertex_id);
@@ -1072,6 +963,17 @@ impl MeshGraph {
                 record.face_removed(face_id);
             }
         }
+    }
+
+    /// Adds the fan's center vertex and returns the faces that fan its cycle from it (see
+    /// `RimPlan::center_fans`).
+    fn center_fan(&mut self, fan: &CenterFan, record: &mut MergeRecord) -> Vec<PlannedFace> {
+        let center = self.add_vertex(fan.center);
+        record.result.added_vertices.push(center);
+
+        rim_planner::cycle_sides(&fan.cycle)
+            .map(|(start, end)| PlannedFace::new(start, end, center, PlannedFaceOrder::Single))
+            .collect()
     }
 
     /// Remove the given faces, recording the removal on `result`.
@@ -1158,190 +1060,6 @@ impl MeshGraph {
 
             record.result.added_halfedges.extend(inserted.halfedge_ids);
             record.result.added_faces.push(inserted.face_id);
-        }
-    }
-
-    /// Fuse *parallel* edges left behind by the new faces.
-    ///
-    /// `add_or_get_boundary_edge` only ever reuses a free half in the direction
-    /// it was asked for. When a planned face needs `a -> b` and that direction
-    /// already carries a face, it adds a second, parallel edge between the same
-    /// two vertices instead. That is fine while the region is still being
-    /// rebuilt - a later face or the neighborhood cleanup usually claims the
-    /// free halves - but when nothing does, the two halves stay face-less
-    /// forever. The mesh then reports them as boundary (a "hole" with no face
-    /// missing from it) and the two triangles that should share the edge each
-    /// sit on their own copy of it.
-    ///
-    /// This is the sweep for that leftover: where two vertices are joined by
-    /// more than one edge but exactly one face hangs off each direction, the two
-    /// faced halves become each other's twin and the orphans are dropped. Any
-    /// other shape is left alone - more than one face per direction is a
-    /// genuinely non-manifold edge, which is the neighborhood cleanup's job.
-    fn weld_parallel_edges(
-        &mut self,
-        region_v_ids: impl IntoIterator<Item = VertexId>,
-        record: &mut MergeRecord,
-    ) {
-        let mut seen = HashSet::<VertexId>::default();
-
-        for v_id in region_v_ids {
-            if !seen.insert(v_id) || !self.vertices.contains_key(v_id) {
-                continue;
-            }
-
-            let Some(out_he_ids) = self.outgoing_halfedges.get(v_id).cloned() else {
-                continue;
-            };
-
-            // End vertices this one reaches more than once, in a stable order.
-            let mut ends = Vec::new();
-            for he_id in &out_he_ids {
-                if let Some(he) = self.halfedges.get(*he_id)
-                    && !ends.contains(&he.end_vertex)
-                {
-                    ends.push(he.end_vertex);
-                }
-            }
-
-            for other_v_id in ends {
-                let forward = self.halfedges_from_to(v_id, other_v_id);
-                let backward = self.halfedges_from_to(other_v_id, v_id);
-
-                if forward.len() + backward.len() <= 2 {
-                    continue;
-                }
-
-                let faced = |mesh: &Self, ids: &[HalfedgeId]| -> Vec<HalfedgeId> {
-                    ids.iter()
-                        .copied()
-                        .filter(|he_id| {
-                            mesh.halfedges
-                                .get(*he_id)
-                                .is_some_and(|he| he.face.is_some())
-                        })
-                        .collect()
-                };
-
-                let faced_forward = faced(self, &forward);
-                let faced_backward = faced(self, &backward);
-
-                if faced_forward.len() != 1 || faced_backward.len() != 1 {
-                    continue;
-                }
-
-                let keep_forward = faced_forward[0];
-                let keep_backward = faced_backward[0];
-
-                self.halfedges[keep_forward].twin = Some(keep_backward);
-                self.halfedges[keep_backward].twin = Some(keep_forward);
-
-                for he_id in forward.into_iter().chain(backward) {
-                    if he_id == keep_forward || he_id == keep_backward {
-                        continue;
-                    }
-                    // Only the orphans go; anything with a face was counted above.
-                    if self
-                        .halfedges
-                        .get(he_id)
-                        .is_some_and(|he| he.face.is_none())
-                    {
-                        // An orphan is often the free half a planned face just added.
-                        self.remove_only_halfedge(he_id);
-                        record.halfedge_removed(he_id);
-                    }
-                }
-
-                self.reseed_outgoing_if_dead(v_id);
-                self.reseed_outgoing_if_dead(other_v_id);
-            }
-        }
-    }
-
-    /// Closes the holes this merge's removals opened, wherever they are.
-    ///
-    /// The search region is the merge's own rings plus the endpoints of every boundary edge
-    /// the op opened since entry: a hole can sit outside the rings (the coincident fusion,
-    /// the star removal and the strip walk all reach further).
-    ///
-    /// Both the search and the snapshot cover only the region around the merge
-    /// ([`rim::RegionBoundary`]); the test build checks that a whole-mesh scan finds the
-    /// same opened boundary.
-    ///
-    /// "Opened" is keyed by vertex pair, not halfedge id: the merge deletes border edges and
-    /// re-creates them under new ids, and an id-keyed set would take such an edge for one the
-    /// merge opened and seal a border that is meant to stay open. The walker is the collapse
-    /// closer's ([`MeshGraph::boundary_loop_from`]), so both ops share one definition of
-    /// "a loop this op opened"; it follows opened edges only, of any length, and
-    /// [`MeshGraph::close_loop_with_fan`] refuses cuts that would fold the loop. The snapshot
-    /// is carried through the vertex merges and splits the op made so far (`renames`), or the
-    /// old border edges at those vertices would look opened.
-    ///
-    /// A three-halfedge loop around a lone triangle is emptied rather than closed: the
-    /// triangle is removed (see [`MeshGraph::lone_face_behind`]).
-    fn close_merge_opened_holes(
-        &mut self,
-        one_ring_v_ids1: &[VertexId],
-        one_ring_v_ids2: &[VertexId],
-        boundary_at_entry: &rim::RegionBoundary,
-        renames: &VertexRenames,
-        record: &mut MergeRecord,
-    ) {
-        let boundary_at_entry = &boundary_at_entry.resolve(renames);
-
-        let opened =
-            self.opened_boundary_pairs_around(boundary_at_entry.region(), boundary_at_entry);
-        #[cfg(test)]
-        assert_eq!(
-            opened,
-            self.opened_boundary_pairs(&boundary_at_entry.whole_mesh),
-            "the merge opened boundary past its region"
-        );
-
-        let mut closer_region = ring_region(
-            one_ring_v_ids1,
-            one_ring_v_ids2,
-            &record.result.added_vertices,
-        );
-        let mut in_region: HashSet<VertexId> = closer_region.iter().copied().collect();
-
-        for v_id in vertices_of_pairs(opened) {
-            if in_region.insert(v_id) {
-                closer_region.push(v_id);
-            }
-        }
-
-        // The faces added below take two halves out of the boundary and add the fan's
-        // diagonal, so each sweep re-walks until nothing closes.
-        loop {
-            let mut progressed = false;
-
-            for &start_v in &closer_region {
-                if !self.vertices.contains_key(start_v) {
-                    continue;
-                }
-
-                let Some(loop_hes) = self.boundary_loop_from(start_v, boundary_at_entry) else {
-                    continue;
-                };
-
-                if let Some(face_id) = self.lone_face_behind(&loop_hes) {
-                    let removed = self.remove_face(face_id);
-                    record.face_removed_with(face_id, removed);
-                    progressed = true;
-                    continue;
-                }
-
-                if let Some(added) = self.close_loop_with_fan(&loop_hes) {
-                    record.result.added_faces.push(added.face_id);
-                    record.result.added_halfedges.extend(added.halfedge_ids);
-                    progressed = true;
-                }
-            }
-
-            if !progressed {
-                break;
-            }
         }
     }
 
@@ -1512,7 +1230,6 @@ impl MeshGraph {
         &mut self,
         single_shared_he_id: HalfedgeId,
         flip_threshold_sqr: f32,
-        renames: &mut VertexRenames,
         result: &mut MergeVerticesOneRing,
     ) -> bool {
         // A lookup, not an index: the caller picks this edge out of a set built from the
@@ -1549,25 +1266,12 @@ impl MeshGraph {
 
         self.flip_edge(single_shared_he_id);
 
-        // `collapse_edge` absorbs the edge's end vertex into its start vertex and cleans
-        // up the start vertex's neighborhood, so every vertex it adds descends from it.
-        let flipped_ends = self.halfedge_endpoints(single_shared_he_id);
-
         let CollapseEdge {
             removed_vertices,
             removed_halfedges,
             removed_faces,
             added_vertices,
         } = self.collapse_edge(single_shared_he_id);
-
-        if let Some((start_v_id, end_v_id)) = flipped_ends {
-            if removed_vertices.contains(&end_v_id) && !removed_vertices.contains(&start_v_id) {
-                renames.absorb(end_v_id, start_v_id);
-            }
-            for &added_v_id in &added_vertices {
-                renames.split(start_v_id, added_v_id);
-            }
-        }
 
         result.added_vertices.extend(added_vertices);
         result.removed_vertices.extend(removed_vertices);
@@ -1582,7 +1286,6 @@ impl MeshGraph {
         &mut self,
         shared_he_ids: &HashSet<HalfedgeId>,
         flip_threshold_sqr: f32,
-        renames: &mut VertexRenames,
         result: &mut MergeVerticesOneRing,
     ) -> bool {
         let Ok(&shared_he_id) = shared_he_ids.iter().exactly_one() else {
@@ -1595,7 +1298,6 @@ impl MeshGraph {
         self.flip_and_collapse_single_shared_edge_if_below_threshold(
             shared_he_id,
             flip_threshold_sqr,
-            renames,
             result,
         )
     }

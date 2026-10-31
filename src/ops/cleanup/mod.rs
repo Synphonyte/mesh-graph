@@ -63,6 +63,10 @@ impl MeshGraph {
     }
 
     /// Test if two faces share all vertices.
+    ///
+    /// Compares vertex ids, not positions: two sheets that touch can carry distinct,
+    /// coincident vertices, and a face of each over the same triangle is not a flap.
+    /// Removing such a pair as one opens a hole in both sheets.
     #[inline]
     #[instrument(skip(self))]
     pub fn faces_share_all_vertices(&self, face_id1: FaceId, face_id2: FaceId) -> bool {
@@ -80,27 +84,14 @@ impl MeshGraph {
             .get(face_id2)
             .or_else(error_none!("Face 2 not found"))?;
 
-        'outer: for vertex_id1 in face1.vertices(self) {
-            let pos1 = self
-                .positions
-                .get(vertex_id1)
-                .or_else(error_none!("Position of vertex 1 not found"))?;
-
-            for vertex_id2 in face2.vertices(self) {
-                let pos2 = self
-                    .positions
-                    .get(vertex_id2)
-                    .or_else(error_none!("Position of vertex 2 not found"))?;
-
-                if pos1 == pos2 {
-                    continue 'outer;
-                }
-            }
-
-            return None;
-        }
-
-        Some(())
+        face1
+            .vertices(self)
+            .all(|vertex_id1| {
+                face2
+                    .vertices(self)
+                    .any(|vertex_id2| vertex_id2 == vertex_id1)
+            })
+            .then_some(())
     }
 
     /// Test if two halfedges share all vertices.
