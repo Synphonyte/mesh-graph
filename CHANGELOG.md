@@ -70,6 +70,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Mesh::from(MeshGraph)` no longer inserts an empty `ATTRIBUTE_NORMAL` when the graph
   has no vertex normals; Bevy renders such a mesh with its default normal instead of
   receiving a normal attribute shorter than the vertex count
+- Rerun logging skips a halfedge whose start vertex cannot be resolved (a twinless
+  member of the face `remove_face` is freeing) instead of panicking, so the `rerun`
+  feature no longer aborts a removal half-way and leaves the face half-detached
 
 ### Breaking Changes
 

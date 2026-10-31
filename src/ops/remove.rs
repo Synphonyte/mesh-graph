@@ -297,6 +297,9 @@ mod tests {
 
     /// The `next` chain stops after the seed and the last member is twinless, so
     /// the members after the seed are reachable only through the face's vertices.
+    ///
+    /// The twinless member is what the `rerun` logger sees first: it must skip a
+    /// halfedge whose start vertex cannot be resolved instead of panicking.
     #[test]
     fn test_remove_face_broken_chain() {
         let mut mesh = build_grid(4);
