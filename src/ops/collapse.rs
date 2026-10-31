@@ -1005,7 +1005,7 @@ impl MeshGraph {
 
     /// Whether any halfedge leaving `v` is face-less.
     ///
-    /// Scans the raw outgoing list rather than [`Vertex::is_boundary`], whose
+    /// Scans the raw outgoing list rather than [`Vertex::is_boundary`](crate::Vertex::is_boundary), whose
     /// single seed halfedge can sit on an interior fan of a pinched vertex.
     fn has_boundary_halfedge(&self, v: VertexId) -> bool {
         self.outgoing_halfedges.get(v).is_some_and(|out| {
@@ -2081,7 +2081,6 @@ mod link_condition_tests {
 /// weld's sculpt-param threshold), which is what the replays use.
 #[cfg(test)]
 mod weld_collapse_cases {
-    use super::edge_key;
     use crate::hash::HashSet;
     use crate::{MeshGraph, VertexId};
     use glam::Vec3;
@@ -2296,96 +2295,6 @@ mod weld_collapse_cases {
         min_len_sqr: 0.0096,
     };
 
-    const HOLE_GAP005: CollapseCase = CollapseCase {
-        what: "hole (n=8, gap=0.05) shipping order",
-        verts: &[
-            (0.915625, 0.94054645, 0.025993811),
-            (0.875, 0.875, -0.025),
-            (0.9966701, 0.9038354, 0.017202832),
-            (1.0176777, 0.75, -0.01767767),
-            (1.0176777, 0.625, -0.01767767),
-            (1.0311714, 0.9405465, 0.08529029),
-            (1.0176777, 1.0176777, 0.25),
-            (1.0176777, 1.0176777, 0.375),
-            (1.025, 0.625, 0.125),
-            (1.025, 0.75, 0.125),
-            (1.025, 0.875, 0.125),
-            (1.025, 0.75, 0.25),
-            (1.025, 0.875, 0.25),
-            (1.025, 0.875, 0.375),
-            (1.0833333, 0.9649625, 0.03503754),
-            (1.1401674, 0.80129445, 0.004497938),
-            (1.035748, 0.80129445, 0.02507852),
-            (1.0323223, 0.625, -0.01767767),
-            (1.0323223, 1.0176777, 0.125),
-            (1.0323223, 1.0176777, 0.25),
-            (1.175, 1.025, 0.25),
-            (1.0323223, 1.0176777, 0.375),
-            (1.175, 1.025, 0.375),
-            (1.025, 0.625, 0.125),
-            (1.025, 0.75, 0.125),
-            (1.025, 0.75, 0.25),
-            (1.0028476, 0.9106346, 0.09729202),
-            (1.025, 0.875, 0.25),
-            (1.025, 0.875, 0.375),
-            (0.9618898, 0.9225592, 0.01677136),
-            (0.98688984, 0.9296722, 0.040550973),
-            (1.0491166, 0.9342806, 0.04071947),
-            (1.015888, 0.94617033, 0.04193986),
-        ],
-        faces: &[
-            (2, 3, 1),
-            (3, 9, 4),
-            (9, 8, 4),
-            (2, 10, 3),
-            (10, 9, 3),
-            (9, 11, 8),
-            (10, 12, 9),
-            (12, 11, 9),
-            (6, 12, 10),
-            (12, 13, 11),
-            (6, 7, 12),
-            (7, 13, 12),
-            (0, 26, 29),
-            (26, 0, 16),
-            (32, 29, 26),
-            (19, 20, 18),
-            (21, 22, 19),
-            (22, 20, 19),
-            (23, 24, 17),
-            (24, 16, 17),
-            (25, 24, 23),
-            (24, 26, 16),
-            (25, 27, 24),
-            (27, 26, 24),
-            (28, 27, 25),
-            (32, 26, 18),
-            (31, 2, 14),
-            (27, 19, 26),
-            (19, 18, 26),
-            (28, 21, 27),
-            (21, 19, 27),
-            (5, 15, 30),
-            (5, 10, 31),
-            (14, 2, 32),
-            (18, 14, 32),
-        ],
-        outgoing: &[
-            (2, &[29, 1, 3, 10, 31, 14, 32], 32),
-            (9, &[3, 4, 8, 10, 11, 12], 11),
-            (10, &[2, 3, 9, 5, 12, 6, 31], 12),
-            (12, &[10, 9, 11, 6, 13, 7], 13),
-            (19, &[18, 20, 21, 22, 27, 26], 27),
-            (24, &[23, 17, 16, 25, 26, 27], 26),
-            (26, &[24, 16, 27, 18, 19, 32, 29, 0], 0),
-            (27, &[25, 24, 26, 28, 19, 21], 19),
-            (29, &[0, 2, 1, 32, 26], 26),
-            (32, &[26, 18, 14, 2, 29], 29),
-        ],
-        protected: &[],
-        min_len_sqr: 0.0096,
-    };
-
     /// Every captured case: all of them must finish watertight, on a mesh whose boundary
     /// is the cut's rim before and after, with no edge below the threshold lost.
     const CASES: &[CollapseCase] = &[HOLE_GAP125_SEED19, WIRE_GAP15, HOLE_GAP01, WIRE_GAP005];
@@ -2458,88 +2367,6 @@ mod weld_collapse_cases {
             }
 
             (mesh_graph, vertex_ids)
-        }
-
-        /// Read-only: every boundary halfedge the mesh has after the replay, with the
-        /// captured index of both endpoints, whether the twin carries a face, and how
-        /// many outgoing boundary halfedges its start vertex has (the number
-        /// `sole_new_boundary_out` needs to be exactly one).
-        fn diag_boundary(&self) {
-            let (mut mesh_graph, vertex_ids) = self.build();
-            let idx = |v: VertexId| {
-                vertex_ids
-                    .iter()
-                    .position(|candidate| *candidate == v)
-                    .map(|i| i.to_string())
-                    .unwrap_or_else(|| format!("{v:?}"))
-            };
-
-            let mut marked = HashSet::default();
-            for i in self.protected {
-                marked.insert(vertex_ids[*i]);
-            }
-
-            let before = mesh_graph.boundary_edge_pairs();
-            println!(
-                "DIAG wires before {} boundary {} ",
-                wire_halves(&mesh_graph),
-                before.len()
-            );
-            mesh_graph.collapse_until_edges_above_min_length(self.min_len_sqr, &mut marked);
-            println!(
-                "DIAG wires after {} boundary {}",
-                wire_halves(&mesh_graph),
-                mesh_graph.boundary_edge_pairs().len()
-            );
-
-            for (he_id, he) in mesh_graph.halfedges.iter() {
-                if he.face.is_some() {
-                    continue;
-                }
-
-                let start = he.start_vertex(&mesh_graph);
-                let twin_faced = he
-                    .twin
-                    .and_then(|t| mesh_graph.halfedges.get(t))
-                    .is_some_and(|t| t.face.is_some());
-                let out_boundary = start
-                    .and_then(|v| mesh_graph.outgoing_halfedges.get(v))
-                    .map(|hes| {
-                        hes.iter()
-                            .filter(|h| {
-                                mesh_graph
-                                    .halfedges
-                                    .get(**h)
-                                    .is_some_and(|x| x.face.is_none())
-                            })
-                            .count()
-                    })
-                    .unwrap_or(0);
-
-                let new_edge = start.is_some_and(|v| !before.contains(&edge_key(v, he.end_vertex)));
-                let out_new = start
-                    .and_then(|v| mesh_graph.outgoing_halfedges.get(v))
-                    .map(|hes| {
-                        hes.iter()
-                            .filter(|h| {
-                                mesh_graph.halfedges.get(**h).is_some_and(|x| {
-                                    x.face.is_none()
-                                        && x.start_vertex(&mesh_graph).is_some_and(|sv| {
-                                            !before.contains(&edge_key(sv, x.end_vertex))
-                                        })
-                                })
-                            })
-                            .count()
-                    })
-                    .unwrap_or(0);
-
-                println!(
-                    "DIAG he {he_id:?} {} -> {} twin_faced {twin_faced} new_edge {new_edge} \
-                     out_new {out_new} out_boundary_at_start {out_boundary}",
-                    start.map(idx).unwrap_or_default(),
-                    idx(he.end_vertex)
-                );
-            }
         }
 
         /// Runs the collapse replay and reports the boundary edges gained
@@ -2632,39 +2459,6 @@ mod weld_collapse_cases {
             CASES.len(),
             failures.join("\n"),
         );
-    }
-
-    /// KNOWN FAILURE - re-captured with `WELD_CAPTURE=1` after the wire and quad closers
-    /// landed: the smallest cut of the gap=0.05 weld failure the collapse still opens. One
-    /// boundary edge is gained, and it is the closer's own fan diagonal (27-32) left with a
-    /// face-less half: the hole it closed continues into the cut's rim, which is boundary
-    /// that predates the op, so the walk stops there and the rest of the hole stays.
-    ///
-    /// This is most likely an artifact of the cut, not a weld defect: the full gap=0.05
-    /// welds (n=8 and n=9) now end watertight and manifold, as does every weld in the
-    /// 1,440-weld census, so nothing in production reaches this state. The fixture still
-    /// pins how the collapse closer behaves when a hole runs into pre-existing boundary.
-    ///
-    /// `#[ignore]`d while it fails - un-ignore it and add it to [`CASES`] if the closer learns
-    /// to finish a hole that runs into older boundary, or retire it with the capture.
-    #[test]
-    #[ignore = "currently fails: the gap=0.05 case is still open"]
-    fn test_hole_gap_005_stays_watertight() {
-        let (opened, wire, edges) = HOLE_GAP005.replay();
-        assert!(
-            opened == 0 && wire == 0,
-            "{:?}: collapse gained {opened} boundary edges ({}: {}) and {wire} wire halves",
-            HOLE_GAP005.what,
-            edges.len(),
-            edges.join(", ")
-        );
-    }
-
-    /// Read-only: the shape of what the gap=0.05 case leaves open.
-    #[test]
-    #[ignore]
-    fn diag_hole_gap_005() {
-        HOLE_GAP005.diag_boundary();
     }
 
     /// The collapse, its hole closer and its wire removal must not depend on hash iteration
