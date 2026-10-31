@@ -3600,11 +3600,16 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
 ///
 /// The one entry is [`WELD_GAP005_MERGE`] merged on its own. The merge's coincident
 /// fusion opens its four halfedges before the flip-and-collapse fast path runs, and
-/// nothing closes them since the merge lost its hole closer. The weld zips such
-/// contacts first ([`test_gap005_zip_then_merge_stays_closed`]), so it only matters
-/// when a coincident pair reaches the merge anyway - 29 times in 1,440 small-gap welds
-/// (40 merge orders), none of which opened. Deleting the fusion closes this case, but
-/// then a band can span the zero-width seam those pairs leave.
+/// nothing closes them since the merge lost its hole closer.
+///
+/// The weld never takes this path. The fixture was captured before the weld zipped
+/// face-to-face sheets first; zipped, it closes
+/// ([`test_gap005_zip_then_merge_stays_closed`]). Coincident pairs still reach the
+/// merge now and then, but across 1,440 small-gap welds (40 merge orders) every such
+/// fusion went on through the rim planner, which closed what it opened - none was
+/// followed by the fast path. The entry pins that unreached combination. Deleting the
+/// fusion would close it, but then a band can span the zero-width seam those pairs
+/// leave.
 ///
 /// The earlier entries (`radius 1, +5` and `radius 1, +6`, the re-extracted
 /// reversed-soak case) were closed by the rim-first planner and live in

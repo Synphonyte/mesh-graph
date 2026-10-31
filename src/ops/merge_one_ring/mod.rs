@@ -282,10 +282,11 @@ impl MeshGraph {
         // shared-vertex case: the band is split at the shared vertex and the seam
         // is never spanned by a degenerate face. The position comparison is exact.
         //
-        // `zip_coincident_patches` runs first in the weld, but pairs still get here: 29
-        // fusions in 1,440 small-gap welds. The fusion's own face removals can open
-        // boundary that nothing closes on the flip-and-collapse fast path (the test
-        // fixture `WELD_GAP005_MERGE`); none of those welds did.
+        // `zip_coincident_patches` runs first in the weld, but pairs still get here now
+        // and then. The fusion's face removals often open boundary; the rim planner
+        // closes it, but the flip-and-collapse fast path would not (the test fixture
+        // `WELD_GAP005_MERGE`). In 1,440 small-gap welds no fusion was followed by the
+        // fast path.
         let mut coincident_pairs = Vec::new();
         for &v_id1 in &one_ring_v_ids1 {
             for &v_id2 in &one_ring_v_ids2 {
@@ -1097,7 +1098,7 @@ impl MeshGraph {
     }
 
     /// Remove every face incident to `vertex_id`, walking the vertex's raw
-    /// outgoing-halfedge list rather than [`Vertex::faces`].
+    /// outgoing-halfedge list rather than [`Vertex::faces`](crate::Vertex::faces).
     ///
     /// `faces()` follows one fan from the seed, so a pinched vertex (its star
     /// split into more than one fan) leaves the other fans' faces behind - and
