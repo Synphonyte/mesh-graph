@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bump required no source changes; parry's composite point query now reports the
   sub-shape separately, so `MeshGraph`'s projections carry the triangle that answered
   in `PointProjection::subshape`
+- `subdivide_edge` gives its new vertex a zero normal when the edge's endpoint normals
+  are exact opposites, instead of writing NaN. Edges bridging two sheets that meet at a
+  contact seam (welds) hit this: the NaN normal showed up in state dumps and, in callers
+  that move vertices along normals without recomputing them, became a NaN position
 - `Mesh::from(MeshGraph)` no longer inserts an empty `ATTRIBUTE_NORMAL` when the graph
   has no vertex normals; Bevy renders such a mesh with its default normal instead of
   receiving a normal attribute shorter than the vertex count

@@ -352,7 +352,9 @@ impl MeshGraph {
             let end_normal = normals
                 .get(end_v)
                 .or_else(error_none!("End normal not found"))?;
-            normals.insert(center_v, (start_normal + end_normal).normalize());
+            // A contact seam can join opposite normals: their sum is zero and `normalize()`
+            // would write NaN. `normalize_or_zero` matches the whole-mesh recompute.
+            normals.insert(center_v, (start_normal + end_normal).normalize_or_zero());
         }
 
         let new_he = self.add_halfedge(center_v, end_v)?;
@@ -736,5 +738,44 @@ mod test {
                 "marked halfedge {he_id:?} is dead"
             );
         }
+    }
+
+    /// Opposite endpoint normals sum to zero. The new vertex must get a zero normal,
+    /// not NaN, or a caller moving along normals writes a NaN position.
+    #[test]
+    fn test_subdivide_edge_with_opposite_endpoint_normals_stays_finite() {
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let indices = vec![0usize, 1, 2, 0, 2, 3];
+        let mut mg = MeshGraph::indexed_triangles(&positions, &indices);
+        mg.compute_vertex_normals();
+
+        let (he_id, start_v, end_v) = mg
+            .halfedges
+            .iter()
+            .find_map(|(id, he)| {
+                let start = he.start_vertex(&mg)?;
+                let end = he.end_vertex;
+                (mg.positions[start] == Vec3::ZERO && mg.positions[end] == Vec3::X)
+                    .then_some((id, start, end))
+            })
+            .expect("edge 0 -> 1 not found");
+
+        let normals = mg.vertex_normals.as_mut().unwrap();
+        normals.insert(start_v, Vec3::X);
+        normals.insert(end_v, -Vec3::X);
+
+        let result = mg.subdivide_edge(he_id).expect("edge is subdividable");
+        let center_normal = mg.vertex_normals.as_ref().unwrap()[result.added_vertex];
+
+        assert!(
+            center_normal.is_finite(),
+            "subdivide wrote a non-finite normal {center_normal:?}"
+        );
+        assert_eq!(center_normal, Vec3::ZERO);
     }
 }
