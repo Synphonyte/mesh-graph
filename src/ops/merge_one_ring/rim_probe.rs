@@ -88,8 +88,10 @@ pub(crate) struct RimProbe {
     pub end_new_boundary: usize,
     /// End-of-op wire halves. This covers only what the *merge op* leaves
     /// behind; wire created between merges (e.g. by the collapse/subdivide
-    /// cleanup in freestyle's `cleanup_mesh`) is outside this probe and remains
-    /// an open item tracked in the weld handoff.
+    /// cleanup in freestyle's `cleanup_mesh`) is outside this probe. That side is
+    /// asserted phase by phase instead, by
+    /// `weld_cleanup_between_merges_opens_nothing` in freestyle-sculpt's
+    /// `src/deformation/fields/morph_open_close.rs`.
     pub end_wire: Vec<HalfedgeId>,
     pub end_parallel_edges: usize,
 }
