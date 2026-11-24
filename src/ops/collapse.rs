@@ -2557,10 +2557,13 @@ mod weld_collapse_cases {
         assert!(collapsed > 0, "no scoped collapse removed a face");
     }
 
-    /// Read-only: the replay's raw numbers, for the diag run.
+    /// Read-only: the replay's raw numbers, one line per case.
+    ///
+    /// Prints, never fails; [`test_weld_collapse_cases_stay_watertight`] asserts
+    /// the same numbers are zero.
     #[test]
-    #[ignore]
-    fn diag_collapse_cases() {
+    #[ignore = "prints the collapse cases' numbers"]
+    fn dump_collapse_cases() {
         for case in CASES {
             let (opened, wire, _) = case.replay();
             println!(

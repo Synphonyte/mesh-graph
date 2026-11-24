@@ -3957,15 +3957,15 @@ fn test_weld_cases_stay_watertight() {
     );
 }
 
-/// The extracted open cases must still open: this pins the Phase 2 target list.
+/// Read-only: what each open merge case leaves, halfedge by halfedge - the cut
+/// edges, then every boundary halfedge with whether it is new and how many new
+/// boundary halfedges its start vertex has.
 ///
-/// When a case starts closing, this test fails and the case moves to
-/// [`WELD_CASES`] (with the taxonomy baseline updated). That failure is the
-/// progress signal, not a regression.
-/// Read-only: what each open merge case leaves, halfedge by halfedge.
+/// Prints, never fails. [`test_open_weld_cases_are_open`] is what keeps the list
+/// honest; this exists to inspect a case while re-extracting it.
 #[test]
-#[ignore]
-fn diag_open_weld_cases() {
+#[ignore = "prints, never fails"]
+fn dump_open_weld_cases() {
     get_tracing_subscriber();
 
     for case in OPEN_WELD_CASES {
@@ -4069,9 +4069,15 @@ fn test_open_weld_cases_are_open() {
     );
 }
 
+/// Prints one fixture: its cut rim, the boundary delta of the merge, every
+/// boundary halfedge the merge added and the rim probe.
+///
+/// `CASE=<index>` picks the fixture (default 0), `OPEN=1` picks from
+/// [`CUT_TRUNCATED_CASES`] instead of [`WELD_CASES`]. Prints, never fails; the
+/// pins live in [`test_weld_cases_stay_watertight`].
 #[test]
-#[ignore]
-fn diag_open_case() {
+#[ignore = "prints one case; CASE=<index>, OPEN=1"]
+fn dump_case() {
     get_tracing_subscriber();
     let idx: usize = std::env::var("CASE")
         .ok()
@@ -4410,12 +4416,16 @@ fn test_open_weld_chain_cases_are_cut_truncated() {
     }
 }
 
-/// Phase 0 diagnostic: print the rim taxonomy of the captured defect classes.
+/// Prints the rim taxonomy of the captured defect classes: the lens in both
+/// forms, every weld case, and the cut-truncated cases with their rim walks.
 ///
-/// `cargo test --features gltf --lib diag_rim_taxonomy -- --ignored --nocapture`
+/// `cargo test --features gltf --lib dump_rim_taxonomy -- --ignored --nocapture`
+///
+/// Prints, never fails; the pins are [`test_rim_taxonomy_baseline`] and
+/// [`test_open_weld_chain_cases_are_cut_truncated`].
 #[test]
-#[ignore]
-fn diag_rim_taxonomy() {
+#[ignore = "prints the rim taxonomy"]
+fn dump_rim_taxonomy() {
     get_tracing_subscriber();
 
     for reconstruct in [false, true] {
@@ -4680,14 +4690,35 @@ fn test_merge_keeps_long_lived_marked_sets_live() {
     );
 }
 
-/// Replays one merge from a freestyle-sculpt `WELD_DUMP` file (the exact state before the
-/// first merge of a weld that opened the mesh) and prints what it did: the boundary it
-/// opened and the rim probe. Run with `MERGE_DUMP=<path>`.
+/// Replays exactly one merge from a `WELD_DUMP` capture: the mesh, the merge pair,
+/// the flip threshold and the protected sets as freestyle-sculpt had them right
+/// before the merge that opened the mesh. Prints the boundary the merge opened,
+/// the faces it added and removed and the rim probe, and asserts the result stays
+/// manifold.
+///
+/// A tool, not a regression test: its input only exists while a defect
+/// reproduces. Capture one on the freestyle-sculpt side with `WELD_DUMP=<path>`
+/// (it needs `--features instrumentation` there, and only writes the dump when a
+/// merge opens the mesh - then it panics with the path), and replay it with:
+///
+/// ```text
+/// MERGE_DUMP=<path> REPLAY_DETAIL=1 \
+///     cargo test --features serde --lib replay_merge_dump -- --ignored --nocapture
+/// ```
+///
+/// `REPLAY_DETAIL=1` also prints the coincident vertices around each opened edge.
+/// Without `MERGE_DUMP` it reports that and returns, so an `--ignored` run stays
+/// green. The durable form of a captured defect is a [`WeldCase`] instead: those
+/// carry their own vertices and faces, so they do not rot with this format.
+///
+/// If nobody has replayed a dump before the 0.13 release, delete it: a
+/// format-coupled tool that never runs is worse than no tool.
 #[cfg(feature = "serde")]
 #[test]
 #[ignore = "needs MERGE_DUMP"]
 fn replay_merge_dump() {
     let Ok(path) = std::env::var("MERGE_DUMP") else {
+        eprintln!("MERGE_DUMP is not set; nothing to replay");
         return;
     };
     get_tracing_subscriber();
