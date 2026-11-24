@@ -5,6 +5,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed `remove_face` leaving the corners of the new hole seeded with an interior
+  halfedge: ring walks (`faces`, `neighbours`, `one_ring`, ...) stopped part-way round
+  them and `Vertex::is_boundary` returned `false`.
+- Fixed `collapse_until_edges_above_min_length` collapsing edges far above the
+  threshold (stale pending lengths) and missing faces in its inversion guard on
+  boundary edges. Both turned faces inside out.
+- Fixed `index_to_face_id` keeping an entry for every face ever created.
+- Fixed `MeshGraph::triangles` merging positions up to ~3e-3 apart instead of 1e-5.
+- Fixed `plane_slice` splitting outlines into stray pieces and duplicating edges that
+  lie in the plane. `HashGrid` gained `with_match_tolerance_sqr`.
+- `merge_vertices_one_rings` no longer flips a shared edge onto an existing edge.
+- Documented the preconditions of the constructors, `add_face`, `flip_edge`,
+  `plane_slice` and `apply_transform`, with debug-build checks where they are cheap.
 - Added `zip_coincident_patches`: zips sheets that lie exactly face to face (both layers
   removed, coincident vertices fused). For welds, before merging. Never opens boundary
 - Added `collapse_selected_until_edges_above_min_length` and
