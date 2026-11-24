@@ -296,7 +296,22 @@ impl MeshGraph {
             // "minimum among collapsible edges" choice.
             let mut found = None;
 
-            while let Some((he_id, len)) = halfedges_to_collapse.pop_live() {
+            while let Some((he_id, _)) = halfedges_to_collapse.pop_live() {
+                // The recorded length can be stale: the collapse loop re-measures edges
+                // by their canonical id `min(he, twin)`, and a collapse that re-pairs
+                // twins changes which id is canonical, so the old entry is never
+                // updated. Collapsing on it took edges far above the threshold and
+                // folded faces. Check the real length before acting on the entry.
+                let Some(current_len) = self.halfedges.get(he_id).map(|he| he.length_squared(self))
+                else {
+                    halfedges_to_collapse.remove(&he_id);
+                    continue;
+                };
+                if current_len >= min_length_squared {
+                    halfedges_to_collapse.remove(&he_id);
+                    continue;
+                }
+                let len = current_len;
                 // Note: this mutates the mesh even when it returns `None` - it reseeds
                 // `outgoing_halfedge` on both endpoints to anchor the one-ring walk in
                 // `check_inverted_faces`. Each call seeds its own endpoints before its
@@ -938,8 +953,10 @@ impl MeshGraph {
         let center = (start_pos + end_pos) * 0.5;
 
         self.check_link_condition(halfedge_id, twin_id)?;
-        self.check_inverted_faces(start_vertex_id, center)?;
-        self.check_inverted_faces(end_vertex_id, center)?;
+        // The faces on the collapsed edge itself disappear, so they are not checked.
+        let edge_faces = [he.face, twin.face];
+        self.check_inverted_faces(start_vertex_id, center, edge_faces)?;
+        self.check_inverted_faces(end_vertex_id, center, edge_faces)?;
 
         Some((twin_id, start_vertex_id, end_vertex_id, center))
     }
@@ -1029,9 +1046,28 @@ impl MeshGraph {
             .unwrap_or_default()
     }
 
-    fn check_inverted_faces(&self, vertex_id: VertexId, center: Vec3) -> Option<()> {
-        // just made sure that this exists
-        let face_ids = self.vertices[vertex_id].faces(self).skip(2).collect_vec();
+    /// Rejects the collapse when moving `vertex_id` to `center` would flip any face
+    /// around it other than `edge_faces` (the collapsed edge's own faces).
+    ///
+    /// The faces come from the vertex's outgoing list, not from a seed-based ring walk:
+    /// a walk stops at the first boundary halfedge, so on a boundary vertex it could
+    /// miss most of the fan, and the edge's own faces are not always the first two it
+    /// yields (on a boundary edge only one of them exists). Both made the old
+    /// `faces().skip(2)` leave faces unchecked and let collapses invert them.
+    fn check_inverted_faces(
+        &self,
+        vertex_id: VertexId,
+        center: Vec3,
+        edge_faces: [Option<FaceId>; 2],
+    ) -> Option<()> {
+        let face_ids = self
+            .outgoing_halfedges
+            .get(vertex_id)
+            .or_else(error_none!("Outgoing list not found"))?
+            .iter()
+            .filter_map(|he_id| self.halfedges.get(*he_id)?.face)
+            .filter(|face_id| !edge_faces.contains(&Some(*face_id)))
+            .collect_vec();
 
         for face_id in face_ids {
             let mut orig_positions = Vec::with_capacity(3);
@@ -1384,7 +1420,7 @@ impl MeshGraph {
         self.remove_outgoing_halfedge(prev_he_derived_start, prev_he_id);
 
         if let Some(face) = self.faces.remove(face_id) {
-            self.bvh.remove(face.index);
+            self.forget_face_index(face.index);
         }
         #[cfg(feature = "instrumentation")]
         crate::record_face_death(face_id);
@@ -2959,5 +2995,99 @@ mod tests {
         let ring: Vec<_> = mesh.vertices[c].one_ring(&mesh).collect();
         assert!(!ring.is_empty());
         assert!(ring.iter().all(|he_id| mesh.halfedges.contains_key(*he_id)));
+    }
+}
+
+#[cfg(test)]
+mod inversion_regression_tests {
+    use glam::{Vec3, vec3};
+
+    use crate::{MeshGraph, primitives::IcoSphere};
+
+    fn xorshift(seed: u64) -> impl FnMut() -> f32 {
+        let mut s = seed;
+        move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s % 10000) as f32 / 10000.0 - 0.5
+        }
+    }
+
+    /// An `n x n` grid of unit quads in the XY plane, each vertex jittered in XY.
+    fn jittered_grid(n: usize, seed: u64) -> MeshGraph {
+        let mut rnd = xorshift(seed);
+        let mut positions = vec![];
+        for j in 0..=n {
+            for i in 0..=n {
+                positions.push(vec3(i as f32 + 0.6 * rnd(), j as f32 + 0.6 * rnd(), 0.0));
+            }
+        }
+        let id = |i: usize, j: usize| j * (n + 1) + i;
+        let mut indices = vec![];
+        for j in 0..n {
+            for i in 0..n {
+                indices.extend([id(i, j), id(i + 1, j), id(i + 1, j + 1)]);
+                indices.extend([id(i, j), id(i + 1, j + 1), id(i, j + 1)]);
+            }
+        }
+        MeshGraph::indexed_triangles(&positions, &indices)
+    }
+
+    fn flipped_faces(mesh: &MeshGraph, outward: impl Fn(Vec3) -> Vec3) -> usize {
+        mesh.faces
+            .values()
+            .filter(|face| {
+                face.normal(mesh)
+                    .is_some_and(|n| n.dot(outward(face.center(mesh))) < 0.0)
+            })
+            .count()
+    }
+
+    /// On an open mesh the inversion guard used to check no faces at all for some
+    /// boundary edges (`faces().skip(2)` on a walk that stopped at the boundary), and
+    /// collapses folded faces over. These seeds each produced a flipped face.
+    #[test]
+    fn test_collapse_does_not_flip_faces_on_an_open_grid() {
+        for (seed, min_len) in [(9 * 7919, 1.6_f32), (13 * 7919, 1.2)] {
+            let mut mesh = jittered_grid(10, seed);
+            assert_eq!(flipped_faces(&mesh, |_| Vec3::Z), 0);
+
+            mesh.collapse_until_edges_above_min_length(min_len * min_len, &mut Default::default());
+
+            assert_eq!(
+                flipped_faces(&mesh, |_| Vec3::Z),
+                0,
+                "seed {seed}, min length {min_len}"
+            );
+        }
+    }
+
+    /// The pending set can hold a stale length for an edge whose twin pairing changed,
+    /// and the loop used to collapse on it: edges far above the threshold were
+    /// collapsed and faces turned inside out. These seeds each left inward faces.
+    #[test]
+    fn test_collapse_does_not_turn_faces_inward_on_a_bumpy_sphere() {
+        for seed in [1_u64, 3, 4] {
+            let mut rnd = xorshift(seed * 104729);
+            let mut mesh = MeshGraph::from(IcoSphere {
+                radius: 1.0,
+                subdivisions: 3,
+            });
+            let vertex_ids: Vec<_> = mesh.positions.keys().collect();
+            for v in vertex_ids {
+                mesh.positions[v] *= 1.0 + 0.15 * rnd();
+            }
+            assert_eq!(flipped_faces(&mesh, |p| p), 0);
+
+            mesh.collapse_until_edges_above_min_length(0.25 * 0.25, &mut Default::default());
+
+            assert_eq!(flipped_faces(&mesh, |p| p), 0, "seed {seed}");
+            assert_eq!(
+                mesh.index_to_face_id.len(),
+                mesh.faces.len(),
+                "removed faces must leave `index_to_face_id`"
+            );
+        }
     }
 }

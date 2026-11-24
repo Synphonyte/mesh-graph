@@ -13,11 +13,21 @@ use slotmap::SecondaryMap;
 use crate::utils::vec3_array;
 use crate::{MeshGraph, VertexId};
 
+/// Slices the mesh with the plane `{p : plane_normal · p = plane_constant}` and returns
+/// the outlines where it cuts the surface. A closed outline ends where it starts (within
+/// `1e-3`); a cut through an open mesh can also give open polylines.
+///
+/// `plane_normal` need not be normalized but must be non-zero (and finite). This is
+/// only checked in debug builds; in release a zero normal produces NaN positions.
 pub fn plane_slice(
     mesh_graph: &MeshGraph,
     plane_normal: Vec3,
     plane_constant: f32,
 ) -> impl Iterator<Item = Polygon3> {
+    debug_assert!(
+        plane_normal.is_finite() && plane_normal.length_squared() > 0.0,
+        "plane_slice: plane_normal must be non-zero and finite, got {plane_normal:?}"
+    );
     let plane_normal = plane_normal.normalize();
 
     #[cfg(feature = "rerun")]
@@ -90,7 +100,9 @@ pub fn plane_slice(
             .unwrap();
     }
 
-    let mut hash_grid = HashGrid::new(min_bounds, max_bounds);
+    // Exact matching: `intersect_triangle_with_xy_plane` computes each crossing
+    // bit-identically from both faces of its edge.
+    let mut hash_grid = HashGrid::new(min_bounds, max_bounds).with_match_tolerance_sqr(0.0);
 
     for face in mesh_graph.faces.values() {
         if let Some((point1, point2)) =
@@ -112,35 +124,66 @@ fn intersect_triangle_with_xy_plane(
     transformed_positions: &SecondaryMap<VertexId, Vec3>,
     face: &crate::Face,
 ) -> Option<(Vec2, Vec2)> {
-    let vertices: Vec<Vec3> = face
-        .vertices(mesh_graph)
-        .map(|v| transformed_positions[v])
-        .collect();
+    let vertex_ids: Vec<VertexId> = face.vertices(mesh_graph).collect();
 
-    if vertices.len() != 3 {
+    if vertex_ids.len() != 3 {
         return None;
     }
 
+    let vertices: Vec<Vec3> = vertex_ids
+        .iter()
+        .map(|v| transformed_positions[*v])
+        .collect();
+
     // Compute signed distances from each vertex to the XY plane (z=0)
-    let distances: [f32; 3] = [vertices[0].z, vertices[1].z, vertices[2].z];
+    //
+    // A vertex within `ON_PLANE` of the plane is snapped onto it. Otherwise it yields two
+    // crossings a hair apart, i.e. a near-zero segment whose ends match the same
+    // neighbours as each other, which left stray two-point pieces beside the outline.
+    const ON_PLANE: f32 = 1e-5;
+    let snap = |d: f32| if d.abs() < ON_PLANE { 0.0 } else { d };
+    let distances: [f32; 3] = [
+        snap(vertices[0].z),
+        snap(vertices[1].z),
+        snap(vertices[2].z),
+    ];
 
     // Find intersections with triangle edges
     let mut intersection_points = Vec::new();
 
+    // Each vertex is classified as below (`d < 0`) or not below the plane, so a vertex
+    // exactly on the plane counts as above. A triangle then has exactly zero or two
+    // crossing edges, and an edge lying in the plane is emitted once (by the face below
+    // it) instead of by both of its faces, which used to leave duplicate segments that
+    // split the outline into several polygons.
     for i in 0..3 {
         let j = (i + 1) % 3;
         let d1 = distances[i];
         let d2 = distances[j];
 
-        // Check if edge crosses the XY plane (signs are different and not both zero)
-        if (d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0) {
-            // Compute intersection point using linear interpolation
-            let t = d1 / (d1 - d2);
-            let intersection = vertices[i] + t * (vertices[j] - vertices[i]);
+        if (d1 < 0.0) != (d2 < 0.0) {
+            // Both faces of an edge compute its crossing, walking the edge in opposite
+            // directions. Interpolating from the lower vertex id makes the two results
+            // bit-identical, so the polygon stitching matches them exactly instead of
+            // within a tolerance that can also match a different crossing close by.
+            let (a, b) = if vertex_ids[i] < vertex_ids[j] {
+                (i, j)
+            } else {
+                (j, i)
+            };
+            let (da, db) = (distances[a], distances[b]);
+            let mut intersection = if da == 0.0 {
+                // A snapped vertex is on the plane, so the crossing is the vertex itself.
+                vertices[a]
+            } else if db == 0.0 {
+                vertices[b]
+            } else {
+                // `da - db` is non-zero here because the signs differ.
+                let t = da / (da - db);
+                vertices[a] + t * (vertices[b] - vertices[a])
+            };
+            intersection.z = 0.0;
             intersection_points.push(intersection);
-        } else if d1.abs() < f32::EPSILON {
-            // Vertex is exactly on the XY plane
-            intersection_points.push(vertices[i]);
         }
     }
 
@@ -253,18 +296,36 @@ mod tests {
 
         assert!(line.is_none());
 
-        let line = intersect_triangle_with_xy_plane(
-            &mesh_graph,
-            &mesh_graph.positions,
-            mesh_graph.faces.values().nth(64).unwrap(),
-        );
+        // Face 64 has its edge (-1.0083883, 2.2876086)-(-1.3143277, 2.126627) in the plane
+        // and its third vertex above it. An edge in the plane is emitted once, by the
+        // face below it, so this face gives nothing and its neighbour across that edge
+        // gives the edge.
+        let face_above = mesh_graph.faces.values().nth(64).unwrap();
+        let line = intersect_triangle_with_xy_plane(&mesh_graph, &mesh_graph.positions, face_above);
 
-        assert_eq!(
-            line,
-            Some((
-                Vec2::new(-1.0083883, 2.2876086),
-                Vec2::new(-1.3143277, 2.126627)
-            ))
+        assert_eq!(line, None);
+
+        let edge = [
+            Vec2::new(-1.0083883, 2.2876086),
+            Vec2::new(-1.3143277, 2.126627),
+        ];
+        let on_edge = |p: Vec3| edge.contains(&p.xy()) && p.z == 0.0;
+        let face_below = mesh_graph
+            .faces
+            .values()
+            .find(|face| {
+                let positions: Vec<Vec3> = face.vertex_positions(&mesh_graph).collect();
+                positions.iter().filter(|p| on_edge(**p)).count() == 2
+                    && positions.iter().any(|p| p.z < 0.0)
+            })
+            .unwrap();
+
+        let (a, b) =
+            intersect_triangle_with_xy_plane(&mesh_graph, &mesh_graph.positions, face_below)
+                .unwrap();
+        assert!(
+            (a, b) == (edge[0], edge[1]) || (a, b) == (edge[1], edge[0]),
+            "expected the in-plane edge, got {a:?} -> {b:?}"
         );
     }
 
@@ -297,12 +358,12 @@ mod tests {
                     Vec3::new(0.94288135, 2.3010523, 0.19111478),
                     Vec3::new(0.7879911, 2.3584137, 0.16243404),
                     Vec3::new(0.6283641, 2.4094386, 0.13692164),
-                    Vec3::new(0.41535905, 2.455471, 0.11390537),
+                    Vec3::new(0.41535908, 2.455471, 0.11390537),
                     Vec3::new(0.3010591, 2.4739337, 0.10467416),
                     Vec3::new(0.05938441, 2.4911098, 0.096085966),
-                    Vec3::new(-0.05938442, 2.4911098, 0.096085966),
+                    Vec3::new(-0.05938441, 2.4911098, 0.096085966),
                     Vec3::new(-0.3010591, 2.4739337, 0.10467416),
-                    Vec3::new(-0.41535908, 2.455471, 0.11390537),
+                    Vec3::new(-0.41535905, 2.455471, 0.11390537),
                     Vec3::new(-0.6283641, 2.4094386, 0.13692164),
                     Vec3::new(-0.7879911, 2.3584137, 0.16243404),
                     Vec3::new(-0.94288135, 2.3010523, 0.19111478),
@@ -363,7 +424,7 @@ mod tests {
                     Vec3::new(2.1780944, 0.3281218, 1.17758),
                     Vec3::new(2.1866322, 0.5873947, 1.0479436),
                     Vec3::new(2.1845584, 0.65191114, 1.0156854),
-                    Vec3::new(2.1506572, 0.89148176, 0.8959001),
+                    Vec3::new(2.1506572, 0.8914818, 0.8959),
                     Vec3::new(2.136093, 0.96047235, 0.8614048),
                     Vec3::new(2.0585618, 1.2000002, 0.74164087),
                     Vec3::new(2.0347278, 1.2575308, 0.71287555)
@@ -373,5 +434,41 @@ mod tests {
         );
 
         assert!(polygons.next().is_none());
+    }
+
+    /// Every slice of a sphere is one closed outline. Crossings closer together than the
+    /// old matching tolerance used to be linked in the wrong order, which left stray
+    /// pieces (about one slice in eight here), and a plane through vertices and edges
+    /// emitted in-plane edges twice.
+    #[test]
+    fn test_sphere_slices_are_single_closed_outlines() {
+        let mesh_graph = MeshGraph::from(IcoSphere {
+            radius: 3.7,
+            subdivisions: 4,
+        });
+
+        let mut planes: Vec<(Vec3, f32)> = (0..200)
+            .map(|k| {
+                (
+                    Vec3::new(0.3, 1.0, 0.17),
+                    -3.0 + 6.0 * k as f32 / 200.0 + 0.0123,
+                )
+            })
+            .collect();
+        // Through the vertices and edges on the equator.
+        planes.push((Vec3::Z, 0.0));
+
+        for (normal, constant) in planes {
+            let polygons: Vec<Polygon3> = plane_slice(&mesh_graph, normal, constant).collect();
+
+            assert_eq!(polygons.len(), 1, "plane {normal:?} {constant}");
+            let vertices = &polygons[0].vertices;
+            // `Polygon2::is_closed`'s tolerance.
+            let (first, last) = (vertices.front().unwrap(), vertices.back().unwrap());
+            assert!(
+                first.distance_squared(*last) < 1e-6,
+                "outline at {normal:?} {constant} is not closed: {first:?} .. {last:?}"
+            );
+        }
     }
 }

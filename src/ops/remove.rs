@@ -31,6 +31,13 @@ impl MeshGraph {
             .map(|he_id| (he_id, self.halfedges[he_id]))
             .collect_vec();
 
+        // The face's corners, in member order. Their seeds are re-pointed at a boundary
+        // halfedge at the end (see `seed_boundary_outgoing`).
+        let mut corners: Vec<VertexId> = Vec::with_capacity(3);
+        for (_, he) in &halfedges {
+            push_unique(&mut corners, he.end_vertex);
+        }
+
         #[cfg(feature = "instrumentation")]
         crate::record_op_trace!(
             "remove_face({face_id:?}) members={:?}",
@@ -127,10 +134,19 @@ impl MeshGraph {
         }
 
         // already checked at the start of the function
-        self.bvh.remove(self.faces[face_id].index);
+        self.forget_face_index(self.faces[face_id].index);
         self.faces.remove(face_id);
         #[cfg(feature = "instrumentation")]
         crate::record_face_death(face_id);
+
+        // Every corner that survives now borders the hole this face leaves. Ring walks
+        // (`outgoing_halfedges`, `faces`, `one_ring`, ...) rotate via `twin.next` and stop
+        // at the first boundary halfedge, so they only see the whole fan when they start
+        // from a boundary outgoing halfedge. The same goes for `Vertex::is_boundary`, which
+        // only looks at the seed.
+        for corner in corners {
+            self.seed_boundary_outgoing(corner);
+        }
 
         (removed_vertices, removed_halfedges)
     }
@@ -218,6 +234,33 @@ impl MeshGraph {
         }
 
         members
+    }
+
+    /// Drops a removed face's spatial index entries: its BVH leaf and its
+    /// `index_to_face_id` entry. Without the latter the map grows with every face ever
+    /// created and keeps naming dead faces.
+    pub(crate) fn forget_face_index(&mut self, index: u32) {
+        self.bvh.remove(index);
+        self.index_to_face_id.remove(&index);
+    }
+
+    /// Points `vertex_id`'s seed (`Vertex::outgoing_halfedge`) at one of its live boundary
+    /// outgoing halfedges, if it has one. Leaves the seed alone otherwise.
+    ///
+    /// Cost: one pass over the vertex's outgoing list.
+    pub(crate) fn seed_boundary_outgoing(&mut self, vertex_id: VertexId) {
+        let Some(boundary_he) = self.outgoing_halfedges.get(vertex_id).and_then(|out| {
+            out.iter().copied().find(|he_id| {
+                self.halfedges
+                    .get(*he_id)
+                    .is_some_and(|he| he.is_boundary())
+            })
+        }) else {
+            return;
+        };
+        if let Some(v) = self.vertices.get_mut(vertex_id) {
+            v.outgoing_halfedge = Some(boundary_he);
+        }
     }
 
     /// Deletes only a vertex, without deleting any faces or halfedges connected to it.
@@ -372,5 +415,51 @@ mod tests {
         }
 
         assert_eq!(meshgraph.faces.len(), face_count - 1);
+    }
+}
+
+#[cfg(test)]
+mod boundary_seed_tests {
+    use crate::utils::build_grid;
+
+    /// Ring walks rotate via `twin.next` and stop at the first boundary halfedge, so a
+    /// vertex on a boundary has to be seeded with a boundary outgoing halfedge for the
+    /// walk to see its whole fan (and for `Vertex::is_boundary` to answer correctly).
+    /// Removing a face puts its corners on a boundary, so it must re-seed them.
+    #[test]
+    fn test_remove_face_seeds_corners_with_a_boundary_halfedge() {
+        let base = build_grid(4);
+
+        for face_id in base.faces.keys() {
+            let mut mesh = base.clone();
+            let corners: Vec<_> = mesh.faces[face_id].vertices(&mesh).collect();
+
+            mesh.remove_face(face_id);
+
+            for v in corners {
+                if !mesh.vertices.contains_key(v) {
+                    continue;
+                }
+                let boundary_out = mesh.outgoing_halfedges[v]
+                    .iter()
+                    .filter(|he_id| mesh.halfedges[**he_id].is_boundary())
+                    .count();
+
+                assert!(
+                    mesh.vertices[v].is_boundary(&mesh),
+                    "corner {v:?} of removed face {face_id:?} is not reported as boundary"
+                );
+
+                // With two boundary gaps (a corner already on the grid border) the
+                // vertex has two fans and a walk can only see one of them.
+                if boundary_out == 1 {
+                    assert_eq!(
+                        mesh.vertices[v].outgoing_halfedges(&mesh).count(),
+                        mesh.outgoing_halfedges[v].len(),
+                        "ring walk around {v:?} stopped early after removing {face_id:?}"
+                    );
+                }
+            }
+        }
     }
 }

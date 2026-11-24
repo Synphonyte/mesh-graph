@@ -34,6 +34,11 @@ impl MeshGraph {
     /// Apply a transform matrix to the mesh graph (positions and normals).
     ///
     /// After this you should probably call `rebuild_bvh` to update the bounding volume hierarchy.
+    ///
+    /// Normals are transformed as plain vectors and not renormalized, which is only right
+    /// for rotations, translations and uniform scales. After a non-uniform scale call
+    /// [`Self::compute_vertex_normals`]. A mirroring transform (negative determinant)
+    /// also turns every face inside out, since the winding stays the same.
     pub fn apply_transform(&mut self, transform: Mat4) {
         for pos in self.positions.values_mut() {
             *pos = transform.transform_point3(*pos);

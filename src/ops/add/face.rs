@@ -427,6 +427,10 @@ impl MeshGraph {
 
     /// Inserts a face into the mesh graph. It connects the halfedges to the face and the face to the first halfedge.
     /// Additionally it connects the halfedges' `next` loop around the face.
+    ///
+    /// The three halfedges must form a loop. A halfedge that already belongs to a face is
+    /// taken over without a check (subdivision relies on this to reshape faces in place),
+    /// so the old face's loop breaks unless the caller rebuilds it.
     #[instrument(skip(self))]
     pub fn add_face(
         &mut self,

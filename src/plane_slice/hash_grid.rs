@@ -9,13 +9,28 @@ use crate::utils::vec2_array;
 
 new_key_type! { pub struct PolygonId; }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct HashGrid {
     map: HashMap<IVec2, Vec<(PolygonTerminal, PolygonId)>>,
     min_bounds: Vec2,
     cell_fac: Vec2,
     polygons: SlotMap<PolygonId, Polygon2>,
     polygon_cells: SecondaryMap<PolygonId, HashSet<IVec2>>,
+    /// Two points closer than this (squared) are the same polygon vertex.
+    match_tolerance_sqr: f32,
+}
+
+impl Default for HashGrid {
+    fn default() -> Self {
+        HashGrid {
+            map: HashMap::default(),
+            min_bounds: Vec2::ZERO,
+            cell_fac: Vec2::ZERO,
+            polygons: SlotMap::default(),
+            polygon_cells: SecondaryMap::default(),
+            match_tolerance_sqr: Self::DEFAULT_MATCH_TOLERANCE_SQR,
+        }
+    }
 }
 
 impl HashGrid {
@@ -34,49 +49,83 @@ impl HashGrid {
             cell_fac,
             polygons: SlotMap::default(),
             polygon_cells: SecondaryMap::default(),
+            match_tolerance_sqr: Self::DEFAULT_MATCH_TOLERANCE_SQR,
         }
     }
 
+    /// The match tolerance [`Self::new`] uses: squared distance `1e-6`.
+    pub const DEFAULT_MATCH_TOLERANCE_SQR: f32 = 1e-6;
+
+    /// Sets the squared distance below which two line ends count as the same point.
+    ///
+    /// `0.0` matches bit-identical points only. Use that when the ends of neighbouring
+    /// lines are computed identically (as [`crate::plane_slice`] does): any tolerance
+    /// also matches *different* points that happen to lie closer together than it,
+    /// which links lines in the wrong order and leaves stray pieces.
+    pub fn with_match_tolerance_sqr(mut self, match_tolerance_sqr: f32) -> Self {
+        self.match_tolerance_sqr = match_tolerance_sqr;
+        self
+    }
+
+    /// Takes the polygon terminal nearest to `point`, if one is within the match
+    /// tolerance, out of the grid.
+    ///
+    /// The nearest one, not the first one found: near a vertex lying close to the plane
+    /// several terminals can sit within the tolerance of each other, and taking an
+    /// arbitrary one closed polygons early and left stray pieces beside them.
+    ///
+    /// The 3x3 block of cells around `point` is searched because a match within the
+    /// tolerance can lie across a cell border. That covers tolerances up to a cell size.
     #[instrument(skip(self))]
     pub fn try_take_connecting_polygon(
         &mut self,
         point: Vec2,
     ) -> Option<(PolygonTerminal, PolygonId)> {
-        let key = self.vec2_to_grid(point);
+        let center = self.vec2_to_grid(point);
 
-        let mut result = None;
-
-        self.map.entry(key).and_modify(|e| {
-            let mut index = None;
-
-            for (i, (terminal, polygon_id)) in e.iter().enumerate() {
-                let Some(polygon) = self.polygons.get(*polygon_id) else {
-                    error!("Polygon not found");
+        // (distance squared, cell, index in the cell)
+        let mut best: Option<(f32, IVec2, usize)> = None;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let key = center + IVec2::new(dx, dy);
+                let Some(entries) = self.map.get(&key) else {
                     continue;
                 };
-                let Some(existing_point) = polygon.terminal(*terminal) else {
-                    error!("Empty polygon");
-                    continue;
-                };
+                for (i, (terminal, polygon_id)) in entries.iter().enumerate() {
+                    let Some(polygon) = self.polygons.get(*polygon_id) else {
+                        error!("Polygon not found");
+                        continue;
+                    };
+                    let Some(existing_point) = polygon.terminal(*terminal) else {
+                        error!("Empty polygon");
+                        continue;
+                    };
 
-                if existing_point.distance_squared(point) < 1e-6 {
-                    index = Some(i);
-                    break;
+                    let dist_sqr = existing_point.distance_squared(point);
+                    let within = if self.match_tolerance_sqr > 0.0 {
+                        dist_sqr < self.match_tolerance_sqr
+                    } else {
+                        existing_point == point
+                    };
+                    if within && best.is_none_or(|(best_dist, _, _)| dist_sqr < best_dist) {
+                        best = Some((dist_sqr, key, i));
+                    }
                 }
             }
+        }
 
-            if let Some(index) = index {
-                let (terminal, polygon_id) = e.remove(index);
-                result = Some((terminal, polygon_id));
+        let (_, key, index) = best?;
+        let entries = self.map.get_mut(&key)?;
+        let (terminal, polygon_id) = entries.remove(index);
 
-                // check if the other end of the polygon is still in the cell
-                if !e.iter().any(|(_, id)| *id == polygon_id) {
-                    self.polygon_cells[polygon_id].retain(|k| *k != key);
-                }
-            }
-        });
+        // check if the other end of the polygon is still in the cell
+        if !entries.iter().any(|(_, id)| *id == polygon_id)
+            && let Some(cells) = self.polygon_cells.get_mut(polygon_id)
+        {
+            cells.retain(|k| *k != key);
+        }
 
-        result
+        Some((terminal, polygon_id))
     }
 
     pub fn remove_polygon_from_cell(&mut self, polygon_id: PolygonId, cell: IVec2) {
