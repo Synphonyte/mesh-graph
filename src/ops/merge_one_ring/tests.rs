@@ -1832,30 +1832,107 @@ fn assert_merge_invariants(
 /// already exists adds no new boundary edge, and a vertex split into coincident
 /// duplicates keeps the pair set identical.
 fn assert_manifold_region(mesh: &MeshGraph) {
+    let problems = manifold_region_problems(mesh);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The manifold problems `mesh` carries that `pre_existing` did not already
+/// report for the same region.
+///
+/// A captured region is cut out of a larger mesh, so a vertex on the cut can
+/// already have its star split there ([`WELD_GAP005_MERGE`] has one such vertex
+/// before the op runs). What an op must not do is add a problem of its own.
+fn new_manifold_problems(pre_existing: &[String], mesh: &MeshGraph) -> Vec<String> {
+    manifold_region_problems(mesh)
+        .into_iter()
+        .filter(|problem| !pre_existing.contains(problem))
+        .collect()
+}
+
+fn assert_no_new_manifold_problems(pre_existing: &[String], mesh: &MeshGraph, what: &str) {
+    let introduced = new_manifold_problems(pre_existing, mesh);
+    assert!(introduced.is_empty(), "{what} introduced {introduced:?}");
+}
+
+/// Everything that makes `mesh` non-manifold, as a list (empty = manifold):
+/// parallel edges, wire edges, an edge with more than two halfedges, and a
+/// vertex whose star falls into more than one fan.
+fn manifold_region_problems(mesh: &MeshGraph) -> Vec<String> {
+    let mut problems = Vec::new();
+
     for (v_id, out_hes) in mesh.outgoing_halfedges.iter() {
         let mut ends: Vec<VertexId> = Vec::with_capacity(out_hes.len());
         for &he_id in out_hes {
             if let Some(he) = mesh.halfedges.get(he_id) {
-                assert!(
-                    !ends.contains(&he.end_vertex),
-                    "parallel edges from {v_id:?} to {:?}",
-                    he.end_vertex
-                );
+                if ends.contains(&he.end_vertex) {
+                    problems.push(format!(
+                        "parallel edges from {v_id:?} to {:?}",
+                        he.end_vertex
+                    ));
+                }
                 ends.push(he.end_vertex);
             }
         }
     }
 
     for (he_id, he) in mesh.halfedges.iter() {
-        if he.face.is_none()
-            && let Some(twin) = he.twin.and_then(|twin_id| mesh.halfedges.get(twin_id))
-        {
-            assert!(
-                twin.face.is_some(),
-                "wire edge (both halves face-less) at {he_id:?}"
-            );
+        if he.face.is_some() {
+            continue;
+        }
+        let Some(twin) = he.twin.and_then(|twin_id| mesh.halfedges.get(twin_id)) else {
+            continue;
+        };
+        if twin.face.is_none() {
+            problems.push(format!("wire edge (both halves face-less) at {he_id:?}"));
         }
     }
+
+    // An undirected edge carried by more than two halfedges is shared by three
+    // or more faces.
+    let mut per_edge: std::collections::BTreeMap<(VertexId, VertexId), usize> = Default::default();
+    for (_, he) in mesh.halfedges.iter() {
+        let Some(start) = he.start_vertex(mesh) else {
+            continue;
+        };
+        let end = he.end_vertex;
+        let key = if start < end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        *per_edge.entry(key).or_default() += 1;
+    }
+    for ((a, b), count) in &per_edge {
+        if *count > 2 {
+            problems.push(format!("non-manifold edge {a:?}-{b:?}: {count} halfedges"));
+        }
+    }
+
+    // One fan of `edges` edges carries `edges` faces, or `edges - 1` when it ends
+    // on a boundary. Two fans need two more edges than faces.
+    for (v_id, out_hes) in mesh.outgoing_halfedges.iter() {
+        if !mesh.vertices.contains_key(v_id) {
+            continue;
+        }
+        let mut edges = 0;
+        let mut faces = 0;
+        for &he_id in out_hes {
+            let Some(he) = mesh.halfedges.get(he_id) else {
+                continue;
+            };
+            edges += 1;
+            if he.face.is_some() {
+                faces += 1;
+            }
+        }
+        if edges > faces + 1 {
+            problems.push(format!(
+                "pinched vertex {v_id:?}: {edges} edges but {faces} faces (star is more than one fan)"
+            ));
+        }
+    }
+
+    problems
 }
 
 /// Drain and, with `MESH_GRAPH_RIM_TAXONOMY=1`, print this thread's rim probes.
@@ -2656,6 +2733,13 @@ impl WeldCase {
     /// never fire there). What the rim does is an artifact of the cut; a new
     /// boundary edge between two vertices that were both *interior* is not.
     fn replay(&self) -> (usize, usize, Vec<String>) {
+        let (_, boundary_before, boundary_after, opened) = self.replay_mesh();
+        (boundary_before, boundary_after, opened)
+    }
+
+    /// [`Self::replay`], also returning the mesh after the merge, so a caller can
+    /// check more than the boundary delta.
+    fn replay_mesh(&self) -> (MeshGraph, usize, usize, Vec<String>) {
         let (mut mesh_graph, vertex_ids) = self.build();
 
         let boundary_before = boundary_edges(&mesh_graph);
@@ -2695,7 +2779,12 @@ impl WeldCase {
             .collect();
         opened.sort();
 
-        (boundary_before.len(), boundary_after.len(), opened)
+        (
+            mesh_graph,
+            boundary_before.len(),
+            boundary_after.len(),
+            opened,
+        )
     }
 }
 
@@ -3710,6 +3799,7 @@ fn test_gap005_zip_then_merge_stays_closed() {
 
     let case = &WELD_GAP005_MERGE;
     let (mut mesh_graph, vertex_ids) = case.build();
+    let pre_existing = manifold_region_problems(&mesh_graph);
     let capture = |i: usize| vertex_ids[i];
     let boundary_before = boundary_edges(&mesh_graph);
 
@@ -3744,7 +3834,7 @@ fn test_gap005_zip_then_merge_stays_closed() {
         })
         .collect();
     assert_eq!(boundary_zipped, before_renamed);
-    assert_manifold_region(&mesh_graph);
+    assert_no_new_manifold_problems(&pre_existing, &mesh_graph, "the zip");
 
     let mut marked_halfedges: HashSet<HalfedgeId> = HashSet::default();
     let mut marked_vertices: HashSet<VertexId> = HashSet::default();
@@ -3772,7 +3862,7 @@ fn test_gap005_zip_then_merge_stays_closed() {
             .difference(&boundary_merged)
             .collect::<Vec<_>>(),
     );
-    assert_manifold_region(&mesh_graph);
+    assert_no_new_manifold_problems(&pre_existing, &mesh_graph, "the merge");
 }
 
 /// The extracted cases reproduce identically on every run - that is what makes
@@ -3824,13 +3914,19 @@ fn test_weld_cases_are_faithful() {
     }
 }
 
-/// None of [`WELD_CASES`] may open its region.
+/// None of [`WELD_CASES`] may open its region or leave it non-manifold.
 ///
 /// The case here: the band planner finished a full wrap around both rings and
 /// left one triangle of the closing seam unfilled - the last planned face and
 /// the first meet at a quad and only one of its two triangles was planned,
 /// because the start cap reads `AlreadyConnected`, which is true of the edge but
 /// not of the face.
+///
+/// Manifoldness is counted the same way for every case: parallel edges, wire
+/// edges, edges with more than two halfedges, and vertices whose star falls into
+/// more than one fan. A problem the cut itself put into the fixture (see
+/// [`new_manifold_problems`]) is subtracted first, so the assertion is about what
+/// the merge did.
 #[test]
 fn test_weld_cases_stay_watertight() {
     get_tracing_subscriber();
@@ -3838,11 +3934,15 @@ fn test_weld_cases_stay_watertight() {
     let mut failures = Vec::new();
 
     for case in WELD_CASES {
-        let (before, after, opened) = case.replay();
+        let (pre_merge, _) = case.build();
+        let pre_existing = manifold_region_problems(&pre_merge);
+        let (mesh_graph, before, after, opened) = case.replay_mesh();
         drain_rim_taxonomy();
-        if !opened.is_empty() {
+        let problems = new_manifold_problems(&pre_existing, &mesh_graph);
+        if !opened.is_empty() || !problems.is_empty() {
             failures.push(format!(
-                "  {:?}: boundary {before} -> {after}, opened interior edges {opened:?}",
+                "  {:?}: boundary {before} -> {after}, opened interior edges {opened:?}, \
+                 manifold {problems:?}",
                 case.what
             ));
         }
@@ -3850,7 +3950,7 @@ fn test_weld_cases_stay_watertight() {
 
     assert!(
         failures.is_empty(),
-        "{} of {} weld cases open their region:\n{}",
+        "{} of {} weld cases leave their region open or non-manifold:\n{}",
         failures.len(),
         WELD_CASES.len(),
         failures.join("\n"),
