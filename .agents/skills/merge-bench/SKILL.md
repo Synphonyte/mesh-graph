@@ -22,7 +22,7 @@ From anywhere in the checkout:
 `run.sh` copies `merge_bench.rs` into `examples/`, runs it with `--release`, and
 deletes it again (along with `examples/` if it created it). It sets the macOS linker
 `RUSTFLAGS` itself when `RUSTFLAGS` is unset. Knobs (env vars): `SUB=7` (one level
-only), `N=30` (merges per mesh), `REPS=5` (meshes per level). Extra arguments go to
+only), `N=30` (merges per mesh), `REPS=3` (meshes per level). Extra arguments go to
 `cargo run`, e.g. `run.sh --features instrumentation`. Don't compare those numbers
 with plain builds.
 
@@ -37,6 +37,13 @@ at every level. If the time grows about 4x per level, something on the merge pat
 touches the whole mesh. Absolute numbers depend on the machine. Subdivisions 3 and 4
 are noisy (look at min/max). Rely on levels 5–7.
 
+The default merge takes two antipodal vertices, so the rim it opens is two disjoint loops
+and the planner caps them with an open-cap band: every merge adds 12 faces, whatever the
+level. That exercises `rim_planner::plan_disjoint_band` and nothing else of the planner - a
+regression in the bigon, lobe, triangulation or center-fan paths does not show up here.
+The run does stay watertight (0 boundary halfedges at every level), but nothing checks it;
+a merge that returned early would look faster, not wrong.
+
 ## Reference numbers
 
 Measured with this script on the maintainer's Mac (Apple Silicon, release build),
@@ -49,6 +56,7 @@ ms per merge:
 | `7ccf06a` (boundary scans scoped to the merge region, old `remove_face`) | 0.23 | 0.32 | 0.69 | 2.6 | 10.1 |
 | `93eeef6` (both) | 0.15 | 0.12 | 0.08 | 0.10 | 0.09 |
 | after `9d76194` (merge nets removed) | 0.05 | 0.06 | 0.06 | 0.08 | 0.07 |
+| `0b60451` (rim-first band planner) | 0.052 | 0.050 | 0.060 | 0.064 | 0.081 |
 
 The `7ccf06a` and `93eeef6` rows were measured side by side with a re-run of `134945e`, which
 matched its row (0.22 / 0.79 / 3.2 at levels 5–7). At `93eeef6` the
@@ -61,6 +69,13 @@ change that moves these numbers.
 The nets-removed row was measured side by side with `9d76194` at `N=30` (0.11 / 0.09 /
 0.08 / 0.08 / 0.10 in the same run): dropping the closer and the parallel-edge weld makes
 a merge about 20% cheaper and keeps it flat.
+
+`0b60451` was measured at `N=30` next to `926f3d4` (v0.11.0) in one session. v0.11.0 still
+grows about 4x per level - 0.116 / 0.218 / 0.650 / 2.582 / 9.630 - so the merge became
+local in the unreleased work before the rim planner, not in it: levels 5-7 are within
+noise of the `9d76194` row. At 983k halfedges a merge costs about 120x less than v0.11.0.
+Benchmarking v0.11.0 needs the example's import changed to `hashbrown::HashSet`, since the
+crate's `hash` module came later; nothing else differs.
 
 ## Comparing against another commit
 
