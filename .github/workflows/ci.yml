@@ -55,3 +55,10 @@ jobs:
       - name: Test with Bevy integration
         if: matrix.toolchain == 'stable'
         run: cargo test --features bevy
+
+      # Deliberately not built here: the `rerun` feature is the local Rerun-viewer
+      # debugging integration, and it should stay out of CI. That leaves
+      # `src/rerun_impl.rs` and the `#[cfg(feature = "rerun")]` call sites unbuilt
+      # by every job above, so check them by hand when touching them:
+      # `cargo clippy --features rerun -- -D warnings`. The panic fixed in 5f4ee2c
+      # was in code no job compiles.
