@@ -22,9 +22,9 @@ From anywhere in the checkout:
 `run.sh` copies `merge_bench.rs` into `examples/`, runs it with `--release`, and
 deletes it again (along with `examples/` if it created it). It sets the macOS linker
 `RUSTFLAGS` itself when `RUSTFLAGS` is unset. Knobs (env vars): `SUB=7` (one level
-only), `N=30` (merges per mesh), `REPS=3` (meshes per level). Extra arguments go to
-`cargo run`, e.g. `run.sh --features instrumentation`. Don't compare those numbers
-with plain builds.
+only), `N=30` (merges per mesh), `REPS=3` (meshes per level), `PAIR=ring1` (which
+vertices to merge, see below). Extra arguments go to `cargo run`, e.g.
+`run.sh --features instrumentation`. Don't compare those numbers with plain builds.
 
 A full run takes about a minute after the build. Most of that is the untimed
 vertex search on the 983k mesh.
@@ -38,11 +38,22 @@ touches the whole mesh. Absolute numbers depend on the machine. Subdivisions 3 a
 are noisy (look at min/max). Rely on levels 5–7.
 
 The default merge takes two antipodal vertices, so the rim it opens is two disjoint loops
-and the planner caps them with an open-cap band: every merge adds 12 faces, whatever the
-level. That exercises `rim_planner::plan_disjoint_band` and nothing else of the planner - a
-regression in the bigon, lobe, triangulation or center-fan paths does not show up here.
-The run does stay watertight (0 boundary halfedges at every level), but nothing checks it;
-a merge that returned early would look faster, not wrong.
+and the planner caps them with an open-cap band: 12 faces per merge, whatever the level.
+`PAIR` picks another distance between the two vertices, which changes the rim and with it
+the plan:
+
+| `PAIR` | rim the removals open | plan | faces |
+|---|---|---|---|
+| `antipodal` (default) | two disjoint loops | open-cap band | 12 |
+| `ring1` | one loop of two runs | bigon zip | 5–6 |
+| `ring2` | one loop, two arcs with a strip run between them | lobe zip | 9 |
+| `ring3` | two disjoint loops | open-cap band | 11 |
+
+The output ends with the faces each merge planned, so a merge that stopped planning reads
+0.0 instead of hiding behind a faster time, and every level asserts that the mesh ends with
+0 boundary halfedges. What none of the modes reach is the triangulation and center-fan
+fallbacks: they need blocked diagonals, which a clean icosphere doesn't have. The corpus
+tests cover those.
 
 ## Reference numbers
 
@@ -76,6 +87,21 @@ local in the unreleased work before the rim planner, not in it: levels 5-7 are w
 noise of the `9d76194` row. At 983k halfedges a merge costs about 120x less than v0.11.0.
 Benchmarking v0.11.0 needs the example's import changed to `hashbrown::HashSet`, since the
 crate's `hash` module came later; nothing else differs.
+
+### Pair modes
+
+Measured at `0b60451`, `N=30`, ms per merge. The `antipodal` row here comes from a later
+run than the table above (0.081 at level 7 there, 0.075 here), which is the run-to-run
+spread to expect: compare modes within one run, not across days.
+
+| `PAIR` | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|
+| `antipodal` | 0.073 | 0.058 | 0.050 | 0.061 | 0.075 |
+| `ring1` | 0.046 | 0.043 | 0.043 | 0.044 | 0.051 |
+| `ring2` | 0.072 | 0.056 | 0.049 | 0.062 | 0.067 |
+
+All three are flat, which is the point: a near pair costs no more than an antipodal one,
+so the planner's cost is set by the rim, not by the mesh.
 
 ## Comparing against another commit
 
