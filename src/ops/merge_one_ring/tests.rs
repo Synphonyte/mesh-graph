@@ -2890,6 +2890,89 @@ const MERGE_SEED12_GAP025_PINCH: WeldCase = WeldCase {
     protected: &[4, 10, 14, 16],
 };
 
+/// A coincident ring-vertex fusion opened a rim, and the two merged vertices also
+/// shared one halfedge whose endpoints sit within the flip threshold, so the op took
+/// the flip-and-collapse fast path: it collapses that edge but plans no faces, and the
+/// fusion's rim stayed open (+2 boundary halfedges on this radius-1 cut; +4 on the
+/// uncut mesh). Captured from the seed-5 weld at n=10, gap=0.1.
+const MERGE_SEED5_GAP01_FUSION_FAST_PATH: WeldCase = WeldCase {
+    what: "coincident fusion opens a rim the closing fast path cannot",
+    verts: &[
+        (1.0491037, 0.4000365, 0.18869135),
+        (1.0670416, 0.26580077, -0.0011966601),
+        (0.9331616, 0.20019859, -0.005614237),
+        (1.0491037, 0.4000365, 0.18869135),
+        (0.9787996, 0.041333634, 0.061483808),
+        (1.0264353, 0.20826583, 0.10106749),
+        (1.0504577, 0.325, 0.09981044),
+        (1.0527567, 0.16252209, 0.25349122),
+        (1.05, 0.3, 0.2),
+        (1.05, 0.3, 0.34375),
+        (1.05, 0.4, 0.3),
+        (1.05, 0.4, 0.4),
+        (1.0617704, 0.38702744, 0.19707891),
+        (1.0499508, 0.0988981, 0.17086151),
+        (1.086768, 0.18278761, 0.07465777),
+        (1.0500001, 0.2, 0.2),
+        (1.0603278, 0.16481951, 0.35889894),
+        (1.0500001, 0.3, 0.2),
+        (1.0920506, 0.09331996, 0.32213748),
+        (1.0730832, 0.4490549, 0.2943474),
+        (1.064306, 0.52241474, 0.4397162),
+        (1.0500392, 0.35129082, 0.45033103),
+    ],
+    faces: &[
+        (19, 10, 0),
+        (12, 3, 19),
+        (17, 19, 3),
+        (21, 20, 19),
+        (4, 5, 13),
+        (6, 5, 1),
+        (13, 5, 7),
+        (6, 8, 5),
+        (8, 7, 5),
+        (12, 0, 6),
+        (9, 11, 21),
+        (18, 13, 7),
+        (8, 9, 7),
+        (9, 16, 7),
+        (0, 10, 8),
+        (10, 9, 8),
+        (20, 10, 19),
+        (10, 11, 9),
+        (20, 11, 10),
+        (19, 0, 12),
+        (7, 16, 18),
+        (4, 2, 5),
+        (1, 5, 2),
+        (14, 6, 1),
+        (17, 6, 14),
+        (16, 9, 15),
+        (9, 17, 15),
+        (3, 6, 17),
+        (9, 19, 17),
+        (21, 19, 9),
+        (6, 3, 12),
+        (8, 6, 0),
+    ],
+    outgoing: &[
+        (0, &[10, 19, 8, 6, 12], 8),
+        (3, &[6, 19, 17, 12], 19),
+        (5, &[1, 4, 6, 7, 8, 13, 2], 2),
+        (6, &[0, 3, 1, 5, 8, 14, 17, 12], 12),
+        (7, &[18, 5, 8, 13, 16, 9], 13),
+        (8, &[0, 6, 5, 7, 9, 10], 9),
+        (9, &[21, 8, 7, 10, 11, 16, 15, 17, 19], 21),
+        (10, &[0, 19, 8, 9, 20, 11], 19),
+        (12, &[19, 0, 6, 3], 19),
+        (15, &[13, 14, 16, 17, 9], 13),
+        (17, &[3, 15, 14, 6, 9, 19], 3),
+        (19, &[3, 20, 12, 10, 9, 17, 21, 0], 10),
+    ],
+    merge: (12, 8),
+    protected: &[18],
+};
+
 /// Weld merges that used to open a watertight region, kept as regression cases.
 ///
 /// Each was extracted from a failing `weld_flake_loop_until_failure` run with
@@ -2909,7 +2992,9 @@ const MERGE_SEED12_GAP025_PINCH: WeldCase = WeldCase {
 /// started comparing vertex ids.
 const WELD_CASES: &[WeldCase] = &[
     MERGE_GAP01_TRIANGLE,
+    WELD_GAP005_MERGE,
     MERGE_SEED12_GAP025_PINCH,
+    MERGE_SEED5_GAP01_FUSION_FAST_PATH,
     WeldCase {
         what: "band wraps the full ring and leaves one seam triangle",
         verts: &[
@@ -3480,8 +3565,12 @@ const CUT_TRUNCATED_CASES: &[WeldCase] = &[
 /// The sheets lie face to face on 10/11/14/15 and 28/29/30/31. Vertices 34 and 35 (not
 /// captured) extend each sheet around the patch vertices that were on the cut, so `replay`,
 /// which skips cut vertices, sees everything the merge opens.
+///
+/// The fast path used to follow the fusion and return without closing the rim; it now
+/// yields to the band planner when the fusion opened boundary, so this case stays closed
+/// (see [`MERGE_SEED5_GAP01_FUSION_FAST_PATH`]).
 const WELD_GAP005_MERGE: WeldCase = WeldCase {
-    what: "gap=0.05 weld: two shared ring vertices, band leaves the region open",
+    what: "gap=0.05 weld: two shared ring vertices, fusion opens a rim",
     verts: &[
         (0.75, 0.875, -0.025),
         (0.8953125, 0.90777326, 0.0004969053),
@@ -3598,24 +3687,20 @@ const WELD_GAP005_MERGE: WeldCase = WeldCase {
 /// that the merge still fails to close. [`test_open_weld_cases_are_open`] keeps
 /// watching this list.
 ///
-/// The one entry is [`WELD_GAP005_MERGE`] merged on its own. The merge's coincident
-/// fusion opens its four halfedges before the flip-and-collapse fast path runs, and
-/// nothing closes them since the merge lost its hole closer.
-///
-/// The weld never takes this path. The fixture was captured before the weld zipped
-/// face-to-face sheets first; zipped, it closes
-/// ([`test_gap005_zip_then_merge_stays_closed`]). Coincident pairs still reach the
-/// merge now and then, but across 1,440 small-gap welds (40 merge orders) every such
-/// fusion went on through the rim planner, which closed what it opened - none was
-/// followed by the fast path. The entry pins that unreached combination. Deleting the
-/// fusion would close it, but then a band can span the zero-width seam those pairs
-/// leave.
+/// Empty since the last entry, [`WELD_GAP005_MERGE`], moved to [`WELD_CASES`]: its
+/// coincident fusion opens four halfedges, and the op then took the flip-and-collapse
+/// fast path, which plans no faces and left them open. The fast path now yields to the
+/// band planner when the fusion opened boundary, and the planner closes them. The
+/// fusion stays: the weld never takes this path (it zips face-to-face sheets first,
+/// [`test_gap005_zip_then_merge_stays_closed`]), but coincident pairs do reach the
+/// merge in other merge orders ([`MERGE_SEED5_GAP01_FUSION_FAST_PATH`]), and deleting
+/// the fusion would let a band span the zero-width seam those pairs leave.
 ///
 /// The earlier entries (`radius 1, +5` and `radius 1, +6`, the re-extracted
 /// reversed-soak case) were closed by the rim-first planner and live in
 /// [`WELD_CASES`]; the only other ex-members turned out to be unfaithful fixtures
 /// ([`CUT_TRUNCATED_CASES`]).
-const OPEN_WELD_CASES: &[WeldCase] = &[WELD_GAP005_MERGE];
+const OPEN_WELD_CASES: &[WeldCase] = &[];
 
 /// [`WELD_GAP005_MERGE`] zipped first, as the weld does: the merge then closes what it
 /// opens.
@@ -4049,6 +4134,11 @@ fn test_rim_taxonomy_baseline() {
             "gap=0.1 weld: coincident faces of opposite sheets taken for a flap" => [0; 11],
             // Closed after the pinched bigon was decomposed into its two lobes.
             "pinched bigon fans across its own rung" => [0; 11],
+            // Closed: the fast path yields to the band, which consumes the fusion's rim.
+            "coincident fusion opens a rim the closing fast path cannot" => [0; 11],
+            // Closed after the fast path started yielding to the band planner when a
+            // fusion opened boundary.
+            "gap=0.05 weld: two shared ring vertices, fusion opens a rim" => [0; 11],
             other => panic!("no pinned rim taxonomy for weld case {other:?}"),
         };
         let _ = case.replay();
@@ -4119,11 +4209,11 @@ fn test_rim_planner_corpus_measurement() {
     };
 
     let _ = merge_lens_region(false);
-    // Vertex 4 repeats in the six-vertex first run, so the rim is a pinched bigon:
-    // its two 4-vertex lobes are planned separately (2 + 2 faces) instead of one
-    // 8-vertex zip across the pinch (6 combinatorially valid, geometrically
-    // overlapping faces).
-    assert_case("lens(reconstruct=false)", [4, 8, 8, 0]);
+    // Vertex 4 repeats in the six-vertex first run, but the zip of the two runs
+    // repeats no directed edge and has no degenerate face, so it fits and is used
+    // as is. The lobe-zipped alternative (2 + 2 faces) is only the fallback for a
+    // zip that doesn't fit.
+    assert_case("lens(reconstruct=false)", [6, 8, 8, 0]);
 
     let _ = merge_lens_region(true);
     assert_case("lens(reconstruct=true)", [7, 11, 11, 0]);
@@ -4142,6 +4232,10 @@ fn test_rim_planner_corpus_measurement() {
             "gap=0.1 weld: coincident faces of opposite sheets taken for a flap" => [7, 7, 7, 0],
             // Decomposed at the pinch into a 4-vertex and a 7-vertex lobe.
             "pinched bigon fans across its own rung" => [7, 11, 11, 0],
+            "coincident fusion opens a rim the closing fast path cannot" => [5, 7, 7, 0],
+            // One 7-face band between the two rings after the fusion's rim joined the rim
+            // the stars opened.
+            "gap=0.05 weld: two shared ring vertices, fusion opens a rim" => [7, 11, 11, 0],
             other => panic!("no pinned rim-plan measurement for weld case {other:?}"),
         };
         let _ = case.replay();

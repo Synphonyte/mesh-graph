@@ -39,12 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with existing edges get the shortest band that doesn't. Across 1,440 small-gap welds
   (40 merge orders) every one stays watertight and manifold, and a merge is slightly
   cheaper
-- `merge_vertices_one_rings` plans a rim walk that visits a vertex twice (a pinched
-  "bigon") as its simple lobes at the repeat, instead of zipping the two runs across
-  the pinch and planning a rung twice. That duplicate made the plan incomplete, so the
-  merge left the stars' rim open: a 0.25-gap weld at merge-order seed 12 ended with 9
-  boundary halfedges. Candidate face lists are now also rejected unless they carry no
-  duplicate directed edge and no degenerate face of their own
+- `merge_vertices_one_rings` now rejects a candidate face list that repeats a directed
+  edge or carries a degenerate face, so a rim walk that visits a vertex twice (a
+  pinched "bigon") falls back to the lobe planner, which splits it at the repeat, instead
+  of planning the same rung twice. That duplicate made the plan incomplete and left the
+  stars' rim open: a 0.25-gap weld at merge-order seed 12 ended with 9 boundary halfedges
+- `merge_vertices_one_rings` leaves a rim that a coincident ring-vertex fusion opened to
+  the band planner instead of taking the flip-and-collapse fast path, which collapses the
+  merged edge but plans no faces and so could not close it. The 0.1-gap weld at n=10,
+  merge-order seeds 5 and 30, ended with 15 and 35 boundary halfedges; the extracted
+  gap-0.05 fixture closes as well
 - `remove_face` finds the face's halfedges from the face itself instead of scanning
   every halfedge in the mesh, so its cost no longer grows with mesh size. Faces with
   broken `next` chains are still removed completely, and the removal order is

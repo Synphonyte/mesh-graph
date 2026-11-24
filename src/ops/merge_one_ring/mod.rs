@@ -304,6 +304,7 @@ impl MeshGraph {
         // with several ring-1 vertices is fused once, into the first; the later pairs find it
         // gone and must not overwrite that.
         let mut fused_into: HashMap<VertexId, VertexId> = HashMap::default();
+        let mut fused_any = false;
         for (v1_id, v2_id) in &coincident_pairs {
             if !self.vertices.contains_key(*v1_id) || !self.vertices.contains_key(*v2_id) {
                 continue;
@@ -315,6 +316,7 @@ impl MeshGraph {
             // Survivor is the ring-1 vertex, so the fused id stays on both rings
             // and shows up in `shared_v_ids` below.
             let fused = self.merge_vertices([*v1_id, *v2_id]);
+            fused_any |= !fused.removed_vertices.is_empty();
             let result = &mut record.result;
             result.removed_faces.extend(fused.removed_faces);
             result.removed_halfedges.extend(fused.removed_halfedges);
@@ -335,6 +337,14 @@ impl MeshGraph {
             }
         }
 
+        // A fusion removes the faces its two vertices share and detaches their outer halves,
+        // so it can open a rim. The flip-and-collapse fast path below only collapses the two
+        // merged vertices' shared edge: it plans no faces, so it cannot close that rim
+        // (`MERGE_SEED5_GAP01_FUSION_FAST_PATH`). When the fusion opened boundary, leave the
+        // rim to the band planner below.
+        let fusion_opened_boundary =
+            fused_any && !rim::opened_rim_around(self, &region, &boundary_before).is_empty();
+
         let one_ring_he_set1: HashSet<HalfedgeId> = one_ring_he_ids1.iter().copied().collect();
         let one_ring_he_set2: HashSet<HalfedgeId> = one_ring_he_ids2.iter().copied().collect();
         let shared_he_ids: HashSet<HalfedgeId> = one_ring_he_set1
@@ -353,11 +363,13 @@ impl MeshGraph {
         tracing::debug!("ring2 (v_ids): {one_ring_v_ids2:?}");
         tracing::debug!("shared_v_ids: {shared_v_ids:?}");
 
-        if self.check_and_flip_single_shared_he(
-            &shared_he_ids,
-            flip_threshold_sqr,
-            &mut record.result,
-        ) {
+        if !fusion_opened_boundary
+            && self.check_and_flip_single_shared_he(
+                &shared_he_ids,
+                flip_threshold_sqr,
+                &mut record.result,
+            )
+        {
             return self.finish_merge(record);
         }
 

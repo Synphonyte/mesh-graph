@@ -18,14 +18,15 @@
 //!   the two-run bigon it really is.
 //! - A cyclic structure whose runs are two opposite-side arcs (a bigon) is planned
 //!   with the Bresenham machinery ([`ConnectPair::plan_faces`]), pairing the two
-//!   arcs evenly. Any other closed lobe is
-//!   zipped between two arcs of its boundary split at roughly opposite vertices,
-//!   through the same machinery; a walk that revisits a vertex (a pinch inside one
-//!   walk) is split into simple lobes at the repeated vertex first. A lobe's split
-//!   moves along its boundary until none of its chords runs along an edge that
-//!   already joins two of its vertices outside the hole, or that an earlier
-//!   structure of the same rim plans, and a bigon whose fixed rungs do falls back
-//!   to that lobe zip.
+//!   arcs evenly. A walk that revisits a vertex (a pinch) is zipped the same way
+//!   when its faces fit. When the zip repeats a directed edge, or one of its rungs
+//!   runs along an edge that already joins two of its vertices outside the hole, the
+//!   bigon falls back to the lobe planner, which splits a pinched walk at the repeat
+//!   first. Any other closed lobe is zipped between two arcs of its boundary split at
+//!   roughly opposite vertices, through the same machinery. A lobe's split moves along
+//!   its boundary until none of its chords runs along an edge that already joins two of
+//!   its vertices outside the hole, or that an earlier structure of the same rim
+//!   plans.
 //! - A lobe no split fits is triangulated by the shortest-diagonal dynamic program
 //!   over its own vertices that avoids those edges ([`RimFit::triangulate`]), which
 //!   finds a fitting triangulation whenever one exists. When none does, the lobe is
@@ -821,11 +822,10 @@ fn plan_structure(fit: RimFit, structure: &RimStructure, plan: &mut RimPlan) {
     if structure.runs.len() == 2
         && structure.runs[0].side != RimSide::Strip
         && structure.runs[1].side != RimSide::Strip
-        && !is_pinched(structure)
     {
         // The bigon's rungs are fixed by its two junctions. When one of them already
-        // joins its two vertices outside the hole, zip it as a lobe instead, which can
-        // move its chords.
+        // joins its two vertices outside the hole, or the zip repeats a directed edge
+        // (a pinched walk), zip it as a lobe instead, which can move its chords.
         let mut bigon = RimPlan::default();
         plan_bigon(structure, &mut bigon);
         if !bigon.unhandled.is_empty() || plan.fits(fit, &bigon.faces) {
@@ -1003,20 +1003,6 @@ fn zip_lobe(cycle: &[VertexId]) -> Vec<PlannedFace> {
     let range = ConnectPair::whole(arc_a.len(), arc_b.len(), ConnectPairCap::Closed);
 
     range.plan_faces([arc_a, &arc_b])
-}
-
-/// Whether the structure's closed boundary walk visits a vertex more than once.
-///
-/// A two-run walk with a repeat is not a bigon: the repeated vertex is a pinch,
-/// and one of the runs is really a lobe attached there. Zipping the whole walk
-/// would fan across the pinch - the same rung twice - so such a walk must go
-/// through [`plan_lobe`], which decomposes it at the repeat.
-fn is_pinched(structure: &RimStructure) -> bool {
-    let Ok(seq) = closed_boundary_vertices(structure) else {
-        return true;
-    };
-    let mut seen = HashSet::default();
-    seq.iter().any(|v_id| !seen.insert(*v_id))
 }
 
 /// The closed boundary vertex cycle of a cyclic structure, with any repeated
