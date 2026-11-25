@@ -296,22 +296,7 @@ impl MeshGraph {
             // "minimum among collapsible edges" choice.
             let mut found = None;
 
-            while let Some((he_id, _)) = halfedges_to_collapse.pop_live() {
-                // The recorded length can be stale: the collapse loop re-measures edges
-                // by their canonical id `min(he, twin)`, and a collapse that re-pairs
-                // twins changes which id is canonical, so the old entry is never
-                // updated. Collapsing on it took edges far above the threshold and
-                // folded faces. Check the real length before acting on the entry.
-                let Some(current_len) = self.halfedges.get(he_id).map(|he| he.length_squared(self))
-                else {
-                    halfedges_to_collapse.remove(&he_id);
-                    continue;
-                };
-                if current_len >= min_length_squared {
-                    halfedges_to_collapse.remove(&he_id);
-                    continue;
-                }
-                let len = current_len;
+            while let Some((he_id, len)) = halfedges_to_collapse.pop_live() {
                 // Note: this mutates the mesh even when it returns `None` - it reseeds
                 // `outgoing_halfedge` on both endpoints to anchor the one-ring walk in
                 // `check_inverted_faces`. Each call seeds its own endpoints before its
@@ -469,6 +454,17 @@ impl MeshGraph {
                     crate::report_dead_halfedge_in_collapse_check(self, he_id);
                     continue;
                 };
+
+                // The pending set may still hold this edge under its other halfedge id: a
+                // collapse that re-pairs twins changes which id is `min(he, twin)`. That
+                // entry keeps the length from before the move and would be popped as if
+                // the edge were still short (collapsing edges far above the threshold and
+                // folding faces), so drop it in favour of the one re-measured here.
+                if let Some(twin_id) = he.twin
+                    && twin_id != he_id
+                {
+                    halfedges_to_collapse.remove(&twin_id);
+                }
 
                 let len_sqr = he.length_squared(self);
 
