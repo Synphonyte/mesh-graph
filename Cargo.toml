@@ -33,7 +33,7 @@ lazy_static = { version = "1.5", optional = true }
 manifold-csg = { version = "0.4", default-features = false, optional = true }
 ordered-float = "5"
 parry3d = "0.31"
-rerun = { version = "0.40", default-features = false, optional = true, features = [
+rerun = { version = "0.43", default-features = false, optional = true, features = [
     "sdk",
 ] }
 serde = { version = "1", features = ["derive"], optional = true }
