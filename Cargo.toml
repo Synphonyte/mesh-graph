@@ -11,13 +11,12 @@ repository = "https://github.com/Synphonyte/mesh-graph"
 version = "0.12.0"
 
 [dependencies]
-anyhow = "1"
+anyhow = { version = "1", optional = true }
 bevy = { version = "0.20", default-features = false, features = [
     "bevy_asset",
     "bevy_mesh",
 ], optional = true }
 cfg-if = { version = "1", optional = true }
-derive_more = { version = "2", features = ["deref", "deref_mut"] }
 foldhash = "0.2"
 glam = "0.33"
 gltf = { version = "1.4", optional = true, features = ["extras"] }
@@ -51,15 +50,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 bevy = ["dep:bevy"]
 default = []
-gltf = ["dep:gltf"]
+gltf = ["dep:gltf", "dep:anyhow"]
 rerun = ["dep:cfg-if", "dep:lazy_static", "dep:rerun"]
-serde = ["dep:serde", "dep:serde_json", "glam/serde", "hashbrown/serde", "slotmap/serde"]
+serde = ["dep:serde", "glam/serde", "hashbrown/serde", "slotmap/serde"]
 manifold = ["dep:manifold-csg"]
 # Topology-corruption instrumentation: chain/twin/outgoing-list validators at every
 # op end, optional state-history ring, state dump/resume. Requires `serde` (state
 # files are JSON). Enabling the feature enables the probes; expect a much slower
 # build. Only for debugging mesh corruption — never enable for a release.
-instrumentation = ["serde"]
+instrumentation = ["serde", "dep:anyhow", "dep:serde_json"]
 
 # Dev-only debug binary: also needs the implicit `tracing-subscriber` feature
 # (the optional dependency) for its tracing setup.

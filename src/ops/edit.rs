@@ -404,7 +404,12 @@ impl MeshGraph {
             vertex.outgoing_halfedge = new_outgoing;
         }
 
-        self.make_outgoing_halfedge_boundary_if_possible(survivor_id);
+        // The removals and re-links leave arbitrary seeds on the survivor and its
+        // neighbours, and they reach further than the `first()` reset above: re-pairing twins
+        // can turn a neighbour's boundary seed into an interior one without the cleanup ever
+        // touching that neighbour. Re-seed the survivor's whole ring, not just
+        // `affected_vertices`.
+        self.seed_boundary_around([survivor_id]);
         self.compute_vertex_normal(survivor_id);
 
         // Note: `merge_vertices` runs inside `merge_vertices_one_rings`; it is
@@ -518,6 +523,18 @@ impl MeshGraph {
         self.remove_outgoing_halfedge(twin_opposite_v_id, twin_prev_he_id);
         self.add_outgoing_halfedge(twin_opposite_v_id, twin_next_he_id);
         self.add_outgoing_halfedge(twin_opposite_v_id, halfedge_id);
+
+        // `add_outgoing_halfedge` just seeded all four corners with an interior halfedge.
+        // On a corner that lies on the boundary, ring walks and `Vertex::is_boundary` need
+        // a boundary seed instead.
+        for v_id in [
+            start_v_id,
+            opposite_v_id,
+            twin_start_v_id,
+            twin_opposite_v_id,
+        ] {
+            self.make_outgoing_halfedge_boundary_if_possible(v_id);
+        }
 
         // checked if halfedge exists above
         let face_id1 = unwrap_or_return!(self.halfedges[halfedge_id].face, "Face not found");
