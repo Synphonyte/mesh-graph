@@ -84,10 +84,16 @@ impl MeshGraph {
         start_vertex_id: VertexId,
         end_vertex_id: VertexId,
     ) -> Option<HalfedgeId> {
-        let out_hes = self
-            .outgoing_halfedges
-            .get(start_vertex_id)
-            .or_else(error_none!("Start vertex not found"))?;
+        let out_hes = match self.outgoing_halfedges.get(start_vertex_id) {
+            Some(out_hes) => out_hes,
+            None => {
+                // A vertex that is no longer there has no edges, so "not found" is the
+                // answer rather than an error: callers ask with ids they carry across ops
+                // that can remove them.
+                tracing::debug!("Start vertex not found");
+                return None;
+            }
+        };
 
         out_hes.iter().copied().find(|he_id| {
             self.halfedges

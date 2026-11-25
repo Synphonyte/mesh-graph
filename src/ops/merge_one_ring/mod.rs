@@ -213,7 +213,9 @@ impl MeshGraph {
         one_ring_he_ids2.reverse();
 
         if one_ring_he_ids1.len() < 3 || one_ring_he_ids2.len() < 3 {
-            error!(
+            // Not an error: a vertex left with one or two edges (a border vertex next to a
+            // weld that consumed its faces) simply cannot be welded. The op does nothing.
+            tracing::debug!(
                 "One rings are too small. One ring of {vertex_id1:?} = {}; one ring of {vertex_id2:?} = {}",
                 one_ring_he_ids1.len(),
                 one_ring_he_ids2.len()
@@ -235,7 +237,7 @@ impl MeshGraph {
         let mut one_ring_v_ids2 = ring_end_vertices(&one_ring_he_ids2);
 
         if one_ring_v_ids1.len() < 3 || one_ring_v_ids2.len() < 3 {
-            error!("One rings are too small");
+            tracing::debug!("One rings are too small");
             return MergeVerticesOneRing::default();
         }
 

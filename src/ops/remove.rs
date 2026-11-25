@@ -143,9 +143,12 @@ impl MeshGraph {
         // (`outgoing_halfedges`, `faces`, `one_ring`, ...) rotate via `twin.next` and stop
         // at the first boundary halfedge, so they only see the whole fan when they start
         // from a boundary outgoing halfedge. The same goes for `Vertex::is_boundary`, which
-        // only looks at the seed.
+        // only looks at the seed. A corner whose only face was this one went with it
+        // (`removed_vertices` above) and has no seed left to point at the hole.
         for corner in corners {
-            self.make_outgoing_halfedge_boundary_if_possible(corner);
+            if self.vertices.contains_key(corner) {
+                self.make_outgoing_halfedge_boundary_if_possible(corner);
+            }
         }
 
         (removed_vertices, removed_halfedges)
@@ -672,5 +675,151 @@ mod boundary_seed_single_op_tests {
             );
             assert_eq!(misseeded(&mesh), vec![], "merge {a:?}-{b:?}");
         }
+    }
+}
+
+/// The ops below leave a valid mesh but used to log at ERROR level: a corner that
+/// `remove_face` had just deleted, a `halfedge_from_to` lookup of a vertex an earlier op
+/// removed, and a weld refused because the vertex had only two edges left. Callers run
+/// these hundreds of times per stroke, so anything they hit on purpose belongs at debug
+/// level; a real fault still has to show up as an error.
+#[cfg(test)]
+mod log_noise_tests {
+    use std::sync::{Arc, Mutex};
+
+    use glam::vec3;
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Level, Subscriber};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+    use crate::{MeshGraph, VertexId};
+
+    /// Collects the ERROR events emitted while it is the thread's default subscriber.
+    #[derive(Clone, Default)]
+    struct ErrorLog(Arc<Mutex<Vec<String>>>);
+
+    struct Message(String);
+
+    impl Visit for Message {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl<S: Subscriber> Layer<S> for ErrorLog {
+        fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+            if *event.metadata().level() != Level::ERROR {
+                return;
+            }
+            let mut message = Message(String::new());
+            event.record(&mut message);
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{}: {}", event.metadata().target(), message.0));
+        }
+    }
+
+    /// An `n x n` grid of unit quads, each split along the `(i, j)`-`(i + 1, j + 1)`
+    /// diagonal.
+    fn grid(n: usize) -> (MeshGraph, Vec<VertexId>) {
+        let mut positions = vec![];
+        for j in 0..=n {
+            for i in 0..=n {
+                positions.push(vec3(i as f32, j as f32, 0.0));
+            }
+        }
+        let at = |i: usize, j: usize| j * (n + 1) + i;
+        let mut indices = vec![];
+        for j in 0..n {
+            for i in 0..n {
+                indices.extend([at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+                indices.extend([at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+            }
+        }
+        MeshGraph::indexed_triangles_and_vertex_ids(&positions, &indices)
+    }
+
+    /// Two 10x10 sheets whose facing borders are 0.1 apart.
+    fn two_sheets() -> (MeshGraph, Vec<VertexId>) {
+        let n = 10usize;
+        let mut positions = vec![];
+        for s in 0..2usize {
+            for j in 0..=n {
+                for i in 0..=n {
+                    positions.push(vec3(i as f32 + s as f32 * (n as f32 + 0.1), j as f32, 0.0));
+                }
+            }
+        }
+        let at = |s: usize, i: usize, j: usize| s * (n + 1) * (n + 1) + j * (n + 1) + i;
+        let mut indices = vec![];
+        for s in 0..2 {
+            for j in 0..n {
+                for i in 0..n {
+                    indices.extend([at(s, i, j), at(s, i + 1, j), at(s, i + 1, j + 1)]);
+                    indices.extend([at(s, i, j), at(s, i + 1, j + 1), at(s, i, j + 1)]);
+                }
+            }
+        }
+        MeshGraph::indexed_triangles_and_vertex_ids(&positions, &indices)
+    }
+
+    #[test]
+    fn test_merge_path_does_not_log_errors() {
+        let log = ErrorLog::default();
+        let subscriber = tracing_subscriber::registry().with(log.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Welding across the gap of two separate sheets: the rim runs into both borders,
+        // so the planner refuses it and the repair path takes over. This is what used to
+        // emit "Vertex not found" from `remove_face` and "Start vertex not found" from
+        // `halfedge_from_to`, and "One rings are too small" once a weld had consumed the
+        // faces of the next seam vertex.
+        let (mut sheets, v) = two_sheets();
+        for k in 1..4usize {
+            sheets.merge_vertices_one_rings(
+                v[k * 11 + 10],
+                v[121 + k * 11],
+                0.0,
+                &mut Default::default(),
+                &mut Default::default(),
+            );
+        }
+
+        // Interior weld, border weld, collapse, flip and a raw merge on an open grid.
+        let (mut mesh, v) = grid(20);
+        let at = |i: usize, j: usize| v[j * 21 + i];
+        mesh.merge_vertices_one_rings(
+            at(10, 10),
+            at(12, 10),
+            0.0,
+            &mut Default::default(),
+            &mut Default::default(),
+        );
+        mesh.merge_vertices_one_rings(
+            at(0, 3),
+            at(1, 3),
+            0.0,
+            &mut Default::default(),
+            &mut Default::default(),
+        );
+        let collapsed = mesh
+            .halfedge_from_to(at(5, 5), at(6, 5))
+            .expect("grid edge");
+        mesh.collapse_edge(collapsed);
+        mesh.merge_vertices([at(7, 7), at(9, 7)]);
+
+        // A lookup of a vertex the collapse removed is "no edge", not an error.
+        assert!(mesh.halfedge_from_to(at(6, 5), at(7, 5)).is_none());
+
+        let errors = log.0.lock().unwrap();
+        assert!(
+            errors.is_empty(),
+            "the merge path logged {} error(s): {:#?}",
+            errors.len(),
+            *errors
+        );
     }
 }
