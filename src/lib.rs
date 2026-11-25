@@ -1559,20 +1559,11 @@ impl MeshGraph {
         for (v_id, vertex) in &mut self.vertices {
             let list = self.outgoing_halfedges.get(v_id);
             let stored_seed = vertex.outgoing_halfedge;
-            let seed_is_boundary = stored_seed
-                .and_then(|he| self.halfedges.get(he))
-                .is_some_and(|he| he.is_boundary());
-            let boundary_seed = if seed_is_boundary {
-                None
-            } else {
-                list.and_then(|list| {
-                    list.iter().copied().find(|he_id| {
-                        self.halfedges
-                            .get(*he_id)
-                            .is_some_and(|he| he.is_boundary())
-                    })
-                })
-            };
+            let boundary_seed = crate::ops::cleanup::edge_boundary::boundary_outgoing_halfedge(
+                &self.halfedges,
+                list.map(Vec::as_slice),
+                stored_seed,
+            );
             let live_seed = stored_seed.filter(|he| self.halfedges.contains_key(*he));
             vertex.outgoing_halfedge = boundary_seed
                 .or(live_seed)

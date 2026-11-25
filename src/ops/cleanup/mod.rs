@@ -1,4 +1,4 @@
-mod edge_boundary;
+pub(crate) mod edge_boundary;
 mod vertex_neighborhood;
 
 use tracing::instrument;

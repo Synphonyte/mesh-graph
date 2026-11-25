@@ -504,6 +504,8 @@ impl MeshGraph {
         self.merge_remaining_unconnected(
             one_ring_v_ids1.clone(),
             one_ring_v_ids2.clone(),
+            &region,
+            &boundary_before,
             &mut record,
         );
         #[cfg(test)]
@@ -559,23 +561,16 @@ impl MeshGraph {
         &mut self,
         mut one_ring_v_ids1: Vec<VertexId>,
         mut one_ring_v_ids2: Vec<VertexId>,
+        region: &[VertexId],
+        boundary_before: &HashSet<HalfedgeId>,
         record: &mut MergeRecord,
     ) {
         while let Some(v_id) = one_ring_v_ids1.pop() {
-            let Some(vert) = self.vertices.get(v_id) else {
+            if !self.vertices.contains_key(v_id) {
                 continue;
-            };
-
-            let mut vertices = vec![];
-
-            for he_id in vert.boundary_halfedgdes(self) {
-                let Some(he) = self.halfedges.get(he_id) else {
-                    error!("Halfedge not found: {he_id:?}");
-                    continue;
-                };
-
-                vertices.push(he.end_vertex);
             }
+
+            let vertices = self.opened_loop_from(v_id, region, boundary_before);
 
             if !vertices.is_empty() {
                 one_ring_v_ids1.retain(|v_id| !vertices.contains(v_id));
@@ -600,6 +595,53 @@ impl MeshGraph {
                 }
             }
         }
+    }
+
+    /// The vertices of the boundary loop this merge opened through `v_id`, or nothing if
+    /// `v_id` is on no such loop.
+    ///
+    /// Only boundary halfedges that were not on the border before the merge count
+    /// (`boundary_before`), and the chain must close back on itself. A border the mesh
+    /// already had stops the chain, so an open mesh keeps its border: welding along it
+    /// used to merge the whole border loop into one vertex.
+    fn opened_loop_from(
+        &self,
+        v_id: VertexId,
+        region: &[VertexId],
+        boundary_before: &HashSet<HalfedgeId>,
+    ) -> Vec<VertexId> {
+        let opened_out = |v: VertexId| {
+            self.outgoing_halfedges
+                .get(v)?
+                .iter()
+                .copied()
+                .find(|he_id| {
+                    !boundary_before.contains(he_id)
+                        && self
+                            .halfedges
+                            .get(*he_id)
+                            .is_some_and(|he| he.is_boundary())
+                })
+        };
+
+        let mut vertices = vec![];
+        let Some(start) = opened_out(v_id) else {
+            return vertices;
+        };
+
+        let mut he_id = start;
+        // Only a guard against cycles that do not pass through `start`.
+        for _ in 0..region.len() * 8 {
+            let end = self.halfedges[he_id].end_vertex;
+            vertices.push(end);
+            match opened_out(end) {
+                Some(next) if next == start => return vertices,
+                Some(next) => he_id = next,
+                None => break,
+            }
+        }
+
+        Vec::new()
     }
 
     /// The faces that already join the two rings: the first contiguous strip of them, which

@@ -1309,28 +1309,6 @@ impl MeshGraph {
         result
     }
 
-    /// Calls [`Self::make_outgoing_halfedge_boundary_if_possible`] on each live vertex of
-    /// `centers` and on each vertex of their one-rings.
-    pub(crate) fn seed_boundary_around(&mut self, centers: impl IntoIterator<Item = VertexId>) {
-        let mut vertices: Vec<VertexId> = Vec::new();
-        for center in centers {
-            let Some(out) = self.outgoing_halfedges.get(center) else {
-                continue;
-            };
-            crate::ops::remove::push_unique(&mut vertices, center);
-            for he_id in out {
-                if let Some(he) = self.halfedges.get(*he_id) {
-                    crate::ops::remove::push_unique(&mut vertices, he.end_vertex);
-                }
-            }
-        }
-        for v_id in vertices {
-            if self.vertices.contains_key(v_id) {
-                self.make_outgoing_halfedge_boundary_if_possible(v_id);
-            }
-        }
-    }
-
     /// Remove a halfedge face and re-connecting the adjacent halfedges.
     /// Only works on manifold triangle meshes.
     #[instrument(skip(self))]

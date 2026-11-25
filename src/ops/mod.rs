@@ -1,5 +1,5 @@
 mod add;
-mod cleanup;
+pub(crate) mod cleanup;
 mod collapse;
 mod edit;
 mod merge_one_ring;

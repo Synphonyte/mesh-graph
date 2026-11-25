@@ -404,7 +404,8 @@ impl MeshGraph {
             vertex.outgoing_halfedge = new_outgoing;
         }
 
-        self.make_outgoing_halfedge_boundary_if_possible(survivor_id);
+        // The removals and re-links leave arbitrary seeds on the survivor and its neighbours.
+        self.seed_boundary_around([survivor_id]);
         self.compute_vertex_normal(survivor_id);
 
         // Note: `merge_vertices` runs inside `merge_vertices_one_rings`; it is

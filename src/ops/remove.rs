@@ -485,10 +485,7 @@ mod boundary_seed_after_ops_tests {
         mesh.vertices
             .iter()
             .filter(|(v, vertex)| {
-                mesh.outgoing_halfedges[*v]
-                    .iter()
-                    .any(|he_id| mesh.halfedges[*he_id].is_boundary())
-                    && !vertex.is_boundary(mesh)
+                mesh.boundary_outgoing_halfedge(*v).is_some() && !vertex.is_boundary(mesh)
             })
             .count()
     }
@@ -560,10 +557,7 @@ mod boundary_seed_single_op_tests {
         mesh.vertices
             .iter()
             .filter(|(v, vertex)| {
-                mesh.outgoing_halfedges[*v]
-                    .iter()
-                    .any(|he_id| mesh.halfedges[*he_id].is_boundary())
-                    && !vertex.is_boundary(mesh)
+                mesh.boundary_outgoing_halfedge(*v).is_some() && !vertex.is_boundary(mesh)
             })
             .map(|(v, _)| v)
             .collect()
@@ -577,6 +571,12 @@ mod boundary_seed_single_op_tests {
 
             mesh.flip_edge(he(&mesh, &v, a, b));
 
+            let (va, vb) = (v[at(a.0, a.1)], v[at(b.0, b.1)]);
+            assert!(
+                mesh.halfedge_from_to(va, vb).is_none(),
+                "{a:?}-{b:?} not flipped"
+            );
+
             assert_eq!(misseeded(&mesh), vec![], "flip {a:?}-{b:?}");
         }
     }
@@ -585,8 +585,11 @@ mod boundary_seed_single_op_tests {
     fn test_collapse_edge_keeps_boundary_seeds() {
         for (a, b) in [((1, 1), (2, 1)), ((1, 0), (2, 0)), ((5, 5), (6, 5))] {
             let (mut mesh, v) = grid();
+            let faces = mesh.faces.len();
 
             mesh.collapse_edge(he(&mesh, &v, a, b));
+
+            assert!(mesh.faces.len() < faces, "{a:?}-{b:?} not collapsed");
 
             assert_eq!(misseeded(&mesh), vec![], "collapse {a:?}-{b:?}");
         }
@@ -605,6 +608,68 @@ mod boundary_seed_single_op_tests {
                 &mut Default::default(),
             );
 
+            assert!(
+                !mesh.vertices.contains_key(v[at(b.0, b.1)]),
+                "{a:?}-{b:?} not merged"
+            );
+            assert_eq!(misseeded(&mesh), vec![], "merge {a:?}-{b:?}");
+        }
+    }
+
+    /// Raw `merge_vertices` re-seeds the survivor and its neighbours, next to the border
+    /// and away from it.
+    #[test]
+    fn test_merge_vertices_keeps_boundary_seeds() {
+        for (a, b) in [
+            ((0, 3), (1, 3)),
+            ((0, 3), (0, 4)),
+            ((1, 0), (2, 1)),
+            ((5, 0), (5, 1)),
+            ((1, 1), (2, 1)),
+            ((5, 5), (6, 6)),
+        ] {
+            let (mut mesh, v) = grid();
+
+            let result = mesh.merge_vertices([v[at(a.0, a.1)], v[at(b.0, b.1)]]);
+
+            assert!(
+                !result.removed_vertices.is_empty(),
+                "{a:?}-{b:?} not merged"
+            );
+            assert_eq!(misseeded(&mesh), vec![], "merge_vertices {a:?}-{b:?}");
+        }
+    }
+
+    /// Welding two vertices next to the border only touches the faces around them. With
+    /// boundary seeds kept, the border chain used to be followed all the way round and the
+    /// whole border loop was welded into one vertex.
+    #[test]
+    fn test_merge_vertices_one_rings_near_border_stays_local() {
+        for (a, b) in [
+            ((0, 3), (1, 3)),
+            ((0, 3), (0, 4)),
+            ((0, 3), (2, 3)),
+            ((5, 0), (5, 2)),
+            ((5, 0), (5, 1)),
+            ((10, 10), (12, 10)),
+        ] {
+            let (mut mesh, v) = grid();
+            let (faces, vertices) = (mesh.faces.len(), mesh.vertices.len());
+
+            mesh.merge_vertices_one_rings(
+                v[at(a.0, a.1)],
+                v[at(b.0, b.1)],
+                0.0,
+                &mut Default::default(),
+                &mut Default::default(),
+            );
+
+            let removed_faces = faces as isize - mesh.faces.len() as isize;
+            let removed_vertices = vertices as isize - mesh.vertices.len() as isize;
+            assert!(
+                (1..=12).contains(&removed_faces) && (1..=4).contains(&removed_vertices),
+                "merge {a:?}-{b:?} removed {removed_faces} faces, {removed_vertices} vertices"
+            );
             assert_eq!(misseeded(&mesh), vec![], "merge {a:?}-{b:?}");
         }
     }

@@ -4259,12 +4259,14 @@ fn test_rim_taxonomy_baseline() {
         let expected = match case.what {
             // End unconsumed went 7 -> 3 (mirror 6 -> 2) when `remove_face` started
             // pointing the corners it leaves on the boundary at a boundary halfedge, so
-            // seed-based ring walks after it see the whole fan.
+            // seed-based ring walks after it see the whole fan. The mirror went 2 -> 3,
+            // the same as the original order, when `merge_remaining_unconnected` stopped
+            // welding open boundary chains (it closes only loops the op opened).
             "reversed weld order, radius 2, +4 boundary halfedges" => {
                 [9, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0]
             }
             "reversed weld order, radius 2, +4 boundary halfedges (mirror)" => {
-                [9, 0, 0, 0, 0, 0, 2, 1, 0, 0, 0]
+                [9, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0]
             }
             other => panic!("no pinned rim taxonomy for open weld case {other:?}"),
         };

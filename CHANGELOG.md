@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `flip_edge`, `collapse_edge` and `merge_vertices_one_rings` leaving a
   boundary vertex next to the edited spot seeded with an interior halfedge, so
   `Vertex::is_boundary` returned `false` and ring walks stopped one step in.
+  `merge_vertices` now re-seeds the survivor's neighbours as well.
+- Fixed `merge_vertices_one_rings` next to the border of an open mesh welding the
+  whole border loop into one vertex. It now only closes boundary loops the merge
+  itself opened, and leaves the existing border alone.
 - Fixed `remove_face` leaving the corners of the new hole seeded with an interior
   halfedge: ring walks (`faces`, `neighbours`, `one_ring`, ...) stopped part-way round
   them and `Vertex::is_boundary` returned `false`.
