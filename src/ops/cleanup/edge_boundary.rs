@@ -1,6 +1,6 @@
 use tracing::{error, instrument};
 
-use crate::{MeshGraph, VertexId, error_none};
+use crate::{MeshGraph, VertexId};
 
 impl MeshGraph {
     /// Ensure that if one of the outgoing halfedges of this vertex is a boundary halfedge,
