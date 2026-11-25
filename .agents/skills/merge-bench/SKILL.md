@@ -68,6 +68,7 @@ ms per merge:
 | `93eeef6` (both) | 0.15 | 0.12 | 0.08 | 0.10 | 0.09 |
 | after `9d76194` (merge nets removed) | 0.05 | 0.06 | 0.06 | 0.08 | 0.07 |
 | `0b60451` (rim-first band planner) | 0.052 | 0.050 | 0.060 | 0.064 | 0.081 |
+| `42e138c` (#51 + #52 merged) | 0.067 | 0.075 | 0.074 | 0.083 | 0.097 |
 
 The `7ccf06a` and `93eeef6` rows were measured side by side with a re-run of `134945e`, which
 matched its row (0.22 / 0.79 / 3.2 at levels 5–7). At `93eeef6` the
@@ -87,6 +88,24 @@ local in the unreleased work before the rim planner, not in it: levels 5-7 are w
 noise of the `9d76194` row. At 983k halfedges a merge costs about 120x less than v0.11.0.
 Benchmarking v0.11.0 needs the example's import changed to `hashbrown::HashSet`, since the
 crate's `hash` module came later; nothing else differs.
+
+The `42e138c` row was measured on this Mac on 2026-11-25, three runs, median per
+level. Levels 3 and 4 swung between 0.066 and 0.103 across those runs, so read them as
+"about 0.07" and trust levels 5-7.
+
+This machine no longer reproduces the older rows: re-running `0b60451` in the same session
+gives 0.080 / 0.065 / 0.066 / 0.076 / 0.093 (medians of three runs), 13-38% above that
+commit's own row at levels 4-7 and further above it at level 3. Rows here are therefore
+only comparable within one session. Measured that way - same machine, same session -
+`42e138c` costs 0.93 / 1.04 / 1.09 / 1.08 / 1.04 of `0b60451`: levels 4-7 within 9%, level
+3 inside its own noise. The seed work of `#51` and `#52` added a constant per-merge sweep,
+not growth with mesh size; the curve is as flat as `0b60451`'s.
+
+An earlier version of this row was normalized from a 4-vCPU cloud sandbox using its own
+`0b60451` run as the anchor. That factor (0.89 / 1.18 / 1.21 / 1.34 / 1.64 against the rows
+above) got the same-session comparison right but the absolute values 15-45% low, because
+the anchor rows had themselves been measured on a faster state of this machine. Measure on
+the machine, or say which machine it was.
 
 ### Pair modes
 
