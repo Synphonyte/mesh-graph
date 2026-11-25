@@ -68,6 +68,7 @@ ms per merge:
 | `93eeef6` (both) | 0.15 | 0.12 | 0.08 | 0.10 | 0.09 |
 | after `9d76194` (merge nets removed) | 0.05 | 0.06 | 0.06 | 0.08 | 0.07 |
 | `0b60451` (rim-first band planner) | 0.052 | 0.050 | 0.060 | 0.064 | 0.081 |
+| `42e138c` (#51 + #52 merged; sandbox, normalized) | 0.07 | 0.06 | 0.06 | 0.06 | 0.08 |
 
 The `7ccf06a` and `93eeef6` rows were measured side by side with a re-run of `134945e`, which
 matched its row (0.22 / 0.79 / 3.2 at levels 5–7). At `93eeef6` the
@@ -87,6 +88,20 @@ local in the unreleased work before the rim planner, not in it: levels 5-7 are w
 noise of the `9d76194` row. At 983k halfedges a merge costs about 120x less than v0.11.0.
 Benchmarking v0.11.0 needs the example's import changed to `hashbrown::HashSet`, since the
 crate's `hash` module came later; nothing else differs.
+
+The `42e138c` row was measured on a 4-vCPU cloud sandbox, not on this Mac, and normalized
+onto this table. That sandbox also ran `0b60451`: 0.056 / 0.064 / 0.067 / 0.084 / 0.128,
+against the 0.063 / 0.054 / 0.055 / 0.063 / 0.078 that this table's two `0b60451` rows
+average to (the row above and the antipodal row under *Pair modes*). The per-level factor
+is 0.89 / 1.18 / 1.21 / 1.34 / 1.64 - it grows with the mesh, because the sandbox's caches
+hurt the 983k level more than this Mac's, so each level carries its own factor instead of
+one scalar. `42e138c`'s raw sandbox numbers were 0.062 / 0.066 / 0.074 / 0.087 / 0.136.
+
+Measured in the same sandbox, `42e138c` costs 4-12% more per merge than `0b60451`, and
+that offset is constant across levels: the seed work of `#51` and `#52` added a per-merge
+sweep, not per-mesh-size growth. On this table's scale the two rows are within the spread
+of the Mac's own repeated runs; the level-3 cell is the weakest in the row, since two
+`0b60451` runs on this Mac differ by 40% there (0.052 vs 0.073).
 
 ### Pair modes
 
