@@ -18,7 +18,7 @@ bevy = { version = "0.20", default-features = false, features = [
 ], optional = true }
 cfg-if = { version = "1", optional = true }
 foldhash = "0.2"
-glam = "0.33"
+glam = "0.34"
 gltf = { version = "1.4", optional = true, features = ["extras"] }
 # No `default-hasher`: the crate uses the fixed-seed aliases in `src/hash.rs`. Other
 # dependencies (parry3d) enable it anyway, so `clippy.toml` is what enforces the aliases.
