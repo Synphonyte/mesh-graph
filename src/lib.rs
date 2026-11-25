@@ -1550,14 +1550,33 @@ impl MeshGraph {
         // seeds pointing at removed halfedges make ring traversals (`one_ring`, faces, ...)
         // yield dead ids, which panics callers that index them. Only replace the seed when
         // it is dead, to keep ring iteration order stable in the common case.
+        //
+        // A boundary outgoing halfedge wins over the stored seed: ring walks rotate via
+        // `twin.next` and stop at the first boundary halfedge, so on a boundary vertex
+        // only a boundary seed lets them see the whole fan (and `Vertex::is_boundary`
+        // only looks at the seed). Interior vertices have no boundary halfedge, and
+        // boundary vertices that already have a boundary seed keep it.
         for (v_id, vertex) in &mut self.vertices {
+            let list = self.outgoing_halfedges.get(v_id);
             let stored_seed = vertex.outgoing_halfedge;
+            let seed_is_boundary = stored_seed
+                .and_then(|he| self.halfedges.get(he))
+                .is_some_and(|he| he.is_boundary());
+            let boundary_seed = if seed_is_boundary {
+                None
+            } else {
+                list.and_then(|list| {
+                    list.iter().copied().find(|he_id| {
+                        self.halfedges
+                            .get(*he_id)
+                            .is_some_and(|he| he.is_boundary())
+                    })
+                })
+            };
             let live_seed = stored_seed.filter(|he| self.halfedges.contains_key(*he));
-            vertex.outgoing_halfedge = live_seed.or_else(|| {
-                self.outgoing_halfedges
-                    .get(v_id)
-                    .and_then(|list| list.first().copied())
-            });
+            vertex.outgoing_halfedge = boundary_seed
+                .or(live_seed)
+                .or_else(|| list.and_then(|list| list.first().copied()));
         }
     }
 }

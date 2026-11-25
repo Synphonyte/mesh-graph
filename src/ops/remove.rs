@@ -444,3 +444,74 @@ mod boundary_seed_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod boundary_seed_after_ops_tests {
+    use glam::vec3;
+
+    use crate::MeshGraph;
+
+    fn grid(n: usize, jitter: f32, seed: u64) -> MeshGraph {
+        let mut s = seed;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s % 10000) as f32 / 10000.0 - 0.5
+        };
+        let mut positions = vec![];
+        for j in 0..=n {
+            for i in 0..=n {
+                positions.push(vec3(
+                    i as f32 + jitter * rnd(),
+                    j as f32 + jitter * rnd(),
+                    0.0,
+                ));
+            }
+        }
+        let id = |i: usize, j: usize| j * (n + 1) + i;
+        let mut indices = vec![];
+        for j in 0..n {
+            for i in 0..n {
+                indices.extend([id(i, j), id(i + 1, j), id(i + 1, j + 1)]);
+                indices.extend([id(i, j), id(i + 1, j + 1), id(i, j + 1)]);
+            }
+        }
+        MeshGraph::indexed_triangles(&positions, &indices)
+    }
+
+    /// Vertices that have a boundary outgoing halfedge but are not seeded with one.
+    fn misseeded(mesh: &MeshGraph) -> usize {
+        mesh.vertices
+            .iter()
+            .filter(|(v, vertex)| {
+                mesh.outgoing_halfedges[*v]
+                    .iter()
+                    .any(|he_id| mesh.halfedges[*he_id].is_boundary())
+                    && !vertex.is_boundary(mesh)
+            })
+            .count()
+    }
+
+    #[test]
+    fn test_collapse_leaves_boundary_vertices_seeded_with_a_boundary_halfedge() {
+        let mut mesh = grid(4, 0.0, 1);
+        mesh.collapse_until_edges_above_min_length(1.5 * 1.5, &mut Default::default());
+        assert_eq!(misseeded(&mesh), 0);
+
+        let mut mesh = grid(10, 0.6, 9 * 7919);
+        mesh.collapse_until_edges_above_min_length(1.6 * 1.6, &mut Default::default());
+        assert_eq!(misseeded(&mesh), 0);
+    }
+
+    #[test]
+    fn test_subdivide_leaves_boundary_vertices_seeded_with_a_boundary_halfedge() {
+        let mut mesh = grid(3, 0.0, 1);
+        mesh.subdivide_until_edges_below_max_length(
+            0.1,
+            &mut Default::default(),
+            &mut Default::default(),
+        );
+        assert_eq!(misseeded(&mesh), 0);
+    }
+}

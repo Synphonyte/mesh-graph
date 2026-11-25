@@ -437,7 +437,7 @@ impl MeshGraph {
     /// ```
     ///
     /// The edge must be interior (a face on both sides), and its two opposite vertices
-    /// must not be connected already. On a boundary edge this does nothing. Flipping when
+    /// must be distinct and not connected already. On a boundary edge this does nothing. Flipping when
     /// the new edge already exists (e.g. an endpoint has only three neighbours) creates a
     /// duplicate edge; that is only checked in debug builds, since it costs a scan of a
     /// vertex's outgoing halfedges.
@@ -475,9 +475,11 @@ impl MeshGraph {
         let twin_next_twin_he_id = unwrap_or_return!(twin_next_he.twin, "Next twin twin not found");
 
         debug_assert!(
-            self.halfedge_from_to(opposite_v_id, twin_opposite_v_id)
-                .is_none(),
-            "flip_edge: the flipped edge {opposite_v_id:?}-{twin_opposite_v_id:?} already exists"
+            opposite_v_id != twin_opposite_v_id
+                && self
+                    .halfedge_from_to(opposite_v_id, twin_opposite_v_id)
+                    .is_none(),
+            "flip_edge: the flipped edge {opposite_v_id:?}-{twin_opposite_v_id:?} is a self-loop or already exists"
         );
 
         // checked at the start

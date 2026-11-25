@@ -17,8 +17,12 @@ use crate::{MeshGraph, VertexId};
 /// the outlines where it cuts the surface. A closed outline ends where it starts (within
 /// `1e-3`); a cut through an open mesh can also give open polylines.
 ///
-/// `plane_normal` need not be normalized but must be non-zero (and finite). This is
-/// only checked in debug builds; in release a zero normal produces NaN positions.
+/// `plane_normal` need not be normalized: the plane is the same for any scaling of
+/// `plane_normal` and `plane_constant` together. It must be non-zero and finite; that is
+/// only checked in debug builds, and in release a zero normal produces NaN positions.
+///
+/// Vertices within `1e-5` (in mesh units) of the plane are treated as lying on it, so
+/// features smaller than that are not resolved.
 pub fn plane_slice(
     mesh_graph: &MeshGraph,
     plane_normal: Vec3,
@@ -28,7 +32,16 @@ pub fn plane_slice(
         plane_normal.is_finite() && plane_normal.length_squared() > 0.0,
         "plane_slice: plane_normal must be non-zero and finite, got {plane_normal:?}"
     );
+    // Scale the constant with the normal, so `plane_normal · p = plane_constant` keeps
+    // describing the same plane after normalizing. A normal that is already unit length
+    // up to rounding keeps its constant bit for bit.
+    let inv_length = plane_normal.length_recip();
     let plane_normal = plane_normal.normalize();
+    let plane_constant = if (inv_length - 1.0).abs() > 4.0 * f32::EPSILON {
+        plane_constant * inv_length
+    } else {
+        plane_constant
+    };
 
     #[cfg(feature = "rerun")]
     {
@@ -469,6 +482,27 @@ mod tests {
                 first.distance_squared(*last) < 1e-6,
                 "outline at {normal:?} {constant} is not closed: {first:?} .. {last:?}"
             );
+        }
+    }
+
+    /// The plane is `plane_normal · p = plane_constant` for a non-unit normal too: scaling
+    /// both by the same factor slices in the same place.
+    #[test]
+    fn test_non_unit_normal_scales_the_constant() {
+        let mesh_graph = MeshGraph::from(IcoSphere {
+            radius: 2.5,
+            subdivisions: 2,
+        });
+
+        let unit: Vec<Polygon3> = plane_slice(&mesh_graph, Vec3::Y, 1.0).collect();
+        let scaled: Vec<Polygon3> =
+            plane_slice(&mesh_graph, Vec3::new(0.0, 2.0, 0.0), 2.0).collect();
+
+        assert_eq!(unit.len(), 1);
+        assert_eq!(scaled.len(), 1);
+        for (a, b) in unit[0].vertices.iter().zip(&scaled[0].vertices) {
+            assert!(a.distance(*b) < 1e-5, "{a:?} vs {b:?}");
+            assert!((a.y - 1.0).abs() < 1e-5);
         }
     }
 }

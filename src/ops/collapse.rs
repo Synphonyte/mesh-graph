@@ -298,10 +298,9 @@ impl MeshGraph {
 
             while let Some((he_id, len)) = halfedges_to_collapse.pop_live() {
                 // Note: this mutates the mesh even when it returns `None` - it reseeds
-                // `outgoing_halfedge` on both endpoints to anchor the one-ring walk in
-                // `check_inverted_faces`. Each call seeds its own endpoints before its
-                // own walk, so the verdict does not depend on which candidates ran
-                // before it.
+                // `outgoing_halfedge` on both endpoints. The checks themselves read the
+                // outgoing lists, not the seeds, so the verdict does not depend on which
+                // candidates ran before it.
                 if let Some((twin_id, start_v_id, end_v_id, center)) =
                     self.can_collapse_edge_inner(he_id)
                 {
@@ -1401,12 +1400,10 @@ impl MeshGraph {
                 ));
         }
 
-        self.bvh.remove(
-            self.faces
-                .get(face_id)
-                .or_else(error_none!("Face not found"))?
-                .index,
-        );
+        if !self.faces.contains_key(face_id) {
+            error!("Face not found");
+            return None;
+        }
 
         #[cfg(feature = "instrumentation")]
         self.probe_live_face_removal(&[next_he_id, prev_he_id], "remove_halfedge_face");

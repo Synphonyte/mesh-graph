@@ -399,6 +399,11 @@ impl MeshGraph {
         // self.vertices[end_v].outgoing_halfedge = Some(new_twin);
         // self.vertices[start_v].outgoing_halfedge = Some(new_he);
 
+        // On a boundary edge the center vertex is a boundary vertex, and the seed set above
+        // (`new_he`) may be its interior side. Ring walks and `Vertex::is_boundary` need a
+        // boundary seed there. The center has at most four outgoing halfedges.
+        self.make_outgoing_halfedge_boundary_if_possible(center_v);
+
         Some(SubdivideEdge {
             added_halfedges,
             added_vertex: center_v,
