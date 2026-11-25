@@ -32,7 +32,7 @@ impl MeshGraph {
             .collect_vec();
 
         // The face's corners, in member order. Their seeds are re-pointed at a boundary
-        // halfedge at the end (see `seed_boundary_outgoing`).
+        // halfedge at the end.
         let mut corners: Vec<VertexId> = Vec::with_capacity(3);
         for (_, he) in &halfedges {
             push_unique(&mut corners, he.end_vertex);
@@ -145,7 +145,7 @@ impl MeshGraph {
         // from a boundary outgoing halfedge. The same goes for `Vertex::is_boundary`, which
         // only looks at the seed.
         for corner in corners {
-            self.seed_boundary_outgoing(corner);
+            self.make_outgoing_halfedge_boundary_if_possible(corner);
         }
 
         (removed_vertices, removed_halfedges)
@@ -242,25 +242,6 @@ impl MeshGraph {
     pub(crate) fn forget_face_index(&mut self, index: u32) {
         self.bvh.remove(index);
         self.index_to_face_id.remove(&index);
-    }
-
-    /// Points `vertex_id`'s seed (`Vertex::outgoing_halfedge`) at one of its live boundary
-    /// outgoing halfedges, if it has one. Leaves the seed alone otherwise.
-    ///
-    /// Cost: one pass over the vertex's outgoing list.
-    pub(crate) fn seed_boundary_outgoing(&mut self, vertex_id: VertexId) {
-        let Some(boundary_he) = self.outgoing_halfedges.get(vertex_id).and_then(|out| {
-            out.iter().copied().find(|he_id| {
-                self.halfedges
-                    .get(*he_id)
-                    .is_some_and(|he| he.is_boundary())
-            })
-        }) else {
-            return;
-        };
-        if let Some(v) = self.vertices.get_mut(vertex_id) {
-            v.outgoing_halfedge = Some(boundary_he);
-        }
     }
 
     /// Deletes only a vertex, without deleting any faces or halfedges connected to it.
