@@ -1275,6 +1275,13 @@ impl MeshGraph {
             return false;
         }
 
+        // The flip would connect the two opposite vertices. If they are the same vertex or
+        // already connected, it would create a duplicate edge (see `flip_edge`), so leave
+        // the edge alone and let the caller plan the band the normal way.
+        if other_v_id1 == other_v_id2 || self.halfedge_from_to(other_v_id1, other_v_id2).is_some() {
+            return false;
+        }
+
         tracing::debug!("Flipping edge {single_shared_he_id:?}");
 
         self.flip_edge(single_shared_he_id);

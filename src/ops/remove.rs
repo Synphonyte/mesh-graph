@@ -31,6 +31,13 @@ impl MeshGraph {
             .map(|he_id| (he_id, self.halfedges[he_id]))
             .collect_vec();
 
+        // The face's corners, in member order. Their seeds are re-pointed at a boundary
+        // halfedge at the end.
+        let mut corners: Vec<VertexId> = Vec::with_capacity(3);
+        for (_, he) in &halfedges {
+            push_unique(&mut corners, he.end_vertex);
+        }
+
         #[cfg(feature = "instrumentation")]
         crate::record_op_trace!(
             "remove_face({face_id:?}) members={:?}",
@@ -127,10 +134,19 @@ impl MeshGraph {
         }
 
         // already checked at the start of the function
-        self.bvh.remove(self.faces[face_id].index);
+        self.forget_face_index(self.faces[face_id].index);
         self.faces.remove(face_id);
         #[cfg(feature = "instrumentation")]
         crate::record_face_death(face_id);
+
+        // Every corner that survives now borders the hole this face leaves. Ring walks
+        // (`outgoing_halfedges`, `faces`, `one_ring`, ...) rotate via `twin.next` and stop
+        // at the first boundary halfedge, so they only see the whole fan when they start
+        // from a boundary outgoing halfedge. The same goes for `Vertex::is_boundary`, which
+        // only looks at the seed.
+        for corner in corners {
+            self.make_outgoing_halfedge_boundary_if_possible(corner);
+        }
 
         (removed_vertices, removed_halfedges)
     }
@@ -218,6 +234,14 @@ impl MeshGraph {
         }
 
         members
+    }
+
+    /// Drops a removed face's spatial index entries: its BVH leaf and its
+    /// `index_to_face_id` entry. Without the latter the map grows with every face ever
+    /// created and keeps naming dead faces.
+    pub(crate) fn forget_face_index(&mut self, index: u32) {
+        self.bvh.remove(index);
+        self.index_to_face_id.remove(&index);
     }
 
     /// Deletes only a vertex, without deleting any faces or halfedges connected to it.
@@ -372,5 +396,122 @@ mod tests {
         }
 
         assert_eq!(meshgraph.faces.len(), face_count - 1);
+    }
+}
+
+#[cfg(test)]
+mod boundary_seed_tests {
+    use crate::utils::build_grid;
+
+    /// Ring walks rotate via `twin.next` and stop at the first boundary halfedge, so a
+    /// vertex on a boundary has to be seeded with a boundary outgoing halfedge for the
+    /// walk to see its whole fan (and for `Vertex::is_boundary` to answer correctly).
+    /// Removing a face puts its corners on a boundary, so it must re-seed them.
+    #[test]
+    fn test_remove_face_seeds_corners_with_a_boundary_halfedge() {
+        let base = build_grid(4);
+
+        for face_id in base.faces.keys() {
+            let mut mesh = base.clone();
+            let corners: Vec<_> = mesh.faces[face_id].vertices(&mesh).collect();
+
+            mesh.remove_face(face_id);
+
+            for v in corners {
+                if !mesh.vertices.contains_key(v) {
+                    continue;
+                }
+                let boundary_out = mesh.outgoing_halfedges[v]
+                    .iter()
+                    .filter(|he_id| mesh.halfedges[**he_id].is_boundary())
+                    .count();
+
+                assert!(
+                    mesh.vertices[v].is_boundary(&mesh),
+                    "corner {v:?} of removed face {face_id:?} is not reported as boundary"
+                );
+
+                // With two boundary gaps (a corner already on the grid border) the
+                // vertex has two fans and a walk can only see one of them.
+                if boundary_out == 1 {
+                    assert_eq!(
+                        mesh.vertices[v].outgoing_halfedges(&mesh).count(),
+                        mesh.outgoing_halfedges[v].len(),
+                        "ring walk around {v:?} stopped early after removing {face_id:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod boundary_seed_after_ops_tests {
+    use glam::vec3;
+
+    use crate::MeshGraph;
+
+    fn grid(n: usize, jitter: f32, seed: u64) -> MeshGraph {
+        let mut s = seed;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s % 10000) as f32 / 10000.0 - 0.5
+        };
+        let mut positions = vec![];
+        for j in 0..=n {
+            for i in 0..=n {
+                positions.push(vec3(
+                    i as f32 + jitter * rnd(),
+                    j as f32 + jitter * rnd(),
+                    0.0,
+                ));
+            }
+        }
+        let id = |i: usize, j: usize| j * (n + 1) + i;
+        let mut indices = vec![];
+        for j in 0..n {
+            for i in 0..n {
+                indices.extend([id(i, j), id(i + 1, j), id(i + 1, j + 1)]);
+                indices.extend([id(i, j), id(i + 1, j + 1), id(i, j + 1)]);
+            }
+        }
+        MeshGraph::indexed_triangles(&positions, &indices)
+    }
+
+    /// Vertices that have a boundary outgoing halfedge but are not seeded with one.
+    fn misseeded(mesh: &MeshGraph) -> usize {
+        mesh.vertices
+            .iter()
+            .filter(|(v, vertex)| {
+                mesh.outgoing_halfedges[*v]
+                    .iter()
+                    .any(|he_id| mesh.halfedges[*he_id].is_boundary())
+                    && !vertex.is_boundary(mesh)
+            })
+            .count()
+    }
+
+    #[test]
+    fn test_collapse_leaves_boundary_vertices_seeded_with_a_boundary_halfedge() {
+        let mut mesh = grid(4, 0.0, 1);
+        mesh.collapse_until_edges_above_min_length(1.5 * 1.5, &mut Default::default());
+        assert_eq!(misseeded(&mesh), 0);
+
+        let mut mesh = grid(10, 0.6, 9 * 7919);
+        mesh.collapse_until_edges_above_min_length(1.6 * 1.6, &mut Default::default());
+        assert_eq!(misseeded(&mesh), 0);
+    }
+
+    #[test]
+    fn test_subdivide_leaves_boundary_vertices_seeded_with_a_boundary_halfedge() {
+        let mut mesh = grid(3, 0.0, 1);
+        mesh.subdivide_until_edges_below_max_length(
+            0.1,
+            &mut Default::default(),
+            &mut Default::default(),
+        );
+        assert_eq!(misseeded(&mesh), 0);
     }
 }

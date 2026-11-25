@@ -183,6 +183,12 @@ impl MeshGraph {
         start_vertex: VertexId,
         end_vertex: VertexId,
     ) -> Option<HalfedgeId> {
+        // Check the start vertex before inserting, so a failure leaves no orphan halfedge.
+        if !self.vertices.contains_key(start_vertex) {
+            error!("Start vertex not found {start_vertex:?}");
+            return None;
+        }
+
         let halfedge = Halfedge {
             end_vertex,
             next: None,

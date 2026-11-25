@@ -133,7 +133,8 @@ impl MeshGraph {
         // Remove faces from BVH and faces slotmap
         for &face_id in &faces_to_remove {
             if let Some(face) = self.faces.get(face_id) {
-                self.bvh.remove(face.index);
+                let index = face.index;
+                self.forget_face_index(index);
             }
             self.faces.remove(face_id);
         }
@@ -434,6 +435,12 @@ impl MeshGraph {
     ///    \ /                  \ /
     ///     *                    *
     /// ```
+    ///
+    /// The edge must be interior (a face on both sides), and its two opposite vertices
+    /// must be distinct and not connected already. On a boundary edge this does nothing. Flipping when
+    /// the new edge already exists (e.g. an endpoint has only three neighbours) creates a
+    /// duplicate edge; that is only checked in debug builds, since it costs a scan of a
+    /// vertex's outgoing halfedges.
     #[instrument(skip(self))]
     pub fn flip_edge(&mut self, halfedge_id: HalfedgeId) {
         #[cfg(feature = "rerun")]
@@ -466,6 +473,14 @@ impl MeshGraph {
         let twin_next_he = unwrap_or_return!(self.halfedges.get(twin_next_he_id), "Next not found");
         let twin_opposite_v_id = twin_next_he.end_vertex;
         let twin_next_twin_he_id = unwrap_or_return!(twin_next_he.twin, "Next twin twin not found");
+
+        debug_assert!(
+            opposite_v_id != twin_opposite_v_id
+                && self
+                    .halfedge_from_to(opposite_v_id, twin_opposite_v_id)
+                    .is_none(),
+            "flip_edge: the flipped edge {opposite_v_id:?}-{twin_opposite_v_id:?} is a self-loop or already exists"
+        );
 
         // checked at the start
         self.halfedges[halfedge_id].end_vertex = opposite_v_id;

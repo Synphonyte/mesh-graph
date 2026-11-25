@@ -348,7 +348,7 @@ impl MeshGraph {
         for pair in patch {
             for face_id in [pair.a.face, pair.b.face] {
                 if let Some(face) = self.faces.remove(face_id) {
-                    self.bvh.remove(face.index);
+                    self.forget_face_index(face.index);
                     result.removed_faces.push(face_id);
                 }
             }

@@ -4257,11 +4257,14 @@ fn test_rim_taxonomy_baseline() {
         // built and the whole rim is open before the cleanup. Nothing closes the
         // rest: the op has no hole closer.
         let expected = match case.what {
+            // End unconsumed went 7 -> 3 (mirror 6 -> 2) when `remove_face` started
+            // pointing the corners it leaves on the boundary at a boundary halfedge, so
+            // seed-based ring walks after it see the whole fan.
             "reversed weld order, radius 2, +4 boundary halfedges" => {
-                [9, 0, 0, 0, 0, 0, 7, 1, 0, 0, 0]
+                [9, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0]
             }
             "reversed weld order, radius 2, +4 boundary halfedges (mirror)" => {
-                [9, 0, 0, 0, 0, 0, 6, 1, 0, 0, 0]
+                [9, 0, 0, 0, 0, 0, 2, 1, 0, 0, 0]
             }
             other => panic!("no pinned rim taxonomy for open weld case {other:?}"),
         };
@@ -4898,4 +4901,36 @@ fn test_center_fan_closes_a_quad_hole() {
         mesh.remove_only_halfedge_and_twin(he_id);
     }
     assert_manifold_region(&mesh);
+}
+
+/// The single-shared-edge shortcut flips the shared edge so it joins the two vertices
+/// being merged. When those are already connected, the flip would add a second edge
+/// between them; the shortcut must decline instead and leave the mesh alone.
+#[test]
+fn test_single_shared_edge_flip_declines_when_the_new_edge_exists() {
+    // Tetrahedron: edge 2-3 is shared by faces (1, 2, 3) and (0, 3, 2), whose opposite
+    // vertices 0 and 1 are already connected.
+    let positions = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+    ];
+    let (mut mesh_graph, v) = MeshGraph::indexed_triangles_and_vertex_ids(
+        &positions,
+        &[0, 2, 1, 0, 1, 3, 1, 2, 3, 0, 3, 2],
+    );
+    let shared = mesh_graph.halfedge_from_to(v[2], v[3]).unwrap();
+    let halfedges_before = mesh_graph.halfedges.len();
+
+    let mut result = MergeVerticesOneRing::default();
+    let flipped = mesh_graph.flip_and_collapse_single_shared_edge_if_below_threshold(
+        shared,
+        f32::MAX,
+        &mut result,
+    );
+
+    assert!(!flipped);
+    assert_eq!(mesh_graph.halfedges.len(), halfedges_before);
+    assert_eq!(mesh_graph.halfedges[shared].end_vertex, v[3]);
 }

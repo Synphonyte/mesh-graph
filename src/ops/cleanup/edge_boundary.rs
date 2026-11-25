@@ -1,6 +1,6 @@
 use tracing::{error, instrument};
 
-use crate::{MeshGraph, VertexId, error_none};
+use crate::{MeshGraph, VertexId};
 
 impl MeshGraph {
     /// Ensure that if one of the outgoing halfedges of this vertex is a boundary halfedge,
@@ -14,17 +14,18 @@ impl MeshGraph {
             return;
         }
 
-        let boundary_he_id = self.vertices[vertex_id]
-            .outgoing_halfedges(self)
-            .filter_map(|he_id| {
+        // Scan the outgoing list rather than walking the ring from the current seed: the
+        // walk rotates via `twin.next` and stops at the first boundary halfedge, so from an
+        // interior seed it never reaches the boundary outgoing halfedge it is looking for.
+        let boundary_he_id = self.outgoing_halfedges.get(vertex_id).and_then(|out| {
+            out.iter().copied().find(|he_id| {
                 self.halfedges
-                    .get(he_id)
-                    .or_else(error_none!("Halfedge not found"))
-                    .map(|he| (he, he_id))
+                    .get(*he_id)
+                    .is_some_and(|he| he.is_boundary())
             })
-            .find(|(he, _)| he.is_boundary());
+        });
 
-        if let Some((_, boundary_he_id)) = boundary_he_id {
+        if let Some(boundary_he_id) = boundary_he_id {
             self.vertices[vertex_id].outgoing_halfedge = Some(boundary_he_id);
         }
     }

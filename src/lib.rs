@@ -599,7 +599,17 @@ impl MeshGraph {
     /// Create a triangle mesh graph from vertex positions.
     /// Every three positions represent a triangle.
     ///
-    /// Vertices with the same position are merged into a single vertex.
+    /// Vertices with the same position (within `1e-5`) are merged into a single vertex.
+    /// This compares every position with every vertex kept so far, so it is quadratic;
+    /// for large inputs build the index buffer yourself and use [`Self::indexed_triangles`].
+    ///
+    /// Returns `None` if the number of positions is not a multiple of three.
+    ///
+    /// The triangles must form an orientable manifold: neighbouring triangles wound
+    /// consistently, and no edge shared by more than two triangles. This is only checked
+    /// in debug builds; in release such a triangle takes over a neighbour's halfedge
+    /// and corrupts that neighbour's face loop. Triangles with a repeated vertex are
+    /// skipped.
     pub fn triangles(vertex_positions: &[Vec3]) -> Option<Self> {
         if !vertex_positions.len().is_multiple_of(3) {
             return None;
@@ -615,7 +625,9 @@ impl MeshGraph {
             for (j, pos) in unique_positions.iter().enumerate() {
                 const EPSILON: f32 = 1e-5;
 
-                if pos.distance_squared(*vertex_pos) < EPSILON {
+                // `EPSILON` is a distance, so compare it squared. Comparing the squared
+                // distance against `EPSILON` itself merged points up to ~3e-3 apart.
+                if pos.distance_squared(*vertex_pos) < EPSILON * EPSILON {
                     idx = Some(j);
                     break;
                 }
@@ -669,7 +681,18 @@ impl MeshGraph {
     }
 
     /// Create a triangle mesh graph from vertex positions and face indices.
-    /// Every chunk of three indices represents a triangle.
+    /// Every chunk of three indices represents a triangle; trailing indices that do not
+    /// make a full triangle are ignored.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an index is out of range of `vertex_positions`.
+    ///
+    /// The triangles must form an orientable manifold: neighbouring triangles wound
+    /// consistently, and no edge shared by more than two triangles. This is only checked
+    /// in debug builds; in release such a triangle takes over a neighbour's halfedge
+    /// and corrupts that neighbour's face loop. Triangles with a repeated vertex are
+    /// skipped.
     #[inline]
     pub fn indexed_triangles(vertex_positions: &[Vec3], face_indices: &[usize]) -> Self {
         Self::indexed_triangles_and_vertex_ids(vertex_positions, face_indices).0
@@ -677,6 +700,8 @@ impl MeshGraph {
 
     /// Create a triangle mesh graph from vertex positions and face indices,
     /// returning the graph and a list of vertex IDs in the same order as `vertex_positions`.
+    ///
+    /// Same requirements and panics as [`Self::indexed_triangles`].
     #[instrument]
     pub fn indexed_triangles_and_vertex_ids(
         vertex_positions: &[Vec3],
@@ -736,6 +761,14 @@ impl MeshGraph {
             let he_a_id = mesh_graph.add_or_get_edge(a, b).unwrap().start_to_end_he_id;
             let he_b_id = mesh_graph.add_or_get_edge(b, c).unwrap().start_to_end_he_id;
             let he_c_id = mesh_graph.add_or_get_edge(c, a).unwrap().start_to_end_he_id;
+
+            debug_assert!(
+                [he_a_id, he_b_id, he_c_id]
+                    .iter()
+                    .all(|he_id| mesh_graph.halfedges[*he_id].face.is_none()),
+                "triangle {chunk:?} reuses a directed edge another triangle already has: \
+                 inconsistent winding, or an edge shared by more than two triangles"
+            );
 
             let _face_id = mesh_graph.add_face(he_a_id, he_b_id, he_c_id);
         }
@@ -1517,14 +1550,33 @@ impl MeshGraph {
         // seeds pointing at removed halfedges make ring traversals (`one_ring`, faces, ...)
         // yield dead ids, which panics callers that index them. Only replace the seed when
         // it is dead, to keep ring iteration order stable in the common case.
+        //
+        // A boundary outgoing halfedge wins over the stored seed: ring walks rotate via
+        // `twin.next` and stop at the first boundary halfedge, so on a boundary vertex
+        // only a boundary seed lets them see the whole fan (and `Vertex::is_boundary`
+        // only looks at the seed). Interior vertices have no boundary halfedge, and
+        // boundary vertices that already have a boundary seed keep it.
         for (v_id, vertex) in &mut self.vertices {
+            let list = self.outgoing_halfedges.get(v_id);
             let stored_seed = vertex.outgoing_halfedge;
+            let seed_is_boundary = stored_seed
+                .and_then(|he| self.halfedges.get(he))
+                .is_some_and(|he| he.is_boundary());
+            let boundary_seed = if seed_is_boundary {
+                None
+            } else {
+                list.and_then(|list| {
+                    list.iter().copied().find(|he_id| {
+                        self.halfedges
+                            .get(*he_id)
+                            .is_some_and(|he| he.is_boundary())
+                    })
+                })
+            };
             let live_seed = stored_seed.filter(|he| self.halfedges.contains_key(*he));
-            vertex.outgoing_halfedge = live_seed.or_else(|| {
-                self.outgoing_halfedges
-                    .get(v_id)
-                    .and_then(|list| list.first().copied())
-            });
+            vertex.outgoing_halfedge = boundary_seed
+                .or(live_seed)
+                .or_else(|| list.and_then(|list| list.first().copied()));
         }
     }
 }
@@ -1562,5 +1614,28 @@ mod integrity_violation_tests {
 
         reset_integrity_violation();
         assert!(!integrity_violation_reported(), "reset must clear the flag");
+    }
+}
+
+#[cfg(test)]
+mod constructor_tests {
+    use super::*;
+
+    /// `triangles` merges positions within `1e-5` of each other, not `sqrt(1e-5)`.
+    #[test]
+    fn test_triangles_merges_only_nearly_identical_positions() {
+        let mesh = MeshGraph::triangles(&[
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            // 2e-3 from the first triangle's corner: a different vertex.
+            Vec3::new(0.002, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            // 1e-6 from the first triangle's third corner: the same vertex.
+            Vec3::new(0.0, 1.000001, 0.0),
+        ])
+        .unwrap();
+
+        assert_eq!(mesh.vertices.len(), 5);
     }
 }
