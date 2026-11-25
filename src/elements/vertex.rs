@@ -142,9 +142,19 @@ impl Vertex {
             })
     }
 
-    /// Returns an iterator over the series of boundary halfedges starting from this vertex.
+    /// Returns the boundary halfedges of the boundary loop through this vertex, in order,
+    /// starting with its own outgoing halfedge.
     ///
-    /// If this vertex has no outgoing halfedge or no outgoing boundary halfedges, the iterator is empty.
+    /// This walks along the border, not around this vertex's star: each step moves to the
+    /// vertex at the end of the current halfedge and continues with the outgoing seed of
+    /// that vertex, so the walk leaves the fan at once. It stops at the first vertex whose
+    /// seed is not a boundary halfedge, which means the result depends on how the visited
+    /// vertices are seeded, not just on this one. Use
+    /// [`Vertex::outgoing_halfedges`](Self::outgoing_halfedges) for the fan.
+    ///
+    /// The iterator is empty if this vertex has no outgoing halfedge, or if that halfedge is
+    /// not a boundary halfedge.
+    #[doc(alias = "boundary_halfedges")]
     pub fn boundary_halfedgdes<'a>(
         &self,
         mesh_graph: &'a MeshGraph,

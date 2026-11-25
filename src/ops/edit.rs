@@ -404,7 +404,11 @@ impl MeshGraph {
             vertex.outgoing_halfedge = new_outgoing;
         }
 
-        // The removals and re-links leave arbitrary seeds on the survivor and its neighbours.
+        // The removals and re-links leave arbitrary seeds on the survivor and its
+        // neighbours, and they reach further than the `first()` reset above: re-pairing twins
+        // can turn a neighbour's boundary seed into an interior one without the cleanup ever
+        // touching that neighbour. Re-seed the survivor's whole ring, not just
+        // `affected_vertices`.
         self.seed_boundary_around([survivor_id]);
         self.compute_vertex_normal(survivor_id);
 

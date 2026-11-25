@@ -1,5 +1,5 @@
 mod add;
-pub(crate) mod cleanup;
+mod cleanup;
 mod collapse;
 mod edit;
 mod merge_one_ring;
@@ -15,6 +15,7 @@ use std::{cmp::Reverse, collections::BinaryHeap};
 
 use crate::hash::{HashMap, HashSet};
 pub use add::*;
+pub(crate) use cleanup::edge_boundary::boundary_outgoing_halfedge;
 pub use merge_one_ring::*;
 pub use zip_coincident::ZipCoincident;
 

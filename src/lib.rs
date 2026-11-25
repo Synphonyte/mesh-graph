@@ -1559,7 +1559,7 @@ impl MeshGraph {
         for (v_id, vertex) in &mut self.vertices {
             let list = self.outgoing_halfedges.get(v_id);
             let stored_seed = vertex.outgoing_halfedge;
-            let boundary_seed = crate::ops::cleanup::edge_boundary::boundary_outgoing_halfedge(
+            let boundary_seed = crate::ops::boundary_outgoing_halfedge(
                 &self.halfedges,
                 list.map(Vec::as_slice),
                 stored_seed,
