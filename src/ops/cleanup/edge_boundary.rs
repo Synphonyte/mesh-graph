@@ -14,6 +14,15 @@ impl MeshGraph {
             return;
         }
 
+        // A live boundary seed is kept as it is, so the ring order stays stable.
+        if self.vertices[vertex_id]
+            .outgoing_halfedge
+            .and_then(|he_id| self.halfedges.get(he_id))
+            .is_some_and(|he| he.is_boundary())
+        {
+            return;
+        }
+
         // Scan the outgoing list rather than walking the ring from the current seed: the
         // walk rotates via `twin.next` and stops at the first boundary halfedge, so from an
         // interior seed it never reaches the boundary outgoing halfedge it is looking for.

@@ -5,6 +5,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed `flip_edge`, `collapse_edge` and `merge_vertices_one_rings` leaving a
+  boundary vertex next to the edited spot seeded with an interior halfedge, so
+  `Vertex::is_boundary` returned `false` and ring walks stopped one step in.
 - Fixed `remove_face` leaving the corners of the new hole seeded with an interior
   halfedge: ring walks (`faces`, `neighbours`, `one_ring`, ...) stopped part-way round
   them and `Vertex::is_boundary` returned `false`.

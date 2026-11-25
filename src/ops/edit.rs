@@ -519,6 +519,18 @@ impl MeshGraph {
         self.add_outgoing_halfedge(twin_opposite_v_id, twin_next_he_id);
         self.add_outgoing_halfedge(twin_opposite_v_id, halfedge_id);
 
+        // `add_outgoing_halfedge` just seeded all four corners with an interior halfedge.
+        // On a corner that lies on the boundary, ring walks and `Vertex::is_boundary` need
+        // a boundary seed instead.
+        for v_id in [
+            start_v_id,
+            opposite_v_id,
+            twin_start_v_id,
+            twin_opposite_v_id,
+        ] {
+            self.make_outgoing_halfedge_boundary_if_possible(v_id);
+        }
+
         // checked if halfedge exists above
         let face_id1 = unwrap_or_return!(self.halfedges[halfedge_id].face, "Face not found");
         let face1 = unwrap_or_return!(self.faces.get(face_id1), "Face not found");

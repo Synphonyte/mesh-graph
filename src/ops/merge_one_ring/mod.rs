@@ -370,7 +370,7 @@ impl MeshGraph {
                 &mut record.result,
             )
         {
-            return self.finish_merge(record);
+            return self.finish_merge(record, &region);
         }
 
         self.remove_vertex_faces(vertex_id1, &mut record.result);
@@ -416,7 +416,7 @@ impl MeshGraph {
 
                 // The stars are already out by this point, so returning here leaves their rim
                 // open: the op tears the mesh and does not put it back.
-                return self.finish_merge(record);
+                return self.finish_merge(record, &region);
             }
         };
 
@@ -525,7 +525,7 @@ impl MeshGraph {
             rim_probe::push(test_rim_probe);
         }
 
-        self.finish_merge(record)
+        self.finish_merge(record, &region)
     }
 
     /// Common op-end path: drop the removed ids from the caller's marked sets
@@ -533,8 +533,19 @@ impl MeshGraph {
     /// the state-history ring (instrumentation), then return the result. Every exit of the
     /// op that has touched the mesh goes through here, so the ring stays continuous with the
     /// journal (resume continuity) and no corruption can skip the checks.
-    fn finish_merge(&self, record: MergeRecord) -> MergeVerticesOneRing {
+    ///
+    /// It also points every live vertex of `region` (which holds everything the op
+    /// touches) and every vertex the op added at a boundary outgoing halfedge where it has
+    /// one: ring walks and `Vertex::is_boundary` need a boundary seed on a boundary vertex,
+    /// and the removals and re-links on the way leave arbitrary seeds behind.
+    fn finish_merge(&mut self, record: MergeRecord, region: &[VertexId]) -> MergeVerticesOneRing {
         let result = record.finish();
+
+        for &v_id in region.iter().chain(&result.added_vertices) {
+            if self.vertices.contains_key(v_id) {
+                self.make_outgoing_halfedge_boundary_if_possible(v_id);
+            }
+        }
 
         #[cfg(feature = "instrumentation")]
         if self.probe_chain_integrity("merge_vertices_one_rings") {
