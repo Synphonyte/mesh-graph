@@ -5,6 +5,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Documented that `merge_vertices_one_rings` does not join two vertices whose stars
+  touch a border: it removes the faces around them and builds no band. To stitch two
+  borders, use `merge_vertices` or `zip_coincident_patches`.
 - Fixed `flip_edge`, `collapse_edge` and `merge_vertices_one_rings` leaving a
   boundary vertex next to the edited spot seeded with an interior halfedge, so
   `Vertex::is_boundary` returned `false` and ring walks stopped one step in.
