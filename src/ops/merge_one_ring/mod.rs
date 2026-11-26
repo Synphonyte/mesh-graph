@@ -168,6 +168,19 @@ impl MeshGraph {
     ///
     /// See [Freestyle: Sculpting meshes with self-adaptive topology DOI 10.1016/j.cag.2011.03.033](https://inria.hal.science/inria-00606516v1/document)
     /// Chapters 3.2 and 5.1
+    ///
+    /// # Near a border
+    ///
+    /// The op removes both stars and builds a band between the two closed rims that
+    /// open. When a star touches a border of the mesh (the vertex is on it, or a face
+    /// around it has a border edge), the rim it opens runs into that border instead. No
+    /// band is built for such a rim, so the op removes the faces around the two vertices
+    /// and does not join them. It can also leave the neighbouring border vertices with
+    /// one-rings too small for a later merge, which then returns without doing anything.
+    ///
+    /// The weld still calls this on border vertices while transient holes are open, so
+    /// it is allowed, but it does not stitch. To stitch two borders together, use
+    /// [`MeshGraph::merge_vertices`] or [`MeshGraph::zip_coincident_patches`] instead.
     #[instrument(skip(self, marked_halfedges, marked_vertices))]
     pub fn merge_vertices_one_rings(
         &mut self,
